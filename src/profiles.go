@@ -11,13 +11,26 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
-	"text/tabwriter"
 	"unicode"
 	"unicode/utf8"
 )
 
 var services = []string{"github", "azure", "office", "hetzner", "gcloud"}
 var serviceTools = map[string]string{"github": "gh", "azure": "az", "office": "m365", "hetzner": "hcloud", "gcloud": "gcloud"}
+
+func serviceName(service string) string {
+	if name := map[string]string{"github": "GitHub", "azure": "Azure", "office": "Microsoft 365", "hetzner": "Hetzner", "gcloud": "Google Cloud"}[service]; name != "" {
+		return name
+	}
+	return service
+}
+
+func accountCount(n int) string {
+	if n == 1 {
+		return "1 account"
+	}
+	return fmt.Sprintf("%d accounts", n)
+}
 
 type member struct {
 	Service string          `json:"service"`
@@ -52,7 +65,7 @@ func (m member) id() string {
 	return m.Service + ":" + string(jsonKey(value))
 }
 func (m member) label() string {
-	s := m.Service + " · " + m.Account
+	s := serviceName(m.Service) + " · " + m.Account
 	if m.Context != "" {
 		s += " · " + m.Context
 	}
@@ -380,16 +393,88 @@ func (a *app) describe(name string, context bool) error {
 }
 
 func (a *app) printAccounts(rows []account) {
+	width := 0
+	if a.terminal() {
+		width, _ = a.dimensions()
+		width -= 2
+	}
+	fmt.Fprintln(a.out, "\n"+accountTable(rows, true, width))
+}
+
+func accountTable(rows []account, status bool, width int) string {
 	if len(rows) == 0 {
-		fmt.Fprintln(a.out, "\nNo accounts yet. Add a login to get started.")
-		return
+		return "No accounts yet. Choose Add account to get started."
 	}
-	w := tabwriter.NewWriter(a.out, 0, 0, 3, ' ', 0)
-	fmt.Fprintln(w, "\nSERVICE\tACCOUNT\tCONTEXT\tSTATUS")
+	if width > 0 && width < 50 {
+		blocks := []string{}
+		for _, r := range rows {
+			label := serviceName(r.Service)
+			if status {
+				label += " · " + r.State
+			}
+			label += "\n  " + r.Account
+			if r.Context != "" {
+				label += "\n  Context: " + r.Context
+			}
+			blocks = append(blocks, strings.Join(wrapLines(label, width), "\n"))
+		}
+		return strings.Join(blocks, "\n\n")
+	}
+	header := []string{"SERVICE", "ACCOUNT", "CONTEXT"}
+	if status {
+		header = append(header, "STATUS")
+	}
+	table := [][]string{header}
 	for _, r := range rows {
-		fmt.Fprintf(w, "%s\t%s\t%s\t%s\n", r.Service, r.Account, r.Context, r.State)
+		context := r.Context
+		if context == "" {
+			context = "—"
+		}
+		row := []string{serviceName(r.Service), r.Account, context}
+		if status {
+			row = append(row, r.State)
+		}
+		table = append(table, row)
 	}
-	w.Flush()
+	// Give long identities more room, then wrap cells while keeping columns aligned.
+	widths := make([]int, len(header))
+	for _, row := range table {
+		for i, cell := range row {
+			widths[i] = max(widths[i], utf8.RuneCountInString(clean(cell)))
+		}
+	}
+	for width > 0 {
+		total, widest := 3*(len(header)-1), -1
+		for i, size := range widths {
+			total += size
+			if size > len(header[i]) && (widest < 0 || size > widths[widest]) {
+				widest = i
+			}
+		}
+		if total <= width || widest < 0 {
+			break
+		}
+		widths[widest]--
+	}
+	var out []string
+	for _, row := range table {
+		cells := make([][]rune, len(row))
+		for i, cell := range row {
+			cells[i] = []rune(clean(cell))
+		}
+		for more := true; more; {
+			more = false
+			parts := make([]string, len(row))
+			for i, cell := range cells {
+				n := min(len(cell), widths[i])
+				parts[i] = string(cell[:n]) + strings.Repeat(" ", widths[i]-n)
+				cells[i] = cell[n:]
+				more = more || len(cells[i]) > 0
+			}
+			out = append(out, strings.TrimRight(strings.Join(parts, "   "), " "))
+		}
+	}
+	return strings.Join(out, "\n")
 }
 
 const githubScopes = "repo,workflow,admin:org,admin:org_hook,admin:public_key,admin:repo_hook,admin:gpg_key,admin:ssh_signing_key,admin:enterprise,gist,notifications,user,delete_repo,write:packages,delete:packages,project,codespace,read:audit_log"

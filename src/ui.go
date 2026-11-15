@@ -9,6 +9,7 @@ import (
 	"strconv"
 	"strings"
 	"syscall"
+	"text/tabwriter"
 	"unicode/utf8"
 
 	"golang.org/x/term"
@@ -52,11 +53,87 @@ func (a *app) key() (string, error) {
 		return "up", nil
 	case 'B':
 		return "down", nil
+	case 'Z':
+		return "up", nil
+	case 'H':
+		return "home", nil
+	case 'F':
+		return "end", nil
+	case '5', '6':
+		page := b[0]
+		if _, err := a.in.Read(b); err != nil {
+			return "", err
+		}
+		if b[0] == '~' {
+			if page == '5' {
+				return "pageup", nil
+			}
+			return "pagedown", nil
+		}
 	}
 	return "", nil
 }
 
+// Columns contain display text only. Tabs align cells; terminal escapes and
+// newlines in account labels must never become layout or terminal commands.
+func columns(rows [][]string) []string {
+	var out strings.Builder
+	w := tabwriter.NewWriter(&out, 0, 0, 3, ' ', 0)
+	for _, row := range rows {
+		cells := make([]string, len(row))
+		for i, cell := range row {
+			cells[i] = clean(cell)
+		}
+		fmt.Fprintln(w, strings.Join(cells, "\t"))
+	}
+	w.Flush()
+	return strings.Split(strings.TrimSuffix(out.String(), "\n"), "\n")
+}
+
+func (a *app) dimensions() (int, int) {
+	if f, ok := a.out.(*os.File); ok {
+		if width, height, err := term.GetSize(int(f.Fd())); err == nil && width > 0 && height > 0 {
+			return width, height
+		}
+	}
+	return 80, 24
+}
+
+func fit(s string, width int) string {
+	runes := []rune(clean(s))
+	if len(runes) <= width {
+		return string(runes)
+	}
+	if width < 1 {
+		return ""
+	}
+	return string(runes[:width-1]) + "…"
+}
+
+func wrapLines(text string, width int) []string {
+	lines := []string{}
+	for _, line := range strings.Split(strings.TrimRight(text, "\n"), "\n") {
+		runes := []rune(clean(line))
+		for len(runes) > width {
+			lines = append(lines, string(runes[:width]))
+			runes = runes[width:]
+		}
+		lines = append(lines, string(runes))
+	}
+	return lines
+}
+
+func (a *app) style(s, code string) string {
+	if os.Getenv("NO_COLOR") != "" || os.Getenv("TERM") == "dumb" {
+		return s
+	}
+	return "\x1b[" + code + "m" + s + "\x1b[0m"
+}
+
 func (a *app) choose(title, description string, options []string) (int, error) {
+	if len(options) == 0 {
+		return -1, errCancelled
+	}
 	if !a.terminal() {
 		return -1, errors.New("this action needs an interactive terminal")
 	}
@@ -67,21 +144,34 @@ func (a *app) choose(title, description string, options []string) (int, error) {
 	defer term.Restore(int(a.in.Fd()), state)
 	fmt.Fprint(a.out, "\x1b[?25l")
 	defer fmt.Fprint(a.out, "\x1b[?25h")
-	selected := 0
+	selected, offset := 0, 0
+	rows := make([][]string, len(options))
+	for i, option := range options {
+		rows[i] = strings.Split(option, "\t")
+	}
+	labels := columns(rows)
+	fmt.Fprint(a.out, "\x1b[H\x1b[2J")
 	for {
-		fmt.Fprint(a.out, "\x1b[H\x1b[2J")
-		fmt.Fprintf(a.out, "\x1b[1;36mCOMMANDER\x1b[0m  /  %s\r\n\r\n", clean(title))
-		if description != "" {
-			fmt.Fprint(a.out, strings.ReplaceAll(description, "\n", "\r\n"), "\r\n\r\n")
+		width, height := a.dimensions()
+		width = max(1, width-3)
+		visible := min(len(options), 8, max(1, height-10))
+		// Wrap descriptions rather than losing account identities on small screens.
+		lines := wrapLines(description, width)
+		pageSize := max(1, height-visible-8)
+		offset = min(offset, max(0, len(lines)-pageSize))
+		var screen strings.Builder
+		line := func(s string) { fmt.Fprint(&screen, "\x1b[2K", s, "\r\n") }
+		fmt.Fprint(&screen, "\x1b[H")
+		line("  " + a.style(fit("COMMANDER  /  "+title, width), "1;36"))
+		line("  " + a.style(strings.Repeat("─", min(width, 76)), "2"))
+		line("")
+		for _, s := range lines[offset:min(len(lines), offset+pageSize)] {
+			line("  " + s)
 		}
-		_, height, _ := term.GetSize(int(a.in.Fd()))
-		visible := height - 8 - strings.Count(description, "\n")
-		if visible < 3 {
-			visible = 3
+		if len(lines) > pageSize {
+			line("  " + a.style(fit(fmt.Sprintf("PgUp/PgDn · details %d–%d of %d", offset+1, min(len(lines), offset+pageSize), len(lines)), width), "2"))
 		}
-		if visible > 12 {
-			visible = 12
-		}
+		line("")
 		start := 0
 		if selected >= visible {
 			start = selected - visible + 1
@@ -91,13 +181,27 @@ func (a *app) choose(title, description string, options []string) (int, error) {
 			end = len(options)
 		}
 		for i := start; i < end; i++ {
+			label := fmt.Sprintf("%d  %s", i+1, labels[i])
 			if i == selected {
-				fmt.Fprintf(a.out, "  \x1b[36m› %s\x1b[0m\r\n", clean(options[i]))
+				line("  " + a.style(fit("› "+label, width), "1;36"))
 			} else {
-				fmt.Fprintf(a.out, "    %s\r\n", clean(options[i]))
+				line("  " + fit("  "+label, width))
 			}
 		}
-		fmt.Fprint(a.out, "\r\n  ↑ ↓ Move   Enter Select   Esc Back\r\n")
+		line("")
+		back := "Back"
+		if title == "Home" {
+			back = "Quit"
+		}
+		help := "↑↓/Tab Move   1–9 Jump   Enter Select   Esc " + back
+		if width < 55 {
+			help = "↑↓/Tab · Enter · Esc " + back
+		}
+		if len(options) > visible {
+			help += fmt.Sprintf("   %d/%d", selected+1, len(options))
+		}
+		fmt.Fprint(&screen, "\x1b[2K  ", a.style(fit(help, width), "2"), "\x1b[J")
+		fmt.Fprint(a.out, screen.String())
 		key, err := a.key()
 		if err != nil {
 			return -1, err
@@ -105,8 +209,16 @@ func (a *app) choose(title, description string, options []string) (int, error) {
 		switch key {
 		case "up", "k":
 			selected = (selected + len(options) - 1) % len(options)
-		case "down", "j":
+		case "down", "j", "\t":
 			selected = (selected + 1) % len(options)
+		case "home":
+			selected = 0
+		case "end":
+			selected = len(options) - 1
+		case "pageup":
+			offset = max(0, offset-pageSize)
+		case "pagedown":
+			offset = min(max(0, len(lines)-pageSize), offset+pageSize)
 		case "\r", "\n":
 			fmt.Fprint(a.out, "\x1b[H\x1b[2J")
 			return selected, nil
@@ -125,7 +237,7 @@ func (a *app) input(label, value string) (string, error) {
 	if !a.terminal() {
 		return "", errors.New("this action needs an interactive terminal")
 	}
-	fmt.Fprint(a.out, label)
+	fmt.Fprint(a.out, "  ", label)
 	if value != "" {
 		fmt.Fprint(a.out, " [", clean(value), "]")
 	}
@@ -162,7 +274,7 @@ func (a *app) password(label string, confirm bool) (string, error) {
 	if !a.terminal() {
 		return "", errors.New("hidden input needs an interactive terminal")
 	}
-	fmt.Fprint(a.out, label, " (hidden): ")
+	fmt.Fprint(a.out, "  ", label, " (hidden): ")
 	data, err := a.readHidden()
 	fmt.Fprintln(a.out)
 	if err != nil {
@@ -179,7 +291,7 @@ func (a *app) password(label string, confirm bool) (string, error) {
 		if utf8.RuneCount(data) < 4 {
 			return "", errors.New("use at least 4 characters for the password")
 		}
-		fmt.Fprint(a.out, "Repeat password (hidden): ")
+		fmt.Fprint(a.out, "  Repeat password (hidden): ")
 		second, err := a.readHidden()
 		fmt.Fprintln(a.out)
 		if err != nil || string(second) != value {
@@ -220,9 +332,9 @@ func (a *app) readHidden() ([]byte, error) {
 	}
 }
 
-func (a *app) pause(message string) { a.choose("continue", message, []string{"Continue"}) }
+func (a *app) pause(message string) { a.choose("Result", message, []string{"Continue"}) }
 func (a *app) confirm(message string) bool {
-	i, err := a.choose("confirm", message, []string{"Cancel", "Confirm"})
+	i, err := a.choose("Confirm", message, []string{"Cancel", "Confirm"})
 	return err == nil && i == 1
 }
 
@@ -237,29 +349,38 @@ func (a *app) profilePicker() (string, error) {
 			names = append(names, name)
 		}
 		sort.Strings(names)
-		options := append([]string{}, names...)
-		if p.Active != nil {
-			for i, name := range names {
-				if name == *p.Active {
-					options[i] += " · active"
-				}
+		options := []string{}
+		for _, name := range names {
+			state := ""
+			if p.Active != nil && name == *p.Active {
+				state = " · current"
 			}
+			options = append(options, name+"\t"+accountCount(len(p.Profiles[name]))+state)
 		}
-		options = append(options, "New profile", "Rename profile", "Delete profile", "Import profile", "Back")
-		index := len(names)
+		options = append(options, "New profile\tStart with an empty profile", "Import profile\tOpen a profile archive")
+		if p.Active != nil {
+			options = append(options, "Export profile\tShare the current profile")
+		}
 		if len(names) > 0 {
-			index, err = a.choose("profiles", "Choose which accounts you want to work with.", options)
-			if err != nil {
-				return "", err
-			}
+			options = append(options, "Rename profile", "Delete profile")
+		}
+		options = append(options, "Back")
+		description := "Choose a profile to select its accounts."
+		if len(names) == 0 {
+			description = "Welcome. Create a profile or import an existing one.\nA profile groups the accounts you want to work with."
+		}
+		index, err := a.choose("Profiles", description, options)
+		if err != nil {
+			return "", err
 		}
 		if index < len(names) {
 			name := names[index]
 			err = a.editProfiles(func(p *profiles) error { p.Active = &name; return nil })
 			return name, err
 		}
-		switch index - len(names) {
-		case 0:
+		action, _, _ := strings.Cut(options[index], "\t")
+		switch action {
+		case "New profile":
 			name, e := a.input("Profile name", "")
 			if e != nil {
 				return "", e
@@ -278,16 +399,13 @@ func (a *app) profilePicker() (string, error) {
 			if err == nil {
 				return name, nil
 			}
-		case 1, 2:
-			if len(names) == 0 {
-				continue
-			}
-			which, e := a.choose("profiles", "", names)
+		case "Rename profile", "Delete profile":
+			which, e := a.choose("Profiles / "+action, "Choose a profile.", names)
 			if e != nil {
 				continue
 			}
 			old := names[which]
-			if index-len(names) == 1 {
+			if action == "Rename profile" {
 				name, e := a.input("New name", old)
 				if e != nil {
 					continue
@@ -318,10 +436,18 @@ func (a *app) profilePicker() (string, error) {
 					return nil
 				})
 			}
-		case 3:
+		case "Import profile":
 			path, e := a.input("Archive path", "")
 			if e == nil {
 				err = a.transfer([]string{"import", path})
+				if err == nil {
+					a.pause("Profile imported. Select it to start working.")
+				}
+			}
+		case "Export profile":
+			err = a.transfer([]string{"export"})
+			if err == nil {
+				a.pause("Profile exported successfully.")
 			}
 		default:
 			return "", errCancelled
@@ -362,80 +488,106 @@ func (a *app) menu() error {
 			}
 			continue
 		}
-		var description strings.Builder
+		width, _ := a.dimensions()
+		rows := make([]account, len(members))
+		for i, m := range members {
+			rows[i] = account{member: m}
+		}
+		description := "Profile  " + name + "  ·  " + accountCount(len(members)) + "\n\n"
 		if notice != "" {
-			fmt.Fprintln(&description, notice)
+			description += notice + "\n\n"
 			notice = ""
 		}
 		if len(members) == 0 {
-			description.WriteString("No accounts yet. Add a login to get started.\n")
+			description += "No accounts yet. Open Accounts to add your first login."
+		} else {
+			description += accountTable(rows, false, width-3)
+			description += "\n\nSelected accounts · open Accounts to check login status."
 		}
-		for _, m := range members {
-			fmt.Fprintln(&description, m.label())
-		}
-		description.WriteString("\nStart your agent yourself in this folder.")
-		options := []string{"Add login", "Remove login", "Check accounts", "Profiles", "Export profile", "Tools and updates", "Quit"}
-		index, err := a.choose(name, description.String(), options)
+		index, err := a.choose("Home", description, []string{
+			"Accounts\tView, add or remove accounts",
+			"Profiles\tSwitch, manage or share profiles",
+			"Update\tUpdate Commander and all tools",
+			"Quit\tReturn to your terminal",
+		})
 		if err != nil {
 			return err
 		}
 		switch index {
 		case 0:
-			err = a.addAccount(name)
+			err = a.accountMenu(name)
 		case 1:
-			err = a.removeAccount(name)
-		case 2:
-			var out strings.Builder
-			old := a.out
-			a.out = &out
-			err = a.describe(name, false)
-			a.out = old
-			if err != nil {
-				fmt.Fprintln(&out, err)
-			}
-			a.pause(out.String())
-			err = nil
-		case 3:
 			var chosen string
 			chosen, err = a.profilePicker()
 			if err == nil {
 				name = chosen
 			}
-		case 4:
-			err = a.transfer([]string{"export"})
-		case 5:
-			which, e := a.choose("tools", "", []string{"Check installation", "Finish setup", "Update Commander and tools", "Back"})
-			if e != nil {
-				continue
+		case 2:
+			fmt.Fprintln(a.out, "Updating Commander and tools…")
+			err = a.update()
+			if err == nil {
+				a.pause("Update complete. Start ./commander again to use the new version.")
+				return nil
 			}
-			switch which {
-			case 0:
-				var out strings.Builder
-				old := a.out
-				a.out = &out
-				err = a.doctor()
-				a.out = old
-				if err != nil {
-					fmt.Fprintln(&out, err)
-				}
-				a.pause(out.String())
-				err = nil
-			case 1:
-				err = a.setup(false)
-			case 2:
-				err = a.update()
-			}
-		case 6:
+		case 3:
 			return nil
 		}
 		if err != nil && !errors.Is(err, errCancelled) {
-			notice = err.Error()
+			notice = "Could not complete the action: " + err.Error()
+		}
+	}
+}
+
+func (a *app) accountMenu(name string) error {
+	for {
+		_, members, err := a.profile(name)
+		if err != nil {
+			return err
+		}
+		width, _ := a.dimensions()
+		if len(members) > 0 {
+			fmt.Fprintln(a.out, "Checking account status…")
+		}
+		rows := a.resolve(members)
+		description := "Profile  " + name + "\n\n" + accountTable(rows, true, width-3)
+		for _, row := range rows {
+			if row.State != "Active" && row.State != "Saved" {
+				description += "\n\nSome accounts need attention. Use Add account to reconnect."
+				break
+			}
+		}
+		options := []string{"Add account\tUse a saved login or sign in"}
+		if len(members) > 0 {
+			options = append(options, "Remove account\tChoose an account to remove", "Refresh\tCheck login status again")
+		}
+		options = append(options, "Back")
+		index, err := a.choose("Accounts", description, options)
+		if err != nil {
+			return err
+		}
+		action, _, _ := strings.Cut(options[index], "\t")
+		switch action {
+		case "Add account":
+			err = a.addAccount(name)
+		case "Remove account":
+			err = a.removeAccount(name)
+		case "Refresh":
+			continue
+		default:
+			return nil
+		}
+		if err != nil && !errors.Is(err, errCancelled) {
+			a.pause("Could not complete the action: " + err.Error())
 		}
 	}
 }
 
 func (a *app) addAccount(name string) error {
-	which, err := a.choose("add login", "", services)
+	labels := make([]string, len(services))
+	for i, service := range services {
+		labels[i] = serviceName(service)
+	}
+	which, err := a.choose("Accounts / Add account", "Choose a service.", labels)
 	if err != nil {
 		return err
 	}
@@ -447,15 +599,24 @@ func (a *app) addAccount(name string) error {
 			notice = "Could not read saved logins. Sign in to reconnect."
 			rows = nil
 		}
-		options := []string{}
+		table := [][]string{{"ACCOUNT", "CONTEXT", "STATUS"}}
 		for _, r := range rows {
-			options = append(options, r.Account+" · "+r.Context+" · "+r.State)
+			context := r.Context
+			if context == "" {
+				context = "—"
+			}
+			table = append(table, []string{r.Account, context, r.State})
 		}
-		options = append(options, "Sign in")
+		aligned := columns(table)
+		options := aligned[1:]
+		if len(rows) > 0 {
+			notice += "\n\n     " + aligned[0]
+		}
+		options = append(options, "Sign in\tConnect another account")
 		if service == "office" {
 			options = append(options, "Set up another organization", "Repair permissions")
 		}
-		index, e := a.choose(service, notice, options)
+		index, e := a.choose("Add account / "+serviceName(service), notice, options)
 		if e != nil {
 			return e
 		}
@@ -535,14 +696,14 @@ func (a *app) removeAccount(name string) error {
 	}
 	labels := []string{}
 	for _, m := range members {
-		labels = append(labels, m.label())
+		labels = append(labels, serviceName(m.Service)+"\t"+m.Account+"\t"+m.Context)
 	}
-	i, err := a.choose("remove login", "", labels)
+	i, err := a.choose("Accounts / Remove account", "Choose an account.", labels)
 	if err != nil {
 		return err
 	}
 	selected := members[i]
-	action, err := a.choose("remove login", selected.label()+"\nRemoving a saved login affects every profile that uses it.\nAzure removes all subscriptions of the sign in. Google revokes its token.", []string{"Remove from this profile", "Remove saved login from all profiles", "Cancel"})
+	action, err := a.choose("Remove account", selected.label()+"\n\nRemoving a saved login affects every profile that uses it.\nAzure removes all subscriptions of the sign in. Google revokes its token.", []string{"Remove from this profile\tKeep the saved login", "Remove saved login from all profiles", "Cancel"})
 	if err != nil || action == 2 {
 		return err
 	}
@@ -609,10 +770,10 @@ func (a *app) selectExport(members []member) ([]member, error) {
 			if selected[i] {
 				mark = "✓ "
 			}
-			options = append(options, mark+m.label())
+			options = append(options, mark+serviceName(m.Service)+"\t"+m.Account+"\t"+m.Context)
 		}
 		options = append(options, "Export selected logins", "Cancel")
-		i, err := a.choose("export", "Select which logins to include. The recipient receives their existing access.", options)
+		i, err := a.choose("Profiles / Export", "Enter toggles an account. Choose Export when ready.\nThe recipient receives the selected accounts' existing access.", options)
 		if err != nil {
 			return nil, err
 		}

@@ -29,7 +29,20 @@ so your agent knows how to use it.
 ```
 
 Open the menu with `./commander`, update with `./commander update`, or see all
-commands with `./commander help`. Docker Engine or Docker Desktop with WSL
+commands with `./commander help`.
+
+The menu has four entries: **Accounts**, **Profiles**, **Update** and **Quit**.
+Accounts shows a table of your selected logins and their status, with actions to
+add, remove or refresh them. Profiles handles switching, creating, importing
+and exporting profiles. Update updates Commander and all bundled tools together.
+Installation diagnostics remain available through `./commander doctor`;
+`./commander setup` resumes an incomplete installation.
+
+Use arrow keys or Tab to move, Enter to select, and Esc to go back. Numbers jump
+to a menu entry; Page Up / Page Down scroll long account overviews. Set `NO_COLOR=1`
+for a plain appearance.
+
+Docker Engine or Docker Desktop with WSL
 integration is needed for project containers. Docker images and volumes stay
 in Docker storage when you move the folder.
 

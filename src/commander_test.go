@@ -431,6 +431,9 @@ func TestUIHelper(t *testing.T) {
 	if err = a.ensure(); err != nil {
 		panic(err)
 	}
+	if url := os.Getenv("COMMANDER_UI_UPDATE_URL"); url != "" {
+		releaseURL = url
+	}
 	created := ""
 	a.run = func(tool string, args []string, capture bool, extra map[string]string) ([]byte, error) {
 		if tool != "hcloud" {
@@ -465,14 +468,19 @@ type terminalSession struct {
 	command *exec.Cmd
 	chunks  chan string
 	output  string
+	seen    int
 }
 
-func openUI(t *testing.T, root string) *terminalSession {
+func openUI(t *testing.T, root string, size ...*pty.Winsize) *terminalSession {
 	t.Helper()
 	exe, _ := os.Executable()
 	cmd := exec.Command(exe, "-test.run=TestUIHelper")
 	cmd.Env = append(os.Environ(), "COMMANDER_UI_FIXTURE="+root)
-	f, err := pty.StartWithSize(cmd, &pty.Winsize{Rows: 32, Cols: 100})
+	winsize := &pty.Winsize{Rows: 32, Cols: 100}
+	if len(size) > 0 {
+		winsize = size[0]
+	}
+	f, err := pty.StartWithSize(cmd, winsize)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -509,7 +517,8 @@ func (s *terminalSession) wait(t *testing.T, want string) {
 				t.Fatalf("terminal closed before %q: %s", want, s.output)
 			}
 			s.output += chunk
-			if strings.Contains(s.output, want) {
+			if strings.Contains(s.output[s.seen:], want) {
+				s.seen = len(s.output)
 				return
 			}
 		case <-deadline:
@@ -527,11 +536,15 @@ func (s *terminalSession) send(t *testing.T, value string) {
 func TestInteractiveFirstProfileAndHiddenLogin(t *testing.T) {
 	root := t.TempDir()
 	session := openUI(t, root)
+	session.wait(t, "Welcome. Create a profile")
+	session.send(t, "\r")
 	session.wait(t, "Profile name")
 	session.send(t, "work\n")
 	session.wait(t, "No accounts yet")
 	session.send(t, "\r")
-	session.wait(t, "add login")
+	session.wait(t, "Add account")
+	session.send(t, "\r")
+	session.wait(t, "Choose a service")
 	session.send(t, "\x1b[B\x1b[B\x1b[B\r")
 	session.wait(t, "Choose a saved login")
 	session.send(t, "\x1b[B\r")
@@ -539,7 +552,9 @@ func TestInteractiveFirstProfileAndHiddenLogin(t *testing.T) {
 	session.send(t, strings.Repeat("a", 64)+"\n")
 	session.wait(t, "Project name")
 	session.send(t, "newproject\n")
-	session.wait(t, "hetzner · newproject")
+	session.wait(t, "Refresh")
+	session.send(t, "q")
+	session.wait(t, "Home")
 	session.send(t, "q")
 	if err := session.command.Wait(); err != nil {
 		t.Fatal(err)

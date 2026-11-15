@@ -1,0 +1,192 @@
+package main
+
+import (
+	"bytes"
+	"crypto/sha256"
+	"fmt"
+	"net/http"
+	"net/http/httptest"
+	"os"
+	"path/filepath"
+	"regexp"
+	"strings"
+	"testing"
+	"unicode/utf8"
+
+	"github.com/creack/pty"
+)
+
+func TestOverviewShowsOnlySelectedAccounts(t *testing.T) {
+	a := testApp(t)
+	saveProfile(t, a, "work", ghMember("selected"))
+	a.run = func(tool string, args []string, capture bool, extra map[string]string) ([]byte, error) {
+		return []byte(`{"hosts":{"github.com":[{"login":"selected","state":"success","active":false,"token":"fixture-secret"},{"login":"unselected","state":"success","active":true}]}}`), nil
+	}
+	if err := a.command([]string{"overview"}); err != nil {
+		t.Fatal(err)
+	}
+	out := a.out.(*bytes.Buffer).String()
+	for _, want := range []string{"SERVICE", "ACCOUNT", "CONTEXT", "STATUS", "GitHub", "selected @ github.com", "Saved"} {
+		if !strings.Contains(out, want) {
+			t.Fatalf("missing %q: %s", want, out)
+		}
+	}
+	for _, unwanted := range []string{"unselected", "fixture-secret", "\x1b", "\t"} {
+		if strings.Contains(out, unwanted) {
+			t.Fatalf("unexpected %q in overview", unwanted)
+		}
+	}
+}
+
+func TestAccountTablePreservesLongIdentities(t *testing.T) {
+	identity := "jörg." + strings.Repeat("long-", 20) + "@example.invalid"
+	rows := []account{{member: member{Service: "office", Account: identity, Context: "Production"}, State: "Sign in again"}}
+	full := accountTable(rows, true, 0)
+	if !strings.Contains(full, identity) || !strings.Contains(full, "Sign in again") {
+		t.Fatal(full)
+	}
+	for _, width := range []int{24, 40, 60, 77, 100} {
+		out := accountTable(rows, true, width)
+		for _, line := range strings.Split(out, "\n") {
+			if !utf8.ValidString(line) || utf8.RuneCountInString(line) > width {
+				t.Fatalf("table exceeds width %d: %q", width, line)
+			}
+		}
+		if strings.Contains(out, "…") {
+			t.Fatal("account identity was truncated")
+		}
+	}
+}
+
+func TestInteractiveProfileSwitchAndScopedRemoval(t *testing.T) {
+	a := testApp(t)
+	saveProfile(t, a, "work", hMember("existing"))
+	if err := a.editProfiles(func(p *profiles) error {
+		p.Profiles["personal"] = []member{hMember("existing")}
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	s := openUI(t, a.root)
+	s.wait(t, "Esc Quit")
+	s.send(t, "\t\r")
+	s.wait(t, "Choose a profile")
+	s.send(t, "1\r")
+	s.wait(t, "Profile  personal")
+	s.send(t, "\r")
+	s.wait(t, "Refresh")
+	s.send(t, "2\r")
+	s.wait(t, "Choose an account")
+	s.send(t, "\r")
+	s.wait(t, "Keep the saved login")
+	s.send(t, "\r")
+	s.wait(t, "No accounts yet")
+	s.send(t, "\x1b")
+	s.wait(t, "Open Accounts to add")
+	s.send(t, "4\r")
+	if err := s.command.Wait(); err != nil {
+		t.Fatal(err)
+	}
+	p, err := a.readProfiles()
+	if err != nil || p.Active == nil || *p.Active != "personal" || len(p.Profiles["personal"]) != 0 || len(p.Profiles["work"]) != 1 {
+		t.Fatal("profile removal changed another profile", p, err)
+	}
+}
+
+func TestInteractiveSmallTerminalAndPaging(t *testing.T) {
+	t.Setenv("NO_COLOR", "1")
+	a := testApp(t)
+	members := []member{}
+	for i := 0; i < 24; i++ {
+		members = append(members, hMember(fmt.Sprintf("project-%02d", i)))
+	}
+	saveProfile(t, a, "work", members...)
+	s := openUI(t, a.root, &pty.Winsize{Rows: 18, Cols: 44})
+	s.wait(t, "Esc Quit")
+	if strings.Contains(s.output, "project-23") || !strings.Contains(s.output, "PgUp/PgDn") {
+		t.Fatal("long description was not paged", s.output)
+	}
+	// Home has four choices and six description lines per page at this size.
+	s.send(t, strings.Repeat("\x1b[6~", 20))
+	s.wait(t, "project-23")
+	s.send(t, strings.Repeat("\x1b[5~", 20))
+	s.wait(t, "Profile  work")
+	s.send(t, "q")
+	if err := s.command.Wait(); err != nil {
+		t.Fatal(err)
+	}
+	for chunk := range s.chunks {
+		s.output += chunk
+	}
+	if regexp.MustCompile(`\x1b\[[0-9;]*m`).MatchString(s.output) {
+		t.Fatal("NO_COLOR emitted styling")
+	}
+	controls := regexp.MustCompile(`\x1b\[[?0-9;]*[A-Za-z]`)
+	for _, frame := range strings.Split(s.output, "\x1b[H") {
+		plain := controls.ReplaceAllString(frame, "")
+		if strings.Count(plain, "\n") >= 18 {
+			t.Fatal("menu exceeds terminal height", plain)
+		}
+		for _, line := range strings.Split(plain, "\n") {
+			if utf8.RuneCountInString(strings.TrimSuffix(line, "\r")) >= 44 {
+				t.Fatal("menu wraps past terminal width", line)
+			}
+		}
+	}
+}
+
+func TestInteractiveUpdate(t *testing.T) {
+	for _, valid := range []bool{true, false} {
+		t.Run(fmt.Sprintf("checksum-valid-%t", valid), func(t *testing.T) {
+			a := testApp(t)
+			saveProfile(t, a, "work")
+			original := []byte("original fixture executable")
+			mustWrite(t, filepath.Join(a.root, "commander"), original)
+			binary := []byte("#!/bin/sh\ncase \"$1\" in\nversion) echo 'Commander fixture';;\nsetup) echo prepared > \"$COMMANDER_WORKSPACE/update-fixture\";;\n*) exit 2;;\nesac\n")
+			sum := sha256.Sum256(binary)
+			if !valid {
+				sum = sha256.Sum256([]byte("different fixture"))
+			}
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				switch r.URL.Path {
+				case "/SHA256SUMS":
+					fmt.Fprintf(w, "%x  commander\n", sum)
+				case "/commander":
+					w.Write(binary)
+				default:
+					http.NotFound(w, r)
+				}
+			}))
+			defer server.Close()
+			t.Setenv("COMMANDER_UI_UPDATE_URL", server.URL+"/")
+			s := openUI(t, a.root)
+			s.wait(t, "Esc Quit")
+			if strings.Contains(s.output, "Tools and updates") {
+				t.Fatal("obsolete tools submenu is still visible")
+			}
+			s.send(t, "3\r")
+			if valid {
+				s.wait(t, "Update complete")
+				s.send(t, "\r")
+			} else {
+				s.wait(t, "checksum did not match")
+				s.send(t, "q")
+			}
+			if err := s.command.Wait(); err != nil {
+				t.Fatal(err)
+			}
+			after, err := os.ReadFile(filepath.Join(a.root, "commander"))
+			want := original
+			if valid {
+				want = binary
+				marker, err := os.ReadFile(filepath.Join(a.root, "workspaces", "update-fixture"))
+				if err != nil || string(marker) != "prepared\n" {
+					t.Fatal("updated executable did not prepare its tools", err)
+				}
+			}
+			if err != nil || !bytes.Equal(after, want) {
+				t.Fatal("unexpected installed executable", err)
+			}
+		})
+	}
+}
