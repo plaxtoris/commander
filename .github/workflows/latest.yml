@@ -1,0 +1,107 @@
+name: latest
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: commander-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  check:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.27.4'
+          cache: true
+      - name: Test
+        run: |
+          make test
+          go test -race ./...
+      - name: Build
+        run: make build
+      - name: Fresh setup and relocation
+        run: |
+          install_dir="$RUNNER_TEMP/commander-fresh"
+          mkdir -p "$install_dir"
+          cp dist/commander "$install_dir/commander"
+          "$install_dir/commander" setup
+          "$install_dir/commander" setup
+          mv "$install_dir" "$RUNNER_TEMP/commander moved"
+          "$RUNNER_TEMP/commander moved/commander" doctor
+          touch "$RUNNER_TEMP/commander moved/.integration-fixture"
+      - name: Native login fixtures, container and update
+        env:
+          COMMANDER_INTEGRATION_HOME: ${{ runner.temp }}/commander moved
+        run: go test -tags integration -run '^TestIntegration' -v -timeout 15m ./...
+      - name: Development container
+        run: |
+          docker build -f .devcontainer/Dockerfile -t commander-development-check .
+          docker run --rm -v "$PWD:/workspaces/commander:ro" commander-development-check make test
+      - uses: actions/upload-artifact@v4
+        with:
+          name: commander
+          path: dist/commander
+          retention-days: 1
+
+  release:
+    if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
+    needs: check
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      contents: write
+    env:
+      GH_TOKEN: ${{ github.token }}
+      GH_REPO: ${{ github.repository }}
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: commander
+          path: dist
+      - name: Publish the single latest release
+        run: |
+          cd dist
+          sha256sum commander > SHA256SUMS
+          printf 'Commander for WSL and Linux on x86_64.\n\nDownload commander. Setup runs on first start.\n\nBuild: %s\n' "$GITHUB_SHA" > "$RUNNER_TEMP/release-notes"
+          if gh api "repos/$GH_REPO/git/ref/tags/latest" >/dev/null 2>&1; then
+            gh api --method PATCH "repos/$GH_REPO/git/refs/tags/latest" -f sha="$GITHUB_SHA" -F force=true >/dev/null
+          else
+            gh api --method POST "repos/$GH_REPO/git/refs" -f ref=refs/tags/latest -f sha="$GITHUB_SHA" >/dev/null
+          fi
+          if gh release view latest >/dev/null 2>&1; then
+            gh release upload latest commander SHA256SUMS --clobber
+            gh release edit latest --title latest --latest --notes-file "$RUNNER_TEMP/release-notes"
+          else
+            gh release create latest commander SHA256SUMS --verify-tag --title latest --latest --notes-file "$RUNNER_TEMP/release-notes"
+          fi
+          gh release view latest --json assets --jq '.assets[] | select(.name != "commander" and .name != "SHA256SUMS") | .name' |
+          while IFS= read -r asset; do
+            gh release delete-asset latest "$asset" --yes
+          done
+          gh release list --limit 100 --json tagName --jq '.[] | select(.tagName != "latest") | .tagName' |
+          while IFS= read -r tag; do
+            gh release delete "$tag" --cleanup-tag --yes
+          done
+          test "$(gh release list --json tagName --jq 'length')" = 1
+          test "$(gh release view latest --json tagName --jq .tagName)" = latest
+          test "$(gh release view latest --json assets --jq '[.assets[].name] | sort | join(",")')" = SHA256SUMS,commander
+      - name: Verify published download
+        run: |
+          mkdir "$RUNNER_TEMP/release-check"
+          cd "$RUNNER_TEMP/release-check"
+          gh release download latest --pattern commander --pattern SHA256SUMS
+          sha256sum --check SHA256SUMS
+          chmod +x commander
+          test "$(./commander version)" = "Commander $GITHUB_SHA linux/amd64"

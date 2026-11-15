@@ -1,0 +1,14 @@
+/.secrets/
+/.env
+*.age
+*.gpg
+*.zip
+/dist/
+/commander
+/profiles.json
+/tools/
+/workspaces/
+/SHA256SUMS
+/.update-*/
+/.import-*/
+/gitinit.sh
