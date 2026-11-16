@@ -49,7 +49,7 @@ func main() {
 			code = 128 + int(status.Sys().(syscall.WaitStatus).Signal())
 		}
 	} else {
-		fmt.Fprintln(os.Stderr, "Commander:", err)
+		fmt.Fprintln(os.Stderr, "commander:", err)
 	}
 	os.Exit(code)
 }
@@ -91,22 +91,22 @@ func (a *app) command(args []string) error {
 	}
 	switch args[0] {
 	case "help", "--help", "-h":
-		fmt.Fprintln(a.out, `Commander
+		fmt.Fprintln(a.out, `commander
 
-  commander                         Update automatically, then open the menu
-  commander setup                   Repair used tools and prepare this folder
-  commander context [PROFILE]       Account scope for your agent
-  commander overview [PROFILE]      Check profile accounts
-  commander exec -- TOOL [ARGS...]   Run a native tool with Commander logins
-  commander up PROJECT              Start a project devcontainer
-  commander export [FILE.zip]        Export a profile and selected logins
-  commander import FILE.zip         Import a profile and its logins
-  commander update                  Update Commander and installed tools
-  commander doctor                  Check the installation
-  commander version                 Show the installed build
+  commander                         update automatically, then open the menu
+  commander setup                   repair used tools and prepare this folder
+  commander context [profile]       account scope for your agent
+  commander overview [profile]      check profile accounts
+  commander exec -- tool [args...]   run a native tool with commander logins
+  commander up project              start a project devcontainer
+  commander export [file.zip]        export a profile and selected logins
+  commander import file.zip         import a profile and its logins
+  commander update                  update commander and installed tools
+  commander doctor                  check the installation
+  commander version                 show the installed build
 
-Start your agent yourself in the Commander folder.
-Projects live in workspaces/. No shell configuration is required.`)
+start your agent yourself in the commander folder.
+projects live in workspaces/. no shell configuration is required.`)
 		return nil
 	case "version", "--version":
 		fmt.Fprintln(a.out, "Commander", build, runtime.GOOS+"/"+runtime.GOARCH)

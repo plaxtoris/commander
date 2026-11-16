@@ -47,7 +47,7 @@ func TestLazyExecRelocationAndStreams(t *testing.T) {
 			t.Fatal("polluted stdout", got)
 		}
 		feedback := a.errOut.(*bytes.Buffer).String()
-		if !strings.HasSuffix(feedback, "native stderr") || (i == 0) != strings.Contains(feedback, "Preparing GitHub") {
+		if !strings.HasSuffix(feedback, "native stderr") || (i == 0) != strings.Contains(feedback, "preparing github") {
 			t.Fatal("incorrect feedback", feedback)
 		}
 	}
@@ -166,8 +166,8 @@ func TestMenuSurvivesUsedToolDownloadFailure(t *testing.T) {
 	t.Setenv("COMMANDER_UI_TOOL_URL", server.URL+"/hcloud")
 	t.Setenv("COMMANDER_UI_TOOL_SUM", strings.Repeat("a", 64))
 	s := openUI(t, a.root)
-	s.wait(t, "Esc Quit")
-	if !strings.Contains(s.output, "Tools need attention") {
+	s.wait(t, "esc quit")
+	if !strings.Contains(s.output, "tools need attention") {
 		t.Fatal("missing repair feedback")
 	}
 	s.send(t, "q")

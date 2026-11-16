@@ -110,27 +110,18 @@ func fit(s string, width int) string {
 	return string(runes[:width-1]) + "…"
 }
 
-func wrapLines(text string, width int) []string {
-	lines := []string{}
-	for _, line := range strings.Split(strings.TrimRight(text, "\n"), "\n") {
-		runes := []rune(clean(line))
-		for len(runes) > width {
-			lines = append(lines, string(runes[:width]))
-			runes = runes[width:]
-		}
-		lines = append(lines, string(runes))
-	}
-	return lines
-}
-
 func (a *app) style(s, code string) string {
-	if os.Getenv("NO_COLOR") != "" || os.Getenv("TERM") == "dumb" {
+	if !a.terminal() || os.Getenv("NO_COLOR") != "" || os.Getenv("TERM") == "dumb" {
 		return s
 	}
 	return "\x1b[" + code + "m" + s + "\x1b[0m"
 }
 
 func (a *app) choose(title, description string, options []string) (int, error) {
+	return a.chooseView(title, func(width int) []uiLine { return plainLines(description, width) }, options)
+}
+
+func (a *app) chooseView(title string, content func(int) []uiLine, options []string) (int, error) {
 	if len(options) == 0 {
 		return -1, errCancelled
 	}
@@ -153,23 +144,23 @@ func (a *app) choose(title, description string, options []string) (int, error) {
 	fmt.Fprint(a.out, "\x1b[H\x1b[2J")
 	for {
 		width, height := a.dimensions()
-		width = max(1, width-3)
+		width = max(1, min(108, width-4))
 		visible := min(len(options), 8, max(1, height-10))
 		// Wrap descriptions rather than losing account identities on small screens.
-		lines := wrapLines(description, width)
+		lines := content(width)
 		pageSize := max(1, height-visible-8)
 		offset = min(offset, max(0, len(lines)-pageSize))
 		var screen strings.Builder
 		line := func(s string) { fmt.Fprint(&screen, "\x1b[2K", s, "\r\n") }
 		fmt.Fprint(&screen, "\x1b[H")
-		line("  " + a.style(fit("COMMANDER  /  "+title, width), "1;36"))
-		line("  " + a.style(strings.Repeat("─", min(width, 76)), "2"))
+		line("  " + a.renderLine(uiLine{{"commander", "1;36"}, {" / ", "2"}, {title, "1"}}, width))
+		line("  " + a.style(strings.Repeat("─", width), "2"))
 		line("")
 		for _, s := range lines[offset:min(len(lines), offset+pageSize)] {
-			line("  " + s)
+			line("  " + a.renderLine(s, width))
 		}
 		if len(lines) > pageSize {
-			line("  " + a.style(fit(fmt.Sprintf("PgUp/PgDn · details %d–%d of %d", offset+1, min(len(lines), offset+pageSize), len(lines)), width), "2"))
+			line("  " + a.style(fit(fmt.Sprintf("pgup/pgdn · details %d–%d of %d", offset+1, min(len(lines), offset+pageSize), len(lines)), width), "2"))
 		}
 		line("")
 		start := 0
@@ -181,21 +172,23 @@ func (a *app) choose(title, description string, options []string) (int, error) {
 			end = len(options)
 		}
 		for i := start; i < end; i++ {
-			label := fmt.Sprintf("%d  %s", i+1, labels[i])
+			label := labels[i]
+			first := rows[i][0]
+			tail := strings.TrimPrefix(label, clean(first))
+			prefix, tone := "  ", ""
 			if i == selected {
-				line("  " + a.style(fit("› "+label, width), "1;36"))
-			} else {
-				line("  " + fit("  "+label, width))
+				prefix, tone = "› ", "1;36"
 			}
+			line("  " + a.renderLine(uiLine{{prefix, tone}, {fmt.Sprintf("%d  ", i+1), "2"}, {first, tone}, {tail, "2"}}, width))
 		}
 		line("")
-		back := "Back"
-		if title == "Home" {
-			back = "Quit"
+		back := "back"
+		if title == "home" {
+			back = "quit"
 		}
-		help := "↑↓/Tab Move   1–9 Jump   Enter Select   Esc " + back
+		help := "↑↓/tab move   1–9 jump   enter select   esc " + back
 		if width < 55 {
-			help = "↑↓/Tab · Enter · Esc " + back
+			help = "↑↓/tab · enter · esc " + back
 		}
 		if len(options) > visible {
 			help += fmt.Sprintf("   %d/%d", selected+1, len(options))
@@ -291,7 +284,7 @@ func (a *app) password(label string, confirm bool) (string, error) {
 		if utf8.RuneCount(data) < 4 {
 			return "", errors.New("use at least 4 characters for the password")
 		}
-		fmt.Fprint(a.out, "  Repeat password (hidden): ")
+		fmt.Fprint(a.out, "  repeat password (hidden): ")
 		second, err := a.readHidden()
 		fmt.Fprintln(a.out)
 		if err != nil || string(second) != value {
@@ -332,9 +325,9 @@ func (a *app) readHidden() ([]byte, error) {
 	}
 }
 
-func (a *app) pause(message string) { a.choose("Result", message, []string{"Continue"}) }
+func (a *app) pause(message string) { a.choose("result", message, []string{"continue"}) }
 func (a *app) confirm(message string) bool {
-	i, err := a.choose("Confirm", message, []string{"Cancel", "Confirm"})
+	i, err := a.choose("confirm", message, []string{"cancel", "confirm"})
 	return err == nil && i == 1
 }
 
@@ -357,19 +350,19 @@ func (a *app) profilePicker() (string, error) {
 			}
 			options = append(options, name+"\t"+accountCount(len(p.Profiles[name]))+state)
 		}
-		options = append(options, "New profile\tStart with an empty profile", "Import profile\tOpen a profile archive")
+		options = append(options, "new profile\tstart with an empty profile", "import profile\topen a profile archive")
 		if p.Active != nil {
-			options = append(options, "Export profile\tShare the current profile")
+			options = append(options, "export profile\tshare the current profile")
 		}
 		if len(names) > 0 {
-			options = append(options, "Rename profile", "Delete profile")
+			options = append(options, "rename profile", "delete profile")
 		}
-		options = append(options, "Back")
-		description := "Choose a profile to select its accounts."
+		options = append(options, "back")
+		description := "choose a profile to select its accounts."
 		if len(names) == 0 {
-			description = "Welcome. Create a profile or import an existing one.\nA profile groups the accounts you want to work with."
+			description = "welcome. create a profile or import an existing one.\na profile groups the accounts you want to work with."
 		}
-		index, err := a.choose("Profiles", description, options)
+		index, err := a.choose("profiles", description, options)
 		if err != nil {
 			return "", err
 		}
@@ -380,8 +373,8 @@ func (a *app) profilePicker() (string, error) {
 		}
 		action, _, _ := strings.Cut(options[index], "\t")
 		switch action {
-		case "New profile":
-			name, e := a.input("Profile name", "")
+		case "new profile":
+			name, e := a.input("profile name", "")
 			if e != nil {
 				return "", e
 			}
@@ -399,14 +392,14 @@ func (a *app) profilePicker() (string, error) {
 			if err == nil {
 				return name, nil
 			}
-		case "Rename profile", "Delete profile":
-			which, e := a.choose("Profiles / "+action, "Choose a profile.", names)
+		case "rename profile", "delete profile":
+			which, e := a.choose("profiles / "+action, "choose a profile.", names)
 			if e != nil {
 				continue
 			}
 			old := names[which]
-			if action == "Rename profile" {
-				name, e := a.input("New name", old)
+			if action == "rename profile" {
+				name, e := a.input("new name", old)
 				if e != nil {
 					continue
 				}
@@ -427,7 +420,7 @@ func (a *app) profilePicker() (string, error) {
 					}
 					return nil
 				})
-			} else if a.confirm("Delete profile " + old + "? Saved logins remain available.") {
+			} else if a.confirm("delete profile " + old + "? saved logins remain available.") {
 				err = a.editProfiles(func(p *profiles) error {
 					delete(p.Profiles, old)
 					if p.Active != nil && *p.Active == old {
@@ -436,18 +429,18 @@ func (a *app) profilePicker() (string, error) {
 					return nil
 				})
 			}
-		case "Import profile":
-			path, e := a.input("Archive path", "")
+		case "import profile":
+			path, e := a.input("archive path", "")
 			if e == nil {
 				err = a.transfer([]string{"import", path})
 				if err == nil {
-					a.pause("Profile imported. Select it to start working.")
+					a.pause("profile imported. select it to start working.")
 				}
 			}
-		case "Export profile":
+		case "export profile":
 			err = a.transfer([]string{"export"})
 			if err == nil {
-				a.pause("Profile exported successfully.")
+				a.pause("profile exported successfully.")
 			}
 		default:
 			return "", errCancelled
@@ -488,26 +481,18 @@ func (a *app) menu() error {
 			}
 			continue
 		}
-		width, _ := a.dimensions()
 		rows := make([]account, len(members))
 		for i, m := range members {
 			rows[i] = account{member: m}
 		}
-		description := "Profile  " + name + "  ·  " + accountCount(len(members)) + "\n\n"
-		if notice != "" {
-			description += notice + "\n\n"
-			notice = ""
-		}
-		if len(members) == 0 {
-			description += "No accounts yet. Open Accounts to add your first login."
-		} else {
-			description += accountTable(rows, false, width-3)
-			description += "\n\nSelected accounts · open Accounts to check login status."
-		}
-		index, err := a.choose("Home", description, []string{
-			"Accounts\tView, add or remove accounts",
-			"Profiles\tSwitch, manage or share profiles",
-			"Quit\tReturn to your terminal",
+		message := notice
+		notice = ""
+		index, err := a.chooseView("home", func(width int) []uiLine {
+			return accountView(name, rows, false, message, width)
+		}, []string{
+			"accounts\tview, add or remove accounts",
+			"profiles\tswitch, manage or share profiles",
+			"quit\treturn to your terminal",
 		})
 		if err != nil {
 			return err
@@ -525,7 +510,7 @@ func (a *app) menu() error {
 			return nil
 		}
 		if err != nil && !errors.Is(err, errCancelled) {
-			notice = "Could not complete the action: " + err.Error()
+			notice = "could not complete the action: " + err.Error()
 		}
 	}
 }
@@ -536,40 +521,32 @@ func (a *app) accountMenu(name string) error {
 		if err != nil {
 			return err
 		}
-		width, _ := a.dimensions()
 		if len(members) > 0 {
-			fmt.Fprintln(a.out, "Checking account status…")
+			fmt.Fprintln(a.out, "checking accounts…")
 		}
 		rows := a.resolve(members)
-		description := "Profile  " + name + "\n\n" + accountTable(rows, true, width-3)
-		for _, row := range rows {
-			if row.State != "Active" && row.State != "Saved" {
-				description += "\n\nSome accounts need attention. Use Add account to reconnect."
-				break
-			}
-		}
-		options := []string{"Add account\tUse a saved login or sign in"}
+		options := []string{"add account\tuse a saved login or sign in"}
 		if len(members) > 0 {
-			options = append(options, "Remove account\tChoose an account to remove", "Refresh\tCheck login status again")
+			options = append(options, "remove account\tchoose an account to remove", "refresh\tcheck login status again")
 		}
-		options = append(options, "Back")
-		index, err := a.choose("Accounts", description, options)
+		options = append(options, "back")
+		index, err := a.chooseView("accounts", func(width int) []uiLine { return accountView(name, rows, true, "", width) }, options)
 		if err != nil {
 			return err
 		}
 		action, _, _ := strings.Cut(options[index], "\t")
 		switch action {
-		case "Add account":
+		case "add account":
 			err = a.addAccount(name)
-		case "Remove account":
+		case "remove account":
 			err = a.removeAccount(name)
-		case "Refresh":
+		case "refresh":
 			continue
 		default:
 			return nil
 		}
 		if err != nil && !errors.Is(err, errCancelled) {
-			a.pause("Could not complete the action: " + err.Error())
+			a.pause("could not complete the action: " + err.Error())
 		}
 	}
 }
@@ -579,7 +556,7 @@ func (a *app) addAccount(name string) error {
 	for i, service := range services {
 		labels[i] = serviceName(service)
 	}
-	which, err := a.choose("Accounts / Add account", "Choose a service.", labels)
+	which, err := a.choose("accounts / add account", "choose a service.", labels)
 	if err != nil {
 		return err
 	}
@@ -590,29 +567,30 @@ func (a *app) addAccount(name string) error {
 		if errors.As(err, &preparation) {
 			return err
 		}
-		notice := "Choose a saved login or sign in."
+		notice := "choose a saved login or sign in."
 		if err != nil {
-			notice = "Could not read saved logins. Sign in to reconnect."
+			notice = "could not read saved logins. sign in to reconnect."
 			rows = nil
 		}
-		table := [][]string{{"ACCOUNT", "CONTEXT", "STATUS"}}
+		table := [][]string{{"account", "context", "status"}}
 		for _, r := range rows {
 			context := r.Context
 			if context == "" {
 				context = "—"
 			}
-			table = append(table, []string{r.Account, context, r.State})
+			status, _ := statusLabel(r.State)
+			table = append(table, []string{r.Account, context, status})
 		}
 		aligned := columns(table)
 		options := aligned[1:]
 		if len(rows) > 0 {
 			notice += "\n\n     " + aligned[0]
 		}
-		options = append(options, "Sign in\tConnect another account")
+		options = append(options, "sign in\tconnect another account")
 		if service == "office" {
-			options = append(options, "Set up another organization", "Repair permissions")
+			options = append(options, "set up another organization", "repair permissions")
 		}
-		index, e := a.choose("Add account / "+serviceName(service), notice, options)
+		index, e := a.choose("add account / "+serviceName(service), notice, options)
 		if e != nil {
 			return e
 		}
@@ -694,12 +672,12 @@ func (a *app) removeAccount(name string) error {
 	for _, m := range members {
 		labels = append(labels, serviceName(m.Service)+"\t"+m.Account+"\t"+m.Context)
 	}
-	i, err := a.choose("Accounts / Remove account", "Choose an account.", labels)
+	i, err := a.choose("accounts / remove account", "choose an account.", labels)
 	if err != nil {
 		return err
 	}
 	selected := members[i]
-	action, err := a.choose("Remove account", selected.label()+"\n\nRemoving a saved login affects every profile that uses it.\nAzure removes all subscriptions of the sign in. Google revokes its token.", []string{"Remove from this profile\tKeep the saved login", "Remove saved login from all profiles", "Cancel"})
+	action, err := a.choose("remove account", selected.label()+"\n\nremoving a saved login affects every profile that uses it.\nazure removes all subscriptions of the sign in. google revokes its token.", []string{"remove from this profile\tkeep the saved login", "remove saved login from all profiles", "cancel"})
 	if err != nil || action == 2 {
 		return err
 	}
@@ -707,7 +685,7 @@ func (a *app) removeAccount(name string) error {
 		return m.id() == selected.id() || (action == 1 && m.Service == "azure" && selected.Service == "azure" && m.Account == selected.Account)
 	}
 	if action == 1 {
-		if !a.confirm("Remove saved login " + selected.Account + " from all profiles?") {
+		if !a.confirm("remove saved login " + selected.Account + " from all profiles?") {
 			return errCancelled
 		}
 		unlock, e := a.lock("native")
@@ -768,8 +746,8 @@ func (a *app) selectExport(members []member) ([]member, error) {
 			}
 			options = append(options, mark+serviceName(m.Service)+"\t"+m.Account+"\t"+m.Context)
 		}
-		options = append(options, "Export selected logins", "Cancel")
-		i, err := a.choose("Profiles / Export", "Enter toggles an account. Choose Export when ready.\nThe recipient receives the selected accounts' existing access.", options)
+		options = append(options, "export selected logins", "cancel")
+		i, err := a.choose("profiles / export", "enter toggles an account. choose export when ready.\nthe recipient receives the selected accounts' existing access.", options)
 		if err != nil {
 			return nil, err
 		}

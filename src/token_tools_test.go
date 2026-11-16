@@ -352,38 +352,38 @@ func TestInteractiveTokenLogins(t *testing.T) {
 				defer server.Close()
 				t.Setenv("COMMANDER_UI_SERVICE_URL", server.URL)
 				s := openUI(t, a.root)
-				s.wait(t, "Esc Quit")
+				s.wait(t, "esc quit")
 				s.send(t, "1\r")
-				s.wait(t, "Add account")
+				s.wait(t, "add account")
 				s.send(t, "1\r")
-				s.wait(t, "Choose a service")
+				s.wait(t, "choose a service")
 				choice := "6\r"
 				if service == "confluence" {
 					choice = "7\r"
 				}
 				s.send(t, choice)
-				s.wait(t, "Choose a saved login")
+				s.wait(t, "choose a saved login")
 				s.send(t, "1\r")
 				if service == "confluence" {
-					s.wait(t, "Confluence URL")
+					s.wait(t, "confluence url")
 					s.send(t, "https://team.atlassian.net/wiki\n")
-					s.wait(t, "Atlassian email")
+					s.wait(t, "atlassian email")
 					s.send(t, "alice@example.test\n")
 				} else {
-					s.wait(t, "Docker Hub username")
+					s.wait(t, "dockerhub username")
 					s.send(t, "alice\n")
 				}
-				s.wait(t, "API token (hidden)")
+				s.wait(t, "api token (hidden)")
 				s.send(t, token+"\n")
 				if mode == "rejected" {
-					s.wait(t, "Could not complete the action")
+					s.wait(t, "could not complete the action")
 					s.send(t, "\r")
-					s.wait(t, "Add account")
+					s.wait(t, "add account")
 				} else {
-					s.wait(t, "Refresh")
+					s.wait(t, "refresh")
 				}
 				s.send(t, "q")
-				s.wait(t, "Esc Quit")
+				s.wait(t, "esc quit")
 				s.send(t, "q")
 				if err := s.command.Wait(); err != nil {
 					t.Fatal(err)

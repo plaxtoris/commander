@@ -434,13 +434,13 @@ func toolLabel(tool string) string {
 		}
 	}
 	if tool == "devcontainer" {
-		return "Project tools"
+		return "project tools"
 	}
 	if tool == "docker" {
-		return "Docker"
+		return "docker"
 	}
 	if tool == "docker-compose" {
-		return "Docker Compose"
+		return "docker compose"
 	}
 	return tool
 }
@@ -511,7 +511,7 @@ func (a *app) prepareTool(tool string, force bool) error {
 			continue
 		}
 		if !announced {
-			fmt.Fprintln(a.errOut, "Preparing "+toolLabel(tool)+"…")
+			fmt.Fprintln(a.errOut, "preparing "+toolLabel(tool)+"…")
 			announced = true
 		}
 		switch {
@@ -554,7 +554,7 @@ func (a *app) setup(force bool) error {
 }
 
 func (a *app) doctor() error {
-	fmt.Fprintln(a.out, "Commander", build, "\nFolder:", a.root, "\nProjects:", filepath.Join(a.root, "workspaces"))
+	fmt.Fprintln(a.out, "commander", build, "\nfolder:", a.root, "\nprojects:", filepath.Join(a.root, "workspaces"))
 	failed := false
 	for _, tool := range append([]string{"git"}, managedTools...) {
 		if tool != "git" && !a.toolUsed(tool) {
@@ -579,7 +579,7 @@ func (a *app) doctor() error {
 	}
 	if a.toolUsed("docker") {
 		if _, err := a.nativeRunContext(context.Background(), "docker", []string{"info", "--format", "{{.ServerVersion}}"}, true, nil); err != nil {
-			fmt.Fprintln(a.out, "Docker engine: not running. Only needed for project containers.")
+			fmt.Fprintln(a.out, "docker engine: not running · needed for project containers")
 		}
 	}
 	fmt.Fprintln(a.out, "dockerhub: built in\nconfluence: built in")

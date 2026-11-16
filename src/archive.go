@@ -929,7 +929,7 @@ func (a *app) transfer(args []string) error {
 			return err
 		}
 		if path == "" {
-			path, err = a.input("Archive path", profileFilename(name))
+			path, err = a.input("archive path", profileFilename(name))
 			if err != nil {
 				return err
 			}
@@ -948,14 +948,14 @@ func (a *app) transfer(args []string) error {
 		if err != nil {
 			return err
 		}
-		password, err := a.password("Archive password", true)
+		password, err := a.password("archive password", true)
 		if err != nil {
 			return err
 		}
 		if err = writeArchive(path, payload, password); err != nil {
 			return err
 		}
-		fmt.Fprintln(a.out, "Exported:", path)
+		fmt.Fprintln(a.out, "exported:", path)
 	} else {
 		path, err = archivePath(path)
 		if err != nil {
@@ -964,7 +964,7 @@ func (a *app) transfer(args []string) error {
 		if filepath.Ext(path) != ".zip" {
 			return errors.New("use a Commander profile .zip archive")
 		}
-		password, err := a.password("Archive password", false)
+		password, err := a.password("archive password", false)
 		if err != nil {
 			return err
 		}
@@ -976,7 +976,7 @@ func (a *app) transfer(args []string) error {
 		if err != nil {
 			return err
 		}
-		fmt.Fprintln(a.out, "Imported profile:", name)
+		fmt.Fprintln(a.out, "imported profile:", name)
 	}
 	return nil
 }

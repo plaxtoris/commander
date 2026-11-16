@@ -205,7 +205,7 @@ func (a *app) loginToken(service string) error {
 	c := tokenLogin{}
 	var err error
 	if service == "confluence" {
-		site, e := a.input("Confluence URL", "")
+		site, e := a.input("confluence url", "")
 		if e != nil {
 			return e
 		}
@@ -214,20 +214,20 @@ func (a *app) loginToken(service string) error {
 			return err
 		}
 		c.API = c.Site + "/wiki"
-		c.User, err = a.input("Atlassian email", "")
+		c.User, err = a.input("atlassian email", "")
 		if err != nil {
 			return err
 		}
-		fmt.Fprintln(a.out, "Create a token at https://id.atlassian.com/manage-profile/security/api-tokens")
+		fmt.Fprintln(a.out, "create a token at https://id.atlassian.com/manage-profile/security/api-tokens")
 	} else {
-		c.User, err = a.input("Docker Hub username", "")
+		c.User, err = a.input("dockerhub username", "")
 		if err != nil {
 			return err
 		}
 		c.User = strings.ToLower(c.User)
-		fmt.Fprintln(a.out, "Create a personal token at https://app.docker.com/settings/personal-access-tokens")
+		fmt.Fprintln(a.out, "create a personal token at https://app.docker.com/settings/personal-access-tokens")
 	}
-	c.Token, err = a.password("API token", false)
+	c.Token, err = a.password("api token", false)
 	if err != nil {
 		return err
 	}
@@ -235,7 +235,7 @@ func (a *app) loginToken(service string) error {
 	if !c.valid(service) {
 		return errors.New("check your account details and token")
 	}
-	fmt.Fprintln(a.errOut, "Checking account…")
+	fmt.Fprintln(a.errOut, "checking account…")
 	if service == "confluence" {
 		c.Identity, err = c.confluenceIdentity()
 		// Scoped Cloud tokens use the Atlassian gateway. Discover the site's ID
@@ -270,7 +270,7 @@ func (a *app) loginToken(service string) error {
 	if err = a.writeTokenLogins(service, records); err != nil {
 		return err
 	}
-	fmt.Fprintln(a.errOut, "Connected.")
+	fmt.Fprintln(a.errOut, "connected.")
 	return nil
 }
 
@@ -375,12 +375,12 @@ func (a *app) tokenRun(service string, args []string, capture bool) ([]byte, err
 		return nil, err
 	}
 	if len(args) == 0 || args[0] == "help" || args[0] == "--help" || args[0] == "-h" {
-		fmt.Fprintf(&out, "%s · Commander built-in CLI\n\n  whoami [--account ACCOUNT]\n  api PATH [-X METHOD] [--input FILE|-] [--account ACCOUNT]\n\nUses the current profile. Add tokens through Commander Accounts.\n", serviceName(service))
+		fmt.Fprintf(&out, "%s · commander built-in cli\n\n  whoami [--account ACCOUNT]\n  api PATH [-X METHOD] [--input FILE|-] [--account ACCOUNT]\n\nuses the current profile. add tokens through commander accounts.\n", serviceName(service))
 		if service == "dockerhub" {
 			fmt.Fprint(&out, "  docker [--account ACCOUNT] -- DOCKER_ARGS\n\n")
-			fmt.Fprintln(&out, "Example: api /v2/namespaces/USERNAME/repositories")
+			fmt.Fprintln(&out, "example: api /v2/namespaces/USERNAME/repositories")
 		} else {
-			fmt.Fprintln(&out, "Example: api /api/v2/pages?limit=10")
+			fmt.Fprintln(&out, "example: api /api/v2/pages?limit=10")
 		}
 		return emit(out.Bytes())
 	}

@@ -19,7 +19,7 @@ var services = []string{"github", "azure", "office", "hetzner", "gcloud", "docke
 var serviceTools = map[string]string{"github": "gh", "azure": "az", "office": "m365", "hetzner": "hcloud", "gcloud": "gcloud", "dockerhub": "dockerhub", "confluence": "confluence"}
 
 func serviceName(service string) string {
-	if name := map[string]string{"github": "GitHub", "azure": "Azure", "office": "Microsoft 365", "hetzner": "Hetzner", "gcloud": "Google Cloud", "dockerhub": "Docker Hub", "confluence": "Confluence Cloud"}[service]; name != "" {
+	if name := map[string]string{"github": "github", "azure": "azure", "office": "microsoft 365", "hetzner": "hetzner", "gcloud": "google cloud", "dockerhub": "dockerhub", "confluence": "confluence"}[service]; name != "" {
 		return name
 	}
 	return service
@@ -383,7 +383,7 @@ func (a *app) describe(name string, context bool) error {
 	if context && len(invalid) > 0 {
 		return errors.New("profile needs attention: " + strings.Join(invalid, "; ") + "; run ./commander overview")
 	}
-	fmt.Fprintln(a.out, "Commander profile:", name)
+	fmt.Fprintln(a.out, "commander profile:", name)
 	if !context {
 		a.printAccounts(rows)
 		if len(invalid) > 0 {
@@ -395,19 +395,19 @@ func (a *app) describe(name string, context bool) error {
 	for _, r := range rows {
 		fmt.Fprintf(a.out, "\n%s: %s\n", r.Service, jsonKey(r.Account))
 		if r.Context != "" {
-			fmt.Fprintf(a.out, "Context: %s\n", jsonKey(r.Context))
+			fmt.Fprintf(a.out, "context: %s\n", jsonKey(r.Context))
 		}
 		switch r.Service {
 		case "github":
 			host, user := r.github()
-			fmt.Fprintf(a.out, "Select: ./commander exec -- gh auth switch --hostname %s --user %s\nVerify: ./commander exec -- gh auth status\n", quote(host), quote(user))
+			fmt.Fprintf(a.out, "select: ./commander exec -- gh auth switch --hostname %s --user %s\nverify: ./commander exec -- gh auth status\n", quote(host), quote(user))
 		case "office":
-			fmt.Fprintf(a.out, "Select: ./commander exec -- m365 connection use --name %s\nVerify: ./commander exec -- m365 connection list\n", quote(r.selector()))
+			fmt.Fprintf(a.out, "select: ./commander exec -- m365 connection use --name %s\nverify: ./commander exec -- m365 connection list\n", quote(r.selector()))
 		case "dockerhub", "confluence":
-			fmt.Fprintf(a.out, "Use with %s: --account %s\nVerify: ./commander exec -- %s whoami --account %s\n", r.Service, quote(r.selector()), r.Service, quote(r.selector()))
+			fmt.Fprintf(a.out, "use with %s: --account %s\nverify: ./commander exec -- %s whoami --account %s\n", r.Service, quote(r.selector()), r.Service, quote(r.selector()))
 		default:
 			flag := map[string]string{"azure": "--subscription", "hetzner": "--context", "gcloud": "--account"}[r.Service]
-			fmt.Fprintf(a.out, "Use with %s: %s %s\n", serviceTools[r.Service], flag, quote(r.selector()))
+			fmt.Fprintf(a.out, "use with %s: %s %s\n", serviceTools[r.Service], flag, quote(r.selector()))
 		}
 	}
 	return nil
@@ -417,85 +417,25 @@ func (a *app) printAccounts(rows []account) {
 	width := 0
 	if a.terminal() {
 		width, _ = a.dimensions()
-		width -= 2
+		width = max(1, min(108, width-4))
 	}
-	fmt.Fprintln(a.out, "\n"+accountTable(rows, true, width))
+	fmt.Fprintln(a.out)
+	for _, line := range accountLines(rows, true, width) {
+		if width > 0 {
+			fmt.Fprintln(a.out, "  "+a.renderLine(line, width))
+		} else {
+			fmt.Fprintln(a.out, line.plain())
+		}
+	}
 }
 
 func accountTable(rows []account, status bool, width int) string {
-	if len(rows) == 0 {
-		return "No accounts yet. Choose Add account to get started."
+	lines := accountLines(rows, status, width)
+	text := make([]string, len(lines))
+	for i, line := range lines {
+		text[i] = line.plain()
 	}
-	if width > 0 && width < 50 {
-		blocks := []string{}
-		for _, r := range rows {
-			label := serviceName(r.Service)
-			if status {
-				label += " · " + r.State
-			}
-			label += "\n  " + r.Account
-			if r.Context != "" {
-				label += "\n  Context: " + r.Context
-			}
-			blocks = append(blocks, strings.Join(wrapLines(label, width), "\n"))
-		}
-		return strings.Join(blocks, "\n\n")
-	}
-	header := []string{"SERVICE", "ACCOUNT", "CONTEXT"}
-	if status {
-		header = append(header, "STATUS")
-	}
-	table := [][]string{header}
-	for _, r := range rows {
-		context := r.Context
-		if context == "" {
-			context = "—"
-		}
-		row := []string{serviceName(r.Service), r.Account, context}
-		if status {
-			row = append(row, r.State)
-		}
-		table = append(table, row)
-	}
-	// Give long identities more room, then wrap cells while keeping columns aligned.
-	widths := make([]int, len(header))
-	for _, row := range table {
-		for i, cell := range row {
-			widths[i] = max(widths[i], utf8.RuneCountInString(clean(cell)))
-		}
-	}
-	for width > 0 {
-		total, widest := 3*(len(header)-1), -1
-		for i, size := range widths {
-			total += size
-			if size > len(header[i]) && (widest < 0 || size > widths[widest]) {
-				widest = i
-			}
-		}
-		if total <= width || widest < 0 {
-			break
-		}
-		widths[widest]--
-	}
-	var out []string
-	for _, row := range table {
-		cells := make([][]rune, len(row))
-		for i, cell := range row {
-			cells[i] = []rune(clean(cell))
-		}
-		for more := true; more; {
-			more = false
-			parts := make([]string, len(row))
-			for i, cell := range cells {
-				n := min(len(cell), widths[i])
-				parts[i] = string(cell[:n]) + strings.Repeat(" ", widths[i]-n)
-				cells[i] = cell[n:]
-				more = more || len(cells[i]) > 0
-			}
-			out = append(out, strings.TrimRight(strings.Join(parts, "   "), " "))
-		}
-	}
-	return strings.Join(out, "\n")
+	return strings.Join(text, "\n")
 }
 
 const githubScopes = "repo,workflow,admin:org,admin:org_hook,admin:public_key,admin:repo_hook,admin:gpg_key,admin:ssh_signing_key,admin:enterprise,gist,notifications,user,delete_repo,write:packages,delete:packages,project,codespace,read:audit_log"
@@ -510,7 +450,7 @@ func (a *app) officeSettings() error {
 }
 
 func (a *app) officeOrganization() error {
-	fmt.Fprintln(a.out, "Set up Office access once with an organization administrator. Follow the browser sign in.")
+	fmt.Fprintln(a.out, "set up microsoft 365 with an administrator. follow the browser sign-in.")
 	name := "commander-setup-" + rand.Text()
 	if _, err := a.run("m365", []string{"login", "--authType", "deviceCode", "--appId", "04b07795-8ddb-461a-bbee-02f9e1bf7b46", "--tenant", "organizations", "--connectionName", name, "--output", "text"}, false, nil); err != nil {
 		return err
@@ -551,22 +491,22 @@ func (a *app) login(service string) error {
 				return errors.New("Office setup was not completed; add the login again")
 			}
 		}
-		fmt.Fprintln(a.out, "Sign in with the Office account you want to add.")
+		fmt.Fprintln(a.out, "sign in with the microsoft 365 account to add.")
 		_, err = a.run("m365", []string{"login", "--authType", "deviceCode", "--output", "text"}, false, nil)
 		return err
 	case "gcloud":
 		_, err := a.run("gcloud", []string{"auth", "login", "--no-launch-browser", "--enable-gdrive-access", "--brief"}, false, nil)
 		return err
 	case "hetzner":
-		fmt.Fprintln(a.out, "Create a project token at https://console.hetzner.cloud")
-		token, err := a.password("Project token", false)
+		fmt.Fprintln(a.out, "create a project token at https://console.hetzner.cloud")
+		token, err := a.password("project token", false)
 		if err != nil {
 			return err
 		}
 		if len(token) != 64 || strings.IndexFunc(token, func(r rune) bool { return !(r >= 'a' && r <= 'z' || r >= 'A' && r <= 'Z' || r >= '0' && r <= '9') }) >= 0 {
 			return errors.New("a Hetzner token contains 64 letters or digits")
 		}
-		name, err := a.input("Project name", "")
+		name, err := a.input("project name", "")
 		if err != nil {
 			return err
 		}

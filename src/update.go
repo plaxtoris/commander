@@ -24,10 +24,10 @@ func (a *app) start() error {
 	restarted := os.Getenv("COMMANDER_RESTARTED") == a.root
 	os.Unsetenv("COMMANDER_RESTARTED")
 	if !restarted {
-		fmt.Fprintln(a.errOut, "Checking updates…")
+		fmt.Fprintln(a.errOut, "checking updates…")
 		updated, err := a.update()
 		if err != nil {
-			fmt.Fprintln(a.errOut, "Update skipped:", err)
+			fmt.Fprintln(a.errOut, "update skipped:", err)
 		} else if updated {
 			return a.restartCommander(nil)
 		}
@@ -36,7 +36,7 @@ func (a *app) start() error {
 		return err
 	}
 	if err := a.setup(false); err != nil {
-		fmt.Fprintln(a.errOut, "Tools need attention; retry when needed:", err)
+		fmt.Fprintln(a.errOut, "tools need attention; retry when needed:", err)
 	}
 	return a.menu()
 }
@@ -171,7 +171,7 @@ func (a *app) update() (bool, error) {
 	if current == expected {
 		return false, nil
 	}
-	fmt.Fprintln(a.out, "Downloading Commander update...")
+	fmt.Fprintln(a.errOut, "updating commander…")
 	path := filepath.Join(stage, name)
 	if private {
 		ctx, cancel := context.WithTimeout(context.Background(), 20*time.Minute)
@@ -203,6 +203,6 @@ func (a *app) update() (bool, error) {
 	if err = os.Rename(path, destination); err != nil {
 		return false, err
 	}
-	fmt.Fprintln(a.out, "Commander updated. Restarting to prepare its tools...")
+	fmt.Fprintln(a.errOut, "updated · restarting…")
 	return true, nil
 }

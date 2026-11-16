@@ -248,8 +248,8 @@ func TestInteractiveStartupCurrentAndOffline(t *testing.T) {
 			t.Setenv("COMMANDER_UI_UPDATE_URL", server.URL+"/")
 			for i := 0; i < 2; i++ {
 				s := openUI(t, moved)
-				s.wait(t, "Esc Quit")
-				if offline && !strings.Contains(s.output, "Update skipped:") {
+				s.wait(t, "esc quit")
+				if offline && !strings.Contains(s.output, "update skipped:") {
 					t.Fatal("offline startup did not explain the skipped update")
 				}
 				s.send(t, "3\r")

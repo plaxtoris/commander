@@ -42,7 +42,7 @@ is retried on the next start or use and still needs network access. A failed too
 installation leaves the menu available. Short progress messages go to stderr;
 native command output and exit codes are preserved.
 
-The menu has three entries: **Accounts**, **Profiles** and **Quit**.
+The menu has three entries: **accounts**, **profiles** and **quit**.
 Accounts shows a table of your selected logins and their status, with actions to
 add, remove or refresh them. Profiles handles switching, creating, importing
 and exporting profiles. No Update or Setup menu entry is needed.
@@ -58,7 +58,12 @@ accounts.
 
 Use arrow keys or Tab to move, Enter to select, and Esc to go back. Numbers jump
 to a menu entry; Page Up / Page Down scroll long account overviews. Set `NO_COLOR=1`
-for a plain appearance.
+for a plain appearance. Interface labels use lowercase; account names, profile
+names and contexts keep their original spelling. Cyan marks the current action,
+green marks available logins, and amber marks accounts needing attention. Symbols
+and text carry the same meaning without color. Account tables wrap long values
+and switch to compact stacked rows on narrow terminals. Redirected output and
+`TERM=dumb` stay free of color codes.
 
 Git is a native system command; install it with your system package manager when
 needed. Docker Engine or Docker Desktop with WSL
@@ -67,7 +72,7 @@ in Docker storage when you move the folder.
 
 ## Docker Hub and Confluence
 
-Choose **Accounts → Add account → Docker Hub** or **Confluence Cloud**.
+Choose **accounts → add account → dockerhub** or **confluence**.
 Enter your Docker username and personal access token, or your Confluence site URL,
 Atlassian email and API token. Token input is hidden. Commander verifies the
 account before saving it privately in `.secrets/`. Confluence supports classic and

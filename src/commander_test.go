@@ -17,6 +17,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"reflect"
+	"regexp"
 	"strings"
 	"testing"
 	"time"
@@ -482,6 +483,8 @@ func TestUIHelper(t *testing.T) {
 	os.Exit(0)
 }
 
+var terminalControls = regexp.MustCompile(`\x1b\[[?0-9;]*[A-Za-z]`)
+
 type terminalSession struct {
 	file    *os.File
 	command *exec.Cmd
@@ -536,7 +539,7 @@ func (s *terminalSession) wait(t *testing.T, want string) {
 				t.Fatalf("terminal closed before %q: %s", want, s.output)
 			}
 			s.output += chunk
-			if strings.Contains(s.output[s.seen:], want) {
+			if strings.Contains(terminalControls.ReplaceAllString(s.output[s.seen:], ""), want) {
 				s.seen = len(s.output)
 				return
 			}
@@ -555,25 +558,25 @@ func (s *terminalSession) send(t *testing.T, value string) {
 func TestInteractiveFirstProfileAndHiddenLogin(t *testing.T) {
 	root := t.TempDir()
 	session := openUI(t, root)
-	session.wait(t, "Welcome. Create a profile")
+	session.wait(t, "welcome. create a profile")
 	session.send(t, "\r")
-	session.wait(t, "Profile name")
+	session.wait(t, "profile name")
 	session.send(t, "work\n")
-	session.wait(t, "No accounts yet")
+	session.wait(t, "no accounts yet")
 	session.send(t, "\r")
-	session.wait(t, "Add account")
+	session.wait(t, "add account")
 	session.send(t, "\r")
-	session.wait(t, "Choose a service")
+	session.wait(t, "choose a service")
 	session.send(t, "\x1b[B\x1b[B\x1b[B\r")
-	session.wait(t, "Choose a saved login")
+	session.wait(t, "choose a saved login")
 	session.send(t, "\x1b[B\r")
-	session.wait(t, "Project token (hidden)")
+	session.wait(t, "project token (hidden)")
 	session.send(t, strings.Repeat("a", 64)+"\n")
-	session.wait(t, "Project name")
+	session.wait(t, "project name")
 	session.send(t, "newproject\n")
-	session.wait(t, "Refresh")
+	session.wait(t, "refresh")
 	session.send(t, "q")
-	session.wait(t, "Home")
+	session.wait(t, "home")
 	session.send(t, "q")
 	if err := session.command.Wait(); err != nil {
 		t.Fatal(err)
@@ -603,7 +606,7 @@ func TestInteractiveProfileCancellation(t *testing.T) {
 	a.ensure()
 	saveProfile(t, a, "work")
 	session := openUI(t, root)
-	session.wait(t, "No accounts yet")
+	session.wait(t, "no accounts yet")
 	session.send(t, "q")
 	if err := session.command.Wait(); err != nil {
 		t.Fatal(err)

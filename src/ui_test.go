@@ -29,7 +29,7 @@ func TestOverviewShowsOnlySelectedAccounts(t *testing.T) {
 		t.Fatal(err)
 	}
 	out := a.out.(*bytes.Buffer).String()
-	for _, want := range []string{"SERVICE", "ACCOUNT", "CONTEXT", "STATUS", "GitHub", "selected @ github.com", "Saved"} {
+	for _, want := range []string{"service", "account", "context", "status", "github", "selected @ github.com", "○ saved"} {
 		if !strings.Contains(out, want) {
 			t.Fatalf("missing %q: %s", want, out)
 		}
@@ -45,7 +45,7 @@ func TestAccountTablePreservesLongIdentities(t *testing.T) {
 	identity := "jörg." + strings.Repeat("long-", 20) + "@example.invalid"
 	rows := []account{{member: member{Service: "office", Account: identity, Context: "Production"}, State: "Sign in again"}}
 	full := accountTable(rows, true, 0)
-	if !strings.Contains(full, identity) || !strings.Contains(full, "Sign in again") {
+	if !strings.Contains(full, identity) || !strings.Contains(full, "! sign in again") {
 		t.Fatal(full)
 	}
 	for _, width := range []int{24, 40, 60, 77, 100} {
@@ -71,21 +71,21 @@ func TestInteractiveProfileSwitchAndScopedRemoval(t *testing.T) {
 		t.Fatal(err)
 	}
 	s := openUI(t, a.root)
-	s.wait(t, "Esc Quit")
+	s.wait(t, "esc quit")
 	s.send(t, "\t\r")
-	s.wait(t, "Choose a profile")
+	s.wait(t, "choose a profile")
 	s.send(t, "1\r")
-	s.wait(t, "Profile  personal")
+	s.wait(t, "profile  personal")
 	s.send(t, "\r")
-	s.wait(t, "Refresh")
+	s.wait(t, "refresh")
 	s.send(t, "2\r")
-	s.wait(t, "Choose an account")
+	s.wait(t, "choose an account")
 	s.send(t, "\r")
-	s.wait(t, "Keep the saved login")
+	s.wait(t, "keep the saved login")
 	s.send(t, "\r")
-	s.wait(t, "No accounts yet")
+	s.wait(t, "no accounts yet")
 	s.send(t, "\x1b")
-	s.wait(t, "Open Accounts to add")
+	s.wait(t, "open accounts to add")
 	s.send(t, "3\r")
 	if err := s.command.Wait(); err != nil {
 		t.Fatal(err)
@@ -105,15 +105,15 @@ func TestInteractiveSmallTerminalAndPaging(t *testing.T) {
 	}
 	saveProfile(t, a, "work", members...)
 	s := openUI(t, a.root, &pty.Winsize{Rows: 18, Cols: 44})
-	s.wait(t, "Esc Quit")
-	if strings.Contains(s.output, "project-23") || !strings.Contains(s.output, "PgUp/PgDn") {
+	s.wait(t, "esc quit")
+	if strings.Contains(s.output, "project-23") || !strings.Contains(s.output, "pgup/pgdn") {
 		t.Fatal("long description was not paged", s.output)
 	}
 	// Page through the description in a small terminal.
 	s.send(t, strings.Repeat("\x1b[6~", 20))
 	s.wait(t, "project-23")
 	s.send(t, strings.Repeat("\x1b[5~", 20))
-	s.wait(t, "Profile  work")
+	s.wait(t, "profile  work")
 	s.send(t, "q")
 	if err := s.command.Wait(); err != nil {
 		t.Fatal(err)
@@ -179,7 +179,7 @@ func TestInteractiveAutomaticUpdate(t *testing.T) {
 				t.Setenv("COMMANDER_UI_TOOL_SUM", fmt.Sprintf("%x", toolSum))
 			}
 			s := openUI(t, a.root)
-			s.wait(t, "Esc Quit")
+			s.wait(t, "esc quit")
 			for _, unwanted := range []string{"Update Commander and all tools", "Tools and updates", "Setup"} {
 				if strings.Contains(s.output, unwanted) {
 					t.Fatal("unexpected menu item", unwanted)
@@ -216,5 +216,88 @@ func TestInteractiveAutomaticUpdate(t *testing.T) {
 				t.Fatal("restart left update staging directories", staging)
 			}
 		})
+	}
+}
+
+func TestInteractiveAccountPresentationAndResize(t *testing.T) {
+	for _, mode := range []string{"color", "no-color", "dumb"} {
+		t.Run(mode, func(t *testing.T) {
+			t.Setenv("TERM", "xterm-256color")
+			t.Setenv("NO_COLOR", "")
+			if mode == "no-color" {
+				t.Setenv("NO_COLOR", "1")
+			}
+			if mode == "dumb" {
+				t.Setenv("TERM", "dumb")
+			}
+			a := testApp(t)
+			active := hMember("existing")
+			active.Context = "Production-EU"
+			missing := hMember("Case.Sensitive")
+			saveProfile(t, a, "Work Team", active, missing)
+			s := openUI(t, a.root)
+			s.wait(t, "esc quit")
+			s.send(t, "1\r")
+			s.wait(t, "esc back")
+			frame := terminalControls.ReplaceAllString(s.output, "")
+			for _, want := range []string{"commander / accounts", "Work Team", "service", "account", "context", "status", "hetzner", "Production-EU", "Case.Sensitive", "● active", "! missing account"} {
+				if !strings.Contains(frame, want) {
+					t.Fatalf("missing %q in account view: %s", want, frame)
+				}
+			}
+			if mode == "color" {
+				for _, code := range []string{"\x1b[1;36m", "\x1b[32m", "\x1b[33m"} {
+					if !strings.Contains(s.output, code) {
+						t.Fatal("missing selection or status accent", code)
+					}
+				}
+			} else if regexp.MustCompile(`\x1b\[[0-9;]*m`).MatchString(s.output) {
+				t.Fatal("color disablement ignored")
+			}
+			if err := pty.Setsize(s.file, &pty.Winsize{Rows: 24, Cols: 44}); err != nil {
+				t.Fatal(err)
+			}
+			start := len(s.output)
+			s.send(t, "\x1b[H")
+			s.wait(t, "context  Production-EU")
+			narrow := terminalControls.ReplaceAllString(s.output[start:], "")
+			if strings.Contains(narrow, "service  account") {
+				t.Fatal("kept wide table after resize")
+			}
+			if err := pty.Setsize(s.file, &pty.Winsize{Rows: 32, Cols: 100}); err != nil {
+				t.Fatal(err)
+			}
+			s.send(t, "\x1b[H")
+			s.wait(t, "service")
+			s.send(t, "q")
+			s.wait(t, "esc quit")
+			s.send(t, "q")
+			if err := s.command.Wait(); err != nil {
+				t.Fatal(err)
+			}
+		})
+	}
+}
+
+func TestAccountPresentationPreservesDataAndRejectsEscapes(t *testing.T) {
+	a := testApp(t)
+	rows := []account{{member: member{Service: "dockerhub", Account: "Case.Sensitive@example.test", Context: "Production-EU"}, State: "Check login"}}
+	for _, width := range []int{0, 24, 44, 64, 100} {
+		text := accountTable(rows, true, width)
+		compact := strings.ReplaceAll(text, "\n", "")
+		if width == 0 && !strings.Contains(compact, "Case.Sensitive@example.test") {
+			t.Fatal("changed account casing")
+		}
+		if !strings.Contains(text, "dockerhub") || strings.Contains(text, "Docker Hub") {
+			t.Fatal("inconsistent service labels")
+		}
+		if strings.Contains(text, "\x1b") {
+			t.Fatal("plain table contains escapes")
+		}
+	}
+	line := uiLine{{"untrusted\x1b[31m label", "32"}}
+	text := a.renderLine(line, 100)
+	if strings.Contains(text, "\x1b") {
+		t.Fatal("redirected output or account data emitted color escapes")
 	}
 }
