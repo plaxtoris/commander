@@ -94,13 +94,13 @@ func (a *app) command(args []string) error {
 		fmt.Fprintln(a.out, `commander
 
   commander                         update automatically, then open the menu
-  commander setup                   repair used tools and prepare this folder
+  commander setup [profile]         repair used tools, or prepare a profile and check its accounts
   commander context [profile]       account scope for your agent
   commander overview [profile]      check profile accounts
   commander exec -- tool [args...]   run a native tool with commander logins
   commander up project              start a project devcontainer
   commander export [file.zip]        export a profile and selected logins
-  commander import file.zip         import a profile and its logins
+  commander import file.zip         import a profile, prepare its tools and check its accounts
   commander update                  update commander and installed tools
   commander doctor                  check the installation
   commander version                 show the installed build
@@ -112,8 +112,11 @@ projects live in workspaces/. no shell configuration is required.`)
 		fmt.Fprintln(a.out, "Commander", build, runtime.GOOS+"/"+runtime.GOARCH)
 		return nil
 	case "setup":
-		if len(args) != 1 {
-			return errors.New("usage: commander setup")
+		if len(args) > 2 {
+			return errors.New("usage: commander setup [PROFILE]")
+		}
+		if len(args) == 2 {
+			return a.setupProfile(args[1])
 		}
 		return a.setup(false)
 	case "context", "overview":

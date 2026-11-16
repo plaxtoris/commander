@@ -434,7 +434,7 @@ func (a *app) profilePicker() (string, error) {
 			if e == nil {
 				err = a.transfer([]string{"import", path})
 				if err == nil {
-					a.pause("profile imported. select it to start working.")
+					a.pause("profile imported, tools prepared and account status checked. select it to start working.\ndocker engine/desktop is a separate prerequisite for project containers.")
 				}
 			}
 		case "export profile":

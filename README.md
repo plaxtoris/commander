@@ -10,9 +10,6 @@ curl -fLO https://github.com/plaxtoris/commander/releases/download/latest/comman
 chmod +x commander && ./commander
 ```
 
-While this repository is private, download `commander` from
-[latest](https://github.com/plaxtoris/commander/releases/tag/latest) while signed in.
-
 The first start opens the menu without installing service tools. Choose a profile
 and add an account: Commander prepares only that service's CLI when you select it.
 GitHub, Azure, Microsoft 365, Hetzner, Google Cloud, Docker Hub and Confluence Cloud
@@ -51,7 +48,12 @@ Installation diagnostics remain available through `./commander doctor`;
 are normal in `doctor`, not installation errors. `./commander update` remains
 available for a manual update. Other commands, including `exec`, do not update the
 Commander executable; `exec` prepares the requested tool at its pinned version.
-Imported accounts prepare their tools when first checked or used.
+Importing a profile prepares Git and only the service CLIs used by its accounts,
+including their Node/Python dependencies, then checks the account status. Docker
+Hub and Confluence are built in. The profile is saved before preparation starts;
+an interrupted download or a login needing attention does not undo the import.
+Retry with `./commander setup PROFILE` without importing the archive again.
+`./commander setup` without a profile still repairs only previously used tools.
 Private release downloads require the active GitHub
 identity to belong to the current profile; Commander verifies it without switching
 accounts.
@@ -65,10 +67,21 @@ and text carry the same meaning without color. Account tables wrap long values
 and switch to compact stacked rows on narrow terminals. Redirected output and
 `TERM=dumb` stay free of color codes.
 
-Git is a native system command; install it with your system package manager when
-needed. Docker Engine or Docker Desktop with WSL
-integration is needed for project containers. Docker images and volumes stay
-in Docker storage when you move the folder.
+Commander reuses system Git. If Git is missing during import, GitHub CLI use or
+project startup, it installs Git and CA certificates using apt-get, dnf, yum,
+zypper, apk or pacman. Only the package manager uses `sudo` when necessary; run
+Commander as your normal user. In a noninteractive terminal, missing sudo access
+produces a retry instruction instead of waiting for a password. Unsupported
+package managers require a manual Git installation. System Git stays on the
+machine when you move the Commander folder and is checked again on the new host.
+
+Docker Engine or Docker Desktop with WSL integration is a separate prerequisite
+for project containers. Import checks engine access when a Docker CLI is already
+available and otherwise reports that it could not check it. This does not block
+service accounts. Commander installs Docker CLI, Compose and Devcontainer CLI on
+first project use, but never installs the engine, starts a system service or
+changes Docker permissions. Docker images and volumes stay in Docker storage
+when you move the folder.
 
 ## Docker Hub and Confluence
 

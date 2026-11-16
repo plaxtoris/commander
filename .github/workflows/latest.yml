@@ -31,6 +31,17 @@ jobs:
           go test -race ./...
       - name: Build
         run: make build
+      - name: Fresh system Git
+        run: |
+          docker run --rm -v "$PWD/dist/commander:/usr/local/bin/commander:ro" \
+            -e COMMANDER_HOME=/tmp/commander debian:bookworm-slim sh -ec '
+              ! command -v git
+              commander exec -- git --version
+              commander exec -- git init --bare /tmp/origin
+              commander exec -- git clone /tmp/origin /tmp/checkout
+              test -d /tmp/checkout/.git
+              test ! -e /tmp/commander/tools/docker
+            '
       - name: Fresh setup and relocation
         run: |
           install_dir="$RUNNER_TEMP/commander-fresh"
@@ -74,7 +85,7 @@ jobs:
         run: |
           cd dist
           sha256sum commander > SHA256SUMS
-          printf 'Commander for WSL and Linux on x86_64.\n\nDownload commander. Tools install on demand.\n\nAccount tables with subtle status colors, a compact layout for narrow terminals, and consistent lowercase interface labels.\n\nBuild: %s\n' "$GITHUB_SHA" > "$RUNNER_TEMP/release-notes"
+          printf 'Commander for WSL and Linux on x86_64.\n\nProfile import prepares Git and the required service CLIs, then checks account status. Retry incomplete preparation with commander setup PROFILE. Docker Engine/Desktop remains a separate prerequisite for project containers.\n\nBuild: %s\n' "$GITHUB_SHA" > "$RUNNER_TEMP/release-notes"
           if gh api "repos/$GH_REPO/git/ref/tags/latest" >/dev/null 2>&1; then
             gh api --method PATCH "repos/$GH_REPO/git/refs/tags/latest" -f sha="$GITHUB_SHA" -F force=true >/dev/null
           else

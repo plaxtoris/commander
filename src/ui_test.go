@@ -96,6 +96,39 @@ func TestInteractiveProfileSwitchAndScopedRemoval(t *testing.T) {
 	}
 }
 
+func TestInteractiveImportPreparesProfile(t *testing.T) {
+	source := testApp(t)
+	mustWrite(t, filepath.Join(source.root, ".secrets", ".config", "hcloud", "cli.toml"), []byte("active_context = 'existing'\n[[contexts]]\nname = 'existing'\ntoken = 'fixture-secret'\n"))
+	payload, err := source.exportPayload("imported", []member{hMember("existing")})
+	if err != nil {
+		t.Fatal(err)
+	}
+	archive := filepath.Join(t.TempDir(), "profile.zip")
+	if err := writeArchive(archive, payload, "fixture password"); err != nil {
+		t.Fatal(err)
+	}
+	a := testApp(t)
+	s := openUI(t, a.root)
+	s.wait(t, "import profile")
+	s.send(t, "\x1b[B\r")
+	s.wait(t, "archive path")
+	s.send(t, archive+"\r")
+	s.wait(t, "archive password")
+	s.send(t, "fixture password\r")
+	s.wait(t, "tools prepared and account status checked")
+	if !strings.Contains(s.output, "profile ready: imported") || !strings.Contains(s.output, "existing") || strings.Contains(s.output, "fixture-secret") {
+		t.Fatal("import did not check accounts or exposed login data", s.output)
+	}
+	s.send(t, "\r")
+	s.wait(t, "1 account · current")
+	s.send(t, "\r")
+	s.wait(t, "accounts")
+	s.send(t, "q")
+	if err := s.command.Wait(); err != nil {
+		t.Fatal(err)
+	}
+}
+
 func TestInteractiveSmallTerminalAndPaging(t *testing.T) {
 	t.Setenv("NO_COLOR", "1")
 	a := testApp(t)

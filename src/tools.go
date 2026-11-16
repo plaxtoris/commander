@@ -415,14 +415,14 @@ func (a *app) installPackage(name string, force bool) error {
 }
 
 var toolDependencies = map[string][]string{
-	"gh": {"gh"}, "hcloud": {"hcloud"},
+	"git": {"git"}, "gh": {"git", "gh"}, "hcloud": {"hcloud"},
 	"az":     {"uv", "python", "azure"},
 	"gcloud": {"uv", "python", "gcloud"},
 	"m365":   {"node", "m365"},
 	"docker": {"docker"}, "docker-compose": {"compose"},
-	"devcontainer": {"node", "docker", "compose", "devcontainer"},
+	"devcontainer": {"git", "node", "docker", "compose", "devcontainer"},
 }
-var managedTools = []string{"gh", "az", "m365", "hcloud", "gcloud", "docker", "docker-compose", "devcontainer"}
+var managedTools = []string{"git", "gh", "az", "m365", "hcloud", "gcloud", "docker", "docker-compose", "devcontainer"}
 var archiveEntries = map[string]string{"gh": "bin/gh", "hcloud": "hcloud", "node": "bin/node", "uv": "uv", "gcloud": "bin/gcloud", "docker": "docker", "compose": "docker-compose"}
 
 type toolPreparationError struct{ error }
@@ -446,6 +446,10 @@ func toolLabel(tool string) string {
 }
 
 func (a *app) dependencyReady(name string) bool {
+	if name == "git" {
+		_, err := exec.LookPath("git")
+		return err == nil
+	}
 	if name == "python" {
 		_, err := a.python()
 		return err == nil
@@ -515,6 +519,8 @@ func (a *app) prepareTool(tool string, force bool) error {
 			announced = true
 		}
 		switch {
+		case name == "git":
+			err = a.installGit()
 		case name == "python":
 			err = a.installPython()
 		case packageEntries[name] != "":
@@ -530,6 +536,120 @@ func (a *app) prepareTool(tool string, force bool) error {
 		fmt.Fprintln(a.errOut, toolLabel(tool)+" ready.")
 	}
 	return os.RemoveAll(filepath.Join(a.root, "tools", ".cache"))
+}
+
+// Git stays a system package: reuse it, or install it with the native package
+// manager. Never elevate Commander itself or change ownership of its folder.
+func gitInstallCommands(root, interactive bool) ([][]string, error) {
+	managers := []struct {
+		name string
+		args [][]string
+	}{
+		{"apt-get", [][]string{{"update"}, {"install", "-y", "--no-install-recommends", "git", "ca-certificates"}}},
+		{"dnf", [][]string{{"install", "-y", "git", "ca-certificates"}}},
+		{"yum", [][]string{{"install", "-y", "git", "ca-certificates"}}},
+		{"zypper", [][]string{{"--non-interactive", "install", "--no-recommends", "git", "ca-certificates"}}},
+		{"apk", [][]string{{"add", "--no-cache", "git", "ca-certificates"}}},
+		{"pacman", [][]string{{"-S", "--needed", "--noconfirm", "git", "ca-certificates"}}},
+	}
+	for _, manager := range managers {
+		path, err := exec.LookPath(manager.name)
+		if err != nil {
+			continue
+		}
+		prefix := []string{}
+		if !root {
+			sudo, err := exec.LookPath("sudo")
+			if err != nil {
+				return nil, errors.New("git is missing and sudo is unavailable; install git with your system package manager")
+			}
+			prefix = append(prefix, sudo)
+			if !interactive {
+				prefix = append(prefix, "-n")
+			}
+			prefix = append(prefix, "--")
+		}
+		commands := make([][]string, 0, len(manager.args))
+		for _, args := range manager.args {
+			command := append(append([]string{}, prefix...), path)
+			commands = append(commands, append(command, args...))
+		}
+		return commands, nil
+	}
+	return nil, errors.New("git is missing; install it with your system package manager (no supported package manager found)")
+}
+
+func (a *app) installGit() error {
+	if a.dependencyReady("git") {
+		return nil
+	}
+	commands, err := gitInstallCommands(os.Geteuid() == 0, a.terminal())
+	if err != nil {
+		return err
+	}
+	fmt.Fprintln(a.errOut, "installing system git and CA certificates; sudo may request your password…")
+	for _, args := range commands {
+		cmd := exec.Command(args[0], args[1:]...)
+		cmd.Stdin, cmd.Stdout, cmd.Stderr = a.in, a.errOut, a.errOut
+		if err := cmd.Run(); err != nil {
+			return fmt.Errorf("git installation failed (%v); retry in a terminal with sudo access, or install git yourself", err)
+		}
+	}
+	if !a.dependencyReady("git") {
+		return errors.New("git installation finished but git is still missing from PATH")
+	}
+	return nil
+}
+
+// Import commits the profile before preparing anything. This same operation can
+// be retried without re-importing, replacing logins or switching active accounts.
+func (a *app) prepareProfile(name string) error {
+	name, _, err := a.profile(name)
+	if err != nil {
+		return err
+	}
+	defer a.dockerStatus()
+	if _, err = a.run("git", []string{"--version"}, true, nil); err == nil {
+		err = a.describe(name, false)
+	}
+	if err != nil {
+		return fmt.Errorf("profile %q is saved, but preparation needs attention: %v; retry ./commander setup %s without importing again", name, err, quote(name))
+	}
+	fmt.Fprintf(a.out, "profile ready: %s · tools prepared; account status checked\n", clean(name))
+	return nil
+}
+
+func (a *app) setupProfile(name string) error {
+	if err := a.ensure(); err != nil {
+		return err
+	}
+	unlock, err := a.lock("native")
+	if err != nil {
+		return err
+	}
+	defer unlock()
+	return a.prepareProfile(name)
+}
+
+// Checking the engine must not install container tools or use a registry login.
+func (a *app) dockerStatus() {
+	path, _, err := a.toolCommand("docker", nil)
+	if err != nil {
+		path, err = exec.LookPath("docker")
+	}
+	if err != nil {
+		fmt.Fprintln(a.out, "docker engine: not checked (CLI not installed); project containers need Docker Engine/Desktop installed separately")
+		return
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, path, "info", "--format", "{{.ServerVersion}}")
+	cmd.Env = a.environment("docker", nil)
+	if err := cmd.Run(); err != nil {
+		fmt.Fprintln(a.out, "docker engine: unavailable; install/start Docker Engine/Desktop and enable access for project containers")
+		return
+	}
+	fmt.Fprintln(a.out, "docker engine: ready")
 }
 
 // Setup repairs only used tools, including interrupted installations.
@@ -556,7 +676,7 @@ func (a *app) setup(force bool) error {
 func (a *app) doctor() error {
 	fmt.Fprintln(a.out, "commander", build, "\nfolder:", a.root, "\nprojects:", filepath.Join(a.root, "workspaces"))
 	failed := false
-	for _, tool := range append([]string{"git"}, managedTools...) {
+	for _, tool := range managedTools {
 		if tool != "git" && !a.toolUsed(tool) {
 			fmt.Fprintln(a.out, tool+": not installed · available on demand")
 			continue

@@ -452,6 +452,9 @@ func TestUIHelper(t *testing.T) {
 	}
 	created := ""
 	a.run = func(tool string, args []string, capture bool, extra map[string]string) ([]byte, error) {
+		if tool == "git" {
+			return []byte("git version fixture"), nil
+		}
 		if tool != "hcloud" {
 			return nil, errors.New("fixture supports Hetzner only")
 		}

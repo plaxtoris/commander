@@ -977,6 +977,7 @@ func (a *app) transfer(args []string) error {
 			return err
 		}
 		fmt.Fprintln(a.out, "imported profile:", name)
+		return a.prepareProfile(name)
 	}
 	return nil
 }
