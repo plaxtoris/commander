@@ -1,5 +1,5 @@
 {
-  "name": "Commander development",
+  "name": "commander",
   "build": {
     "dockerfile": "Dockerfile",
     "context": ".."
@@ -10,10 +10,17 @@
   },
   "customizations": {
     "vscode": {
-      "extensions": ["golang.Go"],
+      "extensions": [
+        "golang.Go"
+      ],
       "settings": {
-        "files.watcherExclude": {"**/.secrets/**": true},
-        "search.exclude": {"**/.secrets": true, "**/tools": true}
+        "files.watcherExclude": {
+          "**/.secrets/**": true
+        },
+        "search.exclude": {
+          "**/.secrets": true,
+          "**/tools": true
+        }
       }
     }
   }
