@@ -1,75 +1,55 @@
 # Commander
 
-Commander is a portable workspace for command line tools, accounts, projects and AI agents.
-It runs on WSL and Linux on x86_64. Bring your preferred agent.
+Commander is a portable workspace that gives your AI agent the tools, accounts
+and memory to work across your development stack.
 
-Commander combines `AGENTS.md` and `MEMORY.md` into an adaptive, self learning system.
-The instructions guide your agent. Memory carries your lasting preferences across
-sessions and agents. Your active agent learns and consolidates them, then briefly
-reports each saved change. Commander protects the file and its 4000 character limit.
+Real work rarely stops at one repository. A feature can touch application code,
+cloud infrastructure, containers and business tools. Commander brings those
+systems into one working context so you spend less time switching accounts,
+repeating instructions and guiding every handoff.
 
-## Start
+Connect your accounts, choose a profile and describe the outcome. Your agent
+uses native tools to coordinate changes across repositories and infrastructure.
 
-```bash
-mkdir -p ~/commander && cd ~/commander &&
-curl -fLO https://github.com/plaxtoris/commander/releases/download/latest/commander &&
-chmod +x commander && ./commander
-```
+**One connected stack.** GitHub, Docker Hub, Microsoft 365, Azure, Google Cloud,
+Hetzner and Confluence Cloud. Profiles keep account scope clear.
 
-Choose a profile, add accounts, then start your agent in the Commander folder.
-Profiles define account scope. Tools install when needed and are shared across
-profiles. GitHub, Azure, Microsoft 365, Hetzner, Google Cloud, Docker Hub and
-Confluence Cloud are supported.
+**An agent that learns how you work.** Commander combines agent instructions
+with a small personal memory. Your agent retains lasting preferences, updates
+them as you work and tells you what changed.
 
-## Use
+**Your choice of agent.** Keep the same workspace and preferences when you switch
+agents. Tools install when needed. Commander updates itself. Your projects and
+memory stay with you.
 
-```bash
-./commander                    # Open the menu and check for updates
-./commander context            # Show the current account scope
-./commander exec -- gh auth status
-./commander up PROFILE/REPO    # Start a trusted project container
-./commander memory             # Read personal preferences
-./commander help               # List all commands
-```
+> “Implement this feature across the services, prepare the infrastructure changes
+> and verify that everything works together.”
 
-Prefer `workspaces/<profile-name>/<repo-name>/` for new repositories. From project
-folders, use the absolute Commander path. Install Docker Engine or Docker Desktop
-separately for containers. Use `doctor` to check tools, `setup` to repair them,
-and `export` or `import` for encrypted transfers of selected account logins.
-Credentials stay in `.secrets/`. Never commit them.
+## Get started
 
-## Memory and updates
+[Download Commander](https://github.com/plaxtoris/commander/releases/download/latest/commander)
+into its own folder, make it executable and run it. Connect your accounts in the
+menu, then start your preferred AI agent in that folder.
 
-Memory is a short English bullet list of personal preferences shared across your
-profiles. Replies follow the language of your prompt unless you request another.
-The agent updates memory when you express or correct a lasting preference.
-It removes duplicates and obsolete statements on each update. Project details,
-temporary requests and secrets stay out.
+For WSL and Linux on x86_64. Docker Engine or Docker Desktop is needed for project
+containers.
 
-Memory is created on the first saved change and ignored by Git. Writes above
-4000 Unicode characters, including spaces and newlines, are rejected. Conflicting
-writes are rejected too. The agent reads again, consolidates and retries.
-There is no background AI service.
-
-Menu startup checks the latest release and restarts after an update. A failed
-update check leaves the menu available. Menu startup and `setup` refresh
-`AGENTS.md`, replacing local edits, while preserving `MEMORY.md`.
-Direct commands do not update the executable; `update` does.
-
-## Develop
+<details>
+<summary>Development</summary>
 
 This README guides contributors and development agents. Keep Commander small,
 generic and independent of any agent. Code and tests live in `src/`; tool pins
-live in `src/tools.go`. `src/AGENTS.template.md` is embedded in the executable
-and generates instructions for installed clients. Keep memory rules there.
-Personal memory belongs to client installations and must survive updates.
+live in `src/tools.go`. `src/AGENTS.template.md` generates instructions for
+installed clients. Personal `MEMORY.md` belongs to each installation and survives
+updates. Keep memory in English and replies in the user's requested language.
 
-Open the VS Code devcontainer. Run `make test` and `make build`. Check setup,
+Use the VS Code devcontainer. Run `make test` and `make build`. Check setup,
 relocation and updates when affected. Test container changes in a disposable
 container. Use local authentication fixtures. Never read real credentials or
 manage agent logins. Verify identity before service work.
 
-Write short, direct English documentation without em dashes or hyphenated prose.
-GitHub Actions checks changes and publishes `commander` and `SHA256SUMS` under
-the single rolling `latest` release. Preserve repository visibility. Run repository
-reset helpers only when the user requests a reset.
+Write short, direct English without em dashes or hyphenated prose.
+CI publishes `commander` and `SHA256SUMS` under the single rolling `latest`
+release. Preserve repository visibility. Run reset helpers only when requested.
+
+</details>
