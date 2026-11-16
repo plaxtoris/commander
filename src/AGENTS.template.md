@@ -6,6 +6,7 @@ Opening the menu updates and restarts Commander when needed, then repairs or
 updates only tools already used. Tools install on demand when selecting a service,
 checking imported accounts, running `exec`, or starting a project container.
 Direct commands do not update the Commander executable. Unused tools are normal.
+Commander regenerates this file on menu startup, setup and update.
 
 1. Before service work, run `./commander context` or `./commander context PROFILE`.
    Use only that profile's accounts. If it is missing or empty, ask the user to
@@ -25,6 +26,8 @@ Direct commands do not update the Commander executable. Unused tools are normal.
    For several Hub accounts use `dockerhub docker --account USER -- DOCKER_ARGS`.
    Add or reconnect tokens through Commander Accounts; never read token files.
 4. Keep repositories in `workspaces/` and read each project's instructions.
+   When creating or cloning repositories, prefer `workspaces/<profile-name>/<repo-name>/`
+   where practical, using the relevant Commander profile's name.
    Start trusted projects with `./commander up PROJECT`. Run container commands
    with `./commander exec -- devcontainer exec --workspace-folder /absolute/project COMMAND`.
    Trust specific repositories. Docker uses the host engine and keeps its own

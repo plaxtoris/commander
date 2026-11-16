@@ -15,7 +15,9 @@ and add an account: Commander prepares only that service's CLI when you select i
 GitHub, Azure, Microsoft 365, Hetzner, Google Cloud, Docker Hub and Confluence Cloud
 are available. Tools are shared by all accounts; project container tools are
 prepared on first use. Then start your preferred agent in the same folder.
-Commander creates `AGENTS.md` so your agent knows how to use it.
+Commander creates `AGENTS.md` so your agent knows how to use it. For new
+repositories, prefer `workspaces/<profile-name>/<repo-name>/` where practical.
+Existing repository locations remain valid.
 
 ```text
 ~/commander/
@@ -33,6 +35,10 @@ downloaded, checksum-verified and installed atomically, then Commander restarts
 automatically and updates only tools already installed or requested. Ready tools
 are reused. Microsoft 365 and project containers install independently, sharing
 Node only when both need it.
+Menu startup, `setup` and manual updates regenerate the installation's `AGENTS.md`
+from the running executable's template, replacing local edits. After an update,
+the restarted version supplies the new instructions. Keep project-specific
+instructions in each repository's own `AGENTS.md`.
 The update check times out after eight seconds. If checking or downloading fails,
 Commander continues with the installed version. An incomplete tool installation
 is retried on the next start or use and still needs network access. A failed tool

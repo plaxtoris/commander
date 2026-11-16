@@ -79,7 +79,7 @@ func TestEnsureAndRelocation(t *testing.T) {
 	}
 	data, _ := os.ReadFile(filepath.Join(a.root, "AGENTS.md"))
 	if string(data) != "my instructions\n" {
-		t.Fatal("instructions overwritten")
+		t.Fatal("instructions overwritten outside startup or setup")
 	}
 	for path, mode := range map[string]os.FileMode{".secrets": 0700, "profiles.json": 0600} {
 		info, err := os.Stat(filepath.Join(a.root, path))
@@ -106,12 +106,15 @@ func TestEnsureAndRelocation(t *testing.T) {
 }
 
 func TestSymlinkRejection(t *testing.T) {
-	for _, name := range []string{".secrets", "profiles.json"} {
+	for _, name := range []string{".secrets", "profiles.json", "AGENTS.md"} {
 		t.Run(name, func(t *testing.T) {
 			a := testApp(t)
 			os.RemoveAll(filepath.Join(a.root, name))
 			target := t.TempDir()
-			if name == "profiles.json" {
+			if name == "AGENTS.md" {
+				target = filepath.Join(target, "instructions")
+				mustWrite(t, target, []byte("external instructions\n"))
+			} else if name == "profiles.json" {
 				target = filepath.Join(target, "profile")
 				mustWrite(t, target, []byte(`{"version":1,"active":null,"profiles":{}}`))
 			}
@@ -121,11 +124,19 @@ func TestSymlinkRejection(t *testing.T) {
 			var err error
 			if name == ".secrets" {
 				err = a.ensure()
+			} else if name == "AGENTS.md" {
+				err = a.setup(false)
 			} else {
 				_, err = a.readProfiles()
 			}
 			if err == nil {
 				t.Fatal("accepted symlink")
+			}
+			if name == "AGENTS.md" {
+				data, err := os.ReadFile(target)
+				if err != nil || string(data) != "external instructions\n" {
+					t.Fatal("changed symlink target", err)
+				}
 			}
 		})
 	}
@@ -435,6 +446,11 @@ func TestUIHelper(t *testing.T) {
 	}
 	if err = a.ensure(); err != nil {
 		panic(err)
+	}
+	if os.Getenv("COMMANDER_RESTARTED") == a.root {
+		if instructions := os.Getenv("COMMANDER_UI_UPDATED_INSTRUCTIONS"); instructions != "" {
+			agentInstructions = instructions
+		}
 	}
 	if endpoint := os.Getenv("COMMANDER_UI_SERVICE_URL"); endpoint != "" {
 		serviceHTTP = redirectServiceFixture(endpoint)

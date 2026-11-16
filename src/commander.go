@@ -216,6 +216,14 @@ func (a *app) ensure() error {
 	return nil
 }
 
+func (a *app) refreshAgentInstructions() error {
+	path := filepath.Join(a.root, "AGENTS.md")
+	if err := noSymlinks(a.root, path); err != nil {
+		return err
+	}
+	return atomicWrite(path, []byte(agentInstructions), 0644)
+}
+
 func noSymlinks(root, path string) error {
 	rel, err := filepath.Rel(root, path)
 	if err != nil || rel == ".." || strings.HasPrefix(rel, ".."+string(os.PathSeparator)) {

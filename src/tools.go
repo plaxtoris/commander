@@ -623,6 +623,9 @@ func (a *app) setupProfile(name string) error {
 	if err := a.ensure(); err != nil {
 		return err
 	}
+	if err := a.refreshAgentInstructions(); err != nil {
+		return err
+	}
 	unlock, err := a.lock("native")
 	if err != nil {
 		return err
@@ -652,9 +655,14 @@ func (a *app) dockerStatus() {
 	fmt.Fprintln(a.out, "docker engine: ready")
 }
 
-// Setup repairs only used tools, including interrupted installations.
+// Setup refreshes agent instructions and repairs only used tools, including
+// interrupted installations. After an update, the restarted binary supplies
+// its own embedded instructions.
 func (a *app) setup(force bool) error {
 	if err := a.ensure(); err != nil {
+		return err
+	}
+	if err := a.refreshAgentInstructions(); err != nil {
 		return err
 	}
 	unlock, err := a.lock("native")

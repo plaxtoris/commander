@@ -167,6 +167,46 @@ func TestSetupOnlyUsedToolsAndResumes(t *testing.T) {
 	}
 }
 
+func TestSetupAndManualUpdateRefreshAgentInstructions(t *testing.T) {
+	for _, command := range []string{"setup", "update"} {
+		t.Run(command, func(t *testing.T) {
+			a := testApp(t)
+			binary := []byte("installed fixture")
+			mustWrite(t, filepath.Join(a.root, "commander"), binary)
+			useRelease(t, func(w http.ResponseWriter, r *http.Request) {
+				fmt.Fprintf(w, "%x  commander\n", sha256.Sum256(binary))
+			})
+			preserved := []string{"CLAUDE.md", "GEMINI.md", ".gitignore", "workspaces/work/project/AGENTS.md"}
+			for _, path := range preserved {
+				mustWrite(t, filepath.Join(a.root, path), []byte("local instructions\n"))
+			}
+			path := filepath.Join(a.root, "AGENTS.md")
+			for _, missing := range []bool{false, true} {
+				if missing {
+					if err := os.Remove(path); err != nil {
+						t.Fatal(err)
+					}
+				} else {
+					mustWrite(t, path, []byte("outdated instructions\n"))
+				}
+				if err := a.command([]string{command}); err != nil {
+					t.Fatal(err)
+				}
+				data, err := os.ReadFile(path)
+				if err != nil || string(data) != agentInstructions {
+					t.Fatal("instructions were not regenerated", err)
+				}
+			}
+			for _, path := range preserved {
+				data, err := os.ReadFile(filepath.Join(a.root, path))
+				if err != nil || string(data) != "local instructions\n" {
+					t.Fatal("changed unmanaged file", path, err)
+				}
+			}
+		})
+	}
+}
+
 func TestPrivateUpdateUsesSelectedIdentity(t *testing.T) {
 	for _, identity := range []string{"selected", "other", "no profile"} {
 		t.Run(identity, func(t *testing.T) {
@@ -247,6 +287,7 @@ func TestInteractiveStartupCurrentAndOffline(t *testing.T) {
 			defer server.Close()
 			t.Setenv("COMMANDER_UI_UPDATE_URL", server.URL+"/")
 			for i := 0; i < 2; i++ {
+				mustWrite(t, filepath.Join(moved, "AGENTS.md"), []byte("outdated instructions\n"))
 				s := openUI(t, moved)
 				s.wait(t, "esc quit")
 				if offline && !strings.Contains(s.output, "update skipped:") {
@@ -255,6 +296,10 @@ func TestInteractiveStartupCurrentAndOffline(t *testing.T) {
 				s.send(t, "3\r")
 				if err := s.command.Wait(); err != nil {
 					t.Fatal(err)
+				}
+				data, err := os.ReadFile(filepath.Join(moved, "AGENTS.md"))
+				if err != nil || string(data) != agentInstructions {
+					t.Fatal("startup did not refresh instructions after relocation", err)
 				}
 			}
 			if checks.Load() != 2 {

@@ -179,6 +179,9 @@ func TestInteractiveAutomaticUpdate(t *testing.T) {
 			saveProfile(t, a, "work")
 			original := []byte("original fixture executable")
 			mustWrite(t, filepath.Join(a.root, "commander"), original)
+			mustWrite(t, filepath.Join(a.root, "AGENTS.md"), []byte("outdated instructions\n"))
+			updatedInstructions := agentInstructions + "\nUpdated release instructions.\n"
+			t.Setenv("COMMANDER_UI_UPDATED_INSTRUCTIONS", updatedInstructions)
 			exe, err := os.Executable()
 			if err != nil {
 				t.Fatal(err)
@@ -240,6 +243,14 @@ func TestInteractiveAutomaticUpdate(t *testing.T) {
 			}
 			if err != nil || !bytes.Equal(after, want) {
 				t.Fatal("unexpected installed executable", err)
+			}
+			instructions, err := os.ReadFile(filepath.Join(a.root, "AGENTS.md"))
+			wantInstructions := agentInstructions
+			if valid {
+				wantInstructions = updatedInstructions
+			}
+			if err != nil || string(instructions) != wantInstructions {
+				t.Fatal("startup did not refresh instructions from the running version", err)
 			}
 			if checks.Load() != 1 {
 				t.Fatal("startup repeated the update check", checks.Load())
