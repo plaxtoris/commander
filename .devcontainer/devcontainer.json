@@ -1,27 +1,20 @@
 {
   "name": "commander",
   "build": {
-    "dockerfile": "Dockerfile",
-    "context": ".."
+    "dockerfile": "Dockerfile"
   },
-  "remoteUser": "vscode",
-  "remoteEnv": {
-    "SSH_AUTH_SOCK": null
+  "workspaceMount": "source=${localWorkspaceFolder},target=/workspace,type=bind",
+  "workspaceFolder": "/workspace",
+  "init": true,
+  "containerEnv": {
+    "GOCACHE": "/workspace/.data/build",
+    "GOMODCACHE": "/workspace/.data/modules"
   },
   "customizations": {
     "vscode": {
       "extensions": [
         "golang.Go"
-      ],
-      "settings": {
-        "files.watcherExclude": {
-          "**/.secrets/**": true
-        },
-        "search.exclude": {
-          "**/.secrets": true,
-          "**/tools": true
-        }
-      }
+      ]
     }
   }
 }

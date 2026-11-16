@@ -106,12 +106,8 @@ token forgets it locally; revoke it at the provider if required.
 ## Develop
 
 Open this repository in its VS Code devcontainer. Code and tests live in `src/`.
-The image installs native [Codex](https://developers.openai.com/codex/cli) and
-[Claude Code](https://code.claude.com/docs/en/setup) CLIs with their official
-`curl` installers as `vscode`, without Node.js or npm. Both commands are on `PATH`;
-`procps` supplies `ps` for Codex's background server. Installation is noninteractive.
-After changing the image, run **Dev Containers: Rebuild Container** in VS Code,
-then start `codex` or `claude` in a new terminal.
+The development image contains Go, Git and Make. Agents run on the host.
+Build and module caches stay in the ignored `.data/` directory.
 
 Run `make test` to check changes and `make build` to build `dist/commander`.
 GitHub Actions tests, builds and replaces the single `latest` release.

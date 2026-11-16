@@ -48,7 +48,7 @@ jobs:
       - name: Development container
         run: |
           docker build -f .devcontainer/Dockerfile -t commander-development-check .
-          docker run --rm -v "$PWD:/workspaces/commander:ro" commander-development-check make test
+          docker run --rm -v "$PWD:/workspace:ro" -e GOCACHE=/tmp/go-build -e GOMODCACHE=/tmp/go-mod commander-development-check make test
       - uses: actions/upload-artifact@v4
         with:
           name: commander
