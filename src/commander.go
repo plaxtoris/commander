@@ -96,6 +96,7 @@ func (a *app) command(args []string) error {
   commander                         update automatically, then open the menu
   commander setup [profile]         repair used tools, or prepare a profile and check its accounts
   commander context [profile]       account scope for your agent
+  commander memory [write REVISION]  read preferences, or replace them from stdin
   commander overview [profile]      check profile accounts
   commander exec -- tool [args...]   run a native tool with commander logins
   commander up project              start a project devcontainer
@@ -111,6 +112,8 @@ projects live in workspaces/. no shell configuration is required.`)
 	case "version", "--version":
 		fmt.Fprintln(a.out, "Commander", build, runtime.GOOS+"/"+runtime.GOARCH)
 		return nil
+	case "memory":
+		return a.memory(args[1:])
 	case "setup":
 		if len(args) > 2 {
 			return errors.New("usage: commander setup [PROFILE]")
@@ -195,7 +198,7 @@ func (a *app) ensure() error {
 		if name == "AGENTS.md" {
 			data = []byte(agentInstructions)
 		} else if name == ".gitignore" {
-			data = []byte("/.secrets/\n/tools/\n/workspaces/\n/profiles.json\n/commander\n/*.zip\n")
+			data = []byte("/.secrets/\n/tools/\n/workspaces/\n/profiles.json\n/MEMORY.md\n/commander\n/*.zip\n")
 		}
 		file, err := os.OpenFile(filepath.Join(a.root, name), os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0644)
 		if os.IsExist(err) {

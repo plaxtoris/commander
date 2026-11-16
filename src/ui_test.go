@@ -180,6 +180,8 @@ func TestInteractiveAutomaticUpdate(t *testing.T) {
 			original := []byte("original fixture executable")
 			mustWrite(t, filepath.Join(a.root, "commander"), original)
 			mustWrite(t, filepath.Join(a.root, "AGENTS.md"), []byte("outdated instructions\n"))
+			memory := "* Keep explanations simple.\n"
+			mustWrite(t, filepath.Join(a.root, "MEMORY.md"), []byte(memory))
 			updatedInstructions := agentInstructions + "\nUpdated release instructions.\n"
 			t.Setenv("COMMANDER_UI_UPDATED_INSTRUCTIONS", updatedInstructions)
 			exe, err := os.Executable()
@@ -251,6 +253,10 @@ func TestInteractiveAutomaticUpdate(t *testing.T) {
 			}
 			if err != nil || string(instructions) != wantInstructions {
 				t.Fatal("startup did not refresh instructions from the running version", err)
+			}
+			preferences, err := os.ReadFile(filepath.Join(a.root, "MEMORY.md"))
+			if err != nil || string(preferences) != memory {
+				t.Fatal("startup changed personal memory", err)
 			}
 			if checks.Load() != 1 {
 				t.Fatal("startup repeated the update check", checks.Load())

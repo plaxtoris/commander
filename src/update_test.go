@@ -176,7 +176,7 @@ func TestSetupAndManualUpdateRefreshAgentInstructions(t *testing.T) {
 			useRelease(t, func(w http.ResponseWriter, r *http.Request) {
 				fmt.Fprintf(w, "%x  commander\n", sha256.Sum256(binary))
 			})
-			preserved := []string{"CLAUDE.md", "GEMINI.md", ".gitignore", "workspaces/work/project/AGENTS.md"}
+			preserved := []string{"CLAUDE.md", "GEMINI.md", ".gitignore", "MEMORY.md", "workspaces/work/project/AGENTS.md"}
 			for _, path := range preserved {
 				mustWrite(t, filepath.Join(a.root, path), []byte("local instructions\n"))
 			}
