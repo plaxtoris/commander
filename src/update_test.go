@@ -126,15 +126,14 @@ func TestUpdateCheckTimeout(t *testing.T) {
 	}
 }
 
-func TestSetupAddsNewCatalogToolsAndResumes(t *testing.T) {
+func TestSetupOnlyUsedToolsAndResumes(t *testing.T) {
 	a := testApp(t)
-	preparedTools(t, a)
-	archives := make(map[string]download, len(a.catalog.Archives)+1)
+	archives := make(map[string]download, len(a.catalog.Archives))
 	for name, spec := range a.catalog.Archives {
 		archives[name] = spec
 	}
 	a.catalog.Archives = archives
-	payload := tarBytes(t, []*tar.Header{{Name: "new-cli", Mode: 0755, Size: 3, Typeflag: tar.TypeReg}}, []string{"new"})
+	payload := tarBytes(t, []*tar.Header{{Name: "hcloud", Mode: 0755, Size: 3, Typeflag: tar.TypeReg}}, []string{"new"})
 	var requests atomic.Int32
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if requests.Add(1) == 1 {
@@ -144,19 +143,27 @@ func TestSetupAddsNewCatalogToolsAndResumes(t *testing.T) {
 		w.Write(payload)
 	}))
 	defer server.Close()
-	a.catalog.Archives["new-cli"] = download{Version: "fixture", URL: server.URL, SHA256: fmt.Sprintf("%x", sha256.Sum256(payload))}
-	if err := a.setup(false); err == nil {
-		t.Fatal("setup ignored a failed new tool installation")
+	a.catalog.Archives["hcloud"] = download{Version: "fixture", URL: server.URL, SHA256: fmt.Sprintf("%x", sha256.Sum256(payload))}
+	if err := a.setup(false); err != nil || requests.Load() != 0 {
+		t.Fatal("fresh setup downloaded tools", err)
+	}
+	if err := a.prepareTool("hcloud", false); err == nil {
+		t.Fatal("ignored failed installation")
 	}
 	if err := a.setup(false); err != nil {
-		t.Fatal("setup did not resume", err)
+		t.Fatal("did not resume requested tool", err)
 	}
 	if err := a.setup(false); err != nil || requests.Load() != 2 {
-		t.Fatal("ready tools were downloaded again", err, requests.Load())
+		t.Fatal("downloaded ready tool", err, requests.Load())
 	}
-	data, err := os.ReadFile(filepath.Join(a.root, "tools", "new-cli", "new-cli"))
+	data, err := os.ReadFile(filepath.Join(a.root, "tools", "hcloud", "hcloud"))
 	if err != nil || string(data) != "new" {
-		t.Fatal("new catalog entry was not installed", err)
+		t.Fatal("tool not installed", err)
+	}
+	for _, name := range []string{"gh", "azure", "node", "docker", "gcloud"} {
+		if _, err := os.Stat(filepath.Join(a.root, "tools", name)); !os.IsNotExist(err) {
+			t.Fatal("installed unused tool", name)
+		}
 	}
 }
 
@@ -220,7 +227,6 @@ func TestInteractiveStartupCurrentAndOffline(t *testing.T) {
 	for _, offline := range []bool{false, true} {
 		t.Run(fmt.Sprint(offline), func(t *testing.T) {
 			a := testApp(t)
-			preparedTools(t, a)
 			saveProfile(t, a, "work")
 			binary := []byte("installed fixture")
 			mustWrite(t, filepath.Join(a.root, "commander"), binary)
@@ -243,7 +249,7 @@ func TestInteractiveStartupCurrentAndOffline(t *testing.T) {
 			for i := 0; i < 2; i++ {
 				s := openUI(t, moved)
 				s.wait(t, "Esc Quit")
-				if offline && !strings.Contains(s.output, "continuing with installed Commander") {
+				if offline && !strings.Contains(s.output, "Update skipped:") {
 					t.Fatal("offline startup did not explain the skipped update")
 				}
 				s.send(t, "3\r")

@@ -128,7 +128,7 @@ func TestIntegrationOfficeDeviceCode(t *testing.T) {
 	mustWrite(t, script, []byte(officeDeviceFixture))
 	run := func(mode string) {
 		cmd := exec.Command(filepath.Join(a.root, "tools", "node", "bin", "node"), script, mode)
-		cmd.Env = a.environment("m365", map[string]string{"COMMANDER_M365_DIST": filepath.Join(a.root, "tools", "npm", "node_modules", "@pnp", "cli-microsoft365", "dist")})
+		cmd.Env = a.environment("m365", map[string]string{"COMMANDER_M365_DIST": filepath.Join(a.packageDir("m365"), "node_modules", "@pnp", "cli-microsoft365", "dist")})
 		if output, err := cmd.CombinedOutput(); err != nil {
 			t.Fatalf("offline Office callback: %v\n%s", err, output)
 		}

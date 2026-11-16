@@ -255,7 +255,7 @@ func (a *app) installArchive(name string, spec download, force bool) error {
 	}
 	stamp, err := os.ReadFile(filepath.Join(destination, ".commander-version"))
 	if !force && err == nil && string(stamp) == spec.SHA256 {
-		entry := map[string]string{"gh": "bin/gh", "hcloud": "hcloud", "node": "bin/node", "uv": "uv", "gcloud": "bin/gcloud", "docker": "docker", "compose": "docker-compose"}[name]
+		entry := archiveEntries[name]
 		if entry == "" {
 			return nil
 		}
@@ -263,7 +263,6 @@ func (a *app) installArchive(name string, spec download, force bool) error {
 			return nil
 		}
 	}
-	fmt.Fprintln(a.out, "Installing", name, spec.Version+"...")
 	staging, err := os.MkdirTemp(filepath.Join(a.root, "tools"), ".install-")
 	if err != nil {
 		return err
@@ -321,76 +320,170 @@ func (a *app) python() (string, error) {
 func (a *app) installCommand(path string, args []string, extra map[string]string) error {
 	cmd := exec.Command(path, args...)
 	cmd.Env = a.environment("setup", extra)
-	cmd.Stdin = a.in
-	cmd.Stdout = a.out
-	cmd.Stderr = a.errOut
-	return cmd.Run()
+	cmd.Stdout = io.Discard
+	cmd.Stderr = io.Discard
+	if err := cmd.Run(); err != nil {
+		return fmt.Errorf("installer failed: %v", err)
+	}
+	return nil
 }
 
 func (a *app) installPython() error {
 	if _, err := a.python(); err == nil {
 		return nil
 	}
-	fmt.Fprintln(a.out, "Installing Python runtime...")
 	return a.installCommand(filepath.Join(a.root, "tools", "uv", "uv"), []string{"--quiet", "python", "install", a.catalog.Packages["python"], "--no-bin"}, map[string]string{"UV_PYTHON_INSTALL_DIR": filepath.Join(a.root, "tools", "python"), "UV_CACHE_DIR": filepath.Join(a.root, "tools", ".cache", "uv")})
 }
 
-func (a *app) installPackages(force bool) error {
-	tools := filepath.Join(a.root, "tools")
-	for _, name := range []string{"npm", "azure"} {
-		version := a.catalog.Packages["azure"]
-		if name == "npm" {
-			version = a.catalog.Packages["m365"] + "/" + a.catalog.Packages["devcontainer"]
-		}
-		stamp := filepath.Join(tools, name, ".commander-version")
-		data, _ := os.ReadFile(stamp)
-		if !force && string(data) == version {
-			entries := []string{"azure/cli/__main__.py"}
-			if name == "npm" {
-				entries = []string{"node_modules/@pnp/cli-microsoft365/dist/index.js", "node_modules/@devcontainers/cli/devcontainer.js"}
-			}
-			ready := true
-			for _, entry := range entries {
-				if _, err := os.Stat(filepath.Join(tools, name, entry)); err != nil {
-					ready = false
-				}
-			}
-			if ready {
-				continue
-			}
-		}
-		stage, err := os.MkdirTemp(tools, ".packages-")
-		if err != nil {
-			return err
-		}
-		var installErr error
-		if name == "npm" {
-			fmt.Fprintln(a.out, "Installing Microsoft 365 and Dev Containers...")
-			installErr = a.installCommand(filepath.Join(tools, "node", "bin", "node"), []string{filepath.Join(tools, "node", "lib", "node_modules", "npm", "bin", "npm-cli.js"), "install", "--prefix", stage, "--omit=dev", "--no-audit", "--no-fund", "--loglevel=error", "@pnp/cli-microsoft365@" + a.catalog.Packages["m365"], "@devcontainers/cli@" + a.catalog.Packages["devcontainer"]}, map[string]string{"npm_config_cache": filepath.Join(tools, ".cache", "npm"), "npm_config_update_notifier": "false"})
-		} else {
-			fmt.Fprintln(a.out, "Installing Azure CLI...")
-			python, e := a.python()
-			if e != nil {
-				os.RemoveAll(stage)
-				return e
-			}
-			installErr = a.installCommand(filepath.Join(tools, "uv", "uv"), []string{"--quiet", "pip", "install", "--python", python, "--target", stage, "azure-cli==" + a.catalog.Packages["azure"]}, map[string]string{"UV_CACHE_DIR": filepath.Join(tools, ".cache", "uv")})
-		}
-		if installErr == nil {
-			installErr = os.WriteFile(filepath.Join(stage, ".commander-version"), []byte(version), 0644)
-		}
-		if installErr == nil {
-			installErr = replaceDirectory(stage, filepath.Join(tools, name))
-		}
-		os.RemoveAll(stage)
-		if installErr != nil {
-			return installErr
-		}
-	}
-	return nil
+// Keep packages independent. Reuse the former shared npm directory until
+// a package needs updating.
+var packageEntries = map[string]string{
+	"m365":         "node_modules/@pnp/cli-microsoft365/dist/index.js",
+	"devcontainer": "node_modules/@devcontainers/cli/devcontainer.js",
+	"azure":        "azure/cli/__main__.py",
 }
 
-func (a *app) setup(force bool) error {
+func (a *app) packageDir(name string) string {
+	dir := filepath.Join(a.root, "tools", name)
+	if _, err := os.Stat(dir); !os.IsNotExist(err) || name == "azure" {
+		return dir
+	}
+	legacy := filepath.Join(a.root, "tools", "npm")
+	stamp, _ := os.ReadFile(filepath.Join(legacy, ".commander-version"))
+	versions := strings.Split(string(stamp), "/")
+	index := 0
+	if name == "devcontainer" {
+		index = 1
+	}
+	if len(versions) == 2 && versions[index] == a.catalog.Packages[name] {
+		return legacy
+	}
+	return dir
+}
+
+func (a *app) packageReady(name string) bool {
+	dir := a.packageDir(name)
+	stamp, _ := os.ReadFile(filepath.Join(dir, ".commander-version"))
+	if filepath.Base(dir) == "npm" {
+		versions := strings.Split(string(stamp), "/")
+		index := 0
+		if name == "devcontainer" {
+			index = 1
+		}
+		if len(versions) != 2 {
+			return false
+		}
+		stamp = []byte(versions[index])
+	}
+	info, err := os.Stat(filepath.Join(dir, packageEntries[name]))
+	return string(stamp) == a.catalog.Packages[name] && err == nil && info.Mode().IsRegular()
+}
+
+func (a *app) installPackage(name string, force bool) error {
+	if !force && a.packageReady(name) {
+		return nil
+	}
+	dir := filepath.Join(a.root, "tools")
+	if err := noSymlinks(a.root, filepath.Join(dir, name)); err != nil {
+		return err
+	}
+	stage, err := os.MkdirTemp(dir, ".packages-")
+	if err != nil {
+		return err
+	}
+	defer os.RemoveAll(stage)
+	if name == "azure" {
+		python, e := a.python()
+		if e != nil {
+			return e
+		}
+		err = a.installCommand(filepath.Join(dir, "uv", "uv"), []string{"--quiet", "pip", "install", "--python", python, "--target", stage, "azure-cli==" + a.catalog.Packages[name]}, map[string]string{"UV_CACHE_DIR": filepath.Join(dir, ".cache", "uv")})
+	} else {
+		pkg := "@pnp/cli-microsoft365"
+		if name == "devcontainer" {
+			pkg = "@devcontainers/cli"
+		}
+		err = a.installCommand(filepath.Join(dir, "node", "bin", "node"), []string{filepath.Join(dir, "node", "lib", "node_modules", "npm", "bin", "npm-cli.js"), "install", "--prefix", stage, "--omit=dev", "--no-audit", "--no-fund", "--loglevel=error", pkg + "@" + a.catalog.Packages[name]}, map[string]string{"npm_config_cache": filepath.Join(dir, ".cache", "npm"), "npm_config_update_notifier": "false"})
+	}
+	if err != nil {
+		return errors.New("installation failed; retry the action")
+	}
+	if err = os.WriteFile(filepath.Join(stage, ".commander-version"), []byte(a.catalog.Packages[name]), 0644); err != nil {
+		return err
+	}
+	return replaceDirectory(stage, filepath.Join(dir, name))
+}
+
+var toolDependencies = map[string][]string{
+	"gh": {"gh"}, "hcloud": {"hcloud"},
+	"az":     {"uv", "python", "azure"},
+	"gcloud": {"uv", "python", "gcloud"},
+	"m365":   {"node", "m365"},
+	"docker": {"docker"}, "docker-compose": {"compose"},
+	"devcontainer": {"node", "docker", "compose", "devcontainer"},
+}
+var managedTools = []string{"gh", "az", "m365", "hcloud", "gcloud", "docker", "docker-compose", "devcontainer"}
+var archiveEntries = map[string]string{"gh": "bin/gh", "hcloud": "hcloud", "node": "bin/node", "uv": "uv", "gcloud": "bin/gcloud", "docker": "docker", "compose": "docker-compose"}
+
+type toolPreparationError struct{ error }
+
+func toolLabel(tool string) string {
+	for service, command := range serviceTools {
+		if tool == command {
+			return serviceName(service)
+		}
+	}
+	if tool == "devcontainer" {
+		return "Project tools"
+	}
+	if tool == "docker" {
+		return "Docker"
+	}
+	if tool == "docker-compose" {
+		return "Docker Compose"
+	}
+	return tool
+}
+
+func (a *app) dependencyReady(name string) bool {
+	if name == "python" {
+		_, err := a.python()
+		return err == nil
+	}
+	if _, ok := packageEntries[name]; ok {
+		return a.packageReady(name)
+	}
+	spec := a.catalog.Archives[name]
+	dir := filepath.Join(a.root, "tools", name)
+	stamp, _ := os.ReadFile(filepath.Join(dir, ".commander-version"))
+	info, err := os.Stat(filepath.Join(dir, archiveEntries[name]))
+	return string(stamp) == spec.SHA256 && err == nil && info.Mode().IsRegular() && info.Mode().Perm()&0111 != 0
+}
+
+func (a *app) toolUsed(tool string) bool {
+	if _, err := os.Stat(filepath.Join(a.root, "tools", ".requested", tool)); err == nil {
+		return true
+	}
+	deps := toolDependencies[tool]
+	if len(deps) == 0 {
+		return false
+	}
+	name := deps[len(deps)-1]
+	if _, err := os.Stat(filepath.Join(a.root, "tools", name)); err == nil {
+		return true
+	}
+	if name == "m365" || name == "devcontainer" {
+		_, err := os.Stat(filepath.Join(a.root, "tools", "npm", packageEntries[name]))
+		return err == nil
+	}
+	return false
+}
+
+func (a *app) prepareTool(tool string, force bool) error {
+	deps, managed := toolDependencies[tool]
+	if !managed {
+		return nil
+	}
 	if runtime.GOOS != "linux" || runtime.GOARCH != "amd64" {
 		return errors.New("Commander supports Linux and WSL on x86_64")
 	}
@@ -402,61 +495,77 @@ func (a *app) setup(force bool) error {
 		return err
 	}
 	defer unlock()
-	if _, err := exec.LookPath("git"); err != nil {
-		fmt.Fprintln(a.out, "Installing Git...")
-		apt, err := exec.LookPath("apt-get")
+	marker := filepath.Join(a.root, "tools", ".requested", tool)
+	if err = noSymlinks(a.root, marker); err != nil {
+		return err
+	}
+	if err = os.MkdirAll(filepath.Dir(marker), 0700); err != nil {
+		return err
+	}
+	if err = atomicWrite(marker, []byte{}, 0600); err != nil {
+		return err
+	}
+	announced := false
+	for _, name := range deps {
+		if !force && a.dependencyReady(name) {
+			continue
+		}
+		if !announced {
+			fmt.Fprintln(a.errOut, "Preparing "+toolLabel(tool)+"…")
+			announced = true
+		}
+		switch {
+		case name == "python":
+			err = a.installPython()
+		case packageEntries[name] != "":
+			err = a.installPackage(name, force)
+		default:
+			err = a.installArchive(name, a.catalog.Archives[name], force)
+		}
 		if err != nil {
-			return errors.New("install Git with your system package manager, then run commander setup")
+			return fmt.Errorf("%s is not ready; retry the action: %w", tool, err)
 		}
-		command := apt
-		prefix := []string{}
-		if os.Geteuid() != 0 {
-			command, err = exec.LookPath("sudo")
-			if err != nil {
-				return errors.New("Git is missing; install it and run commander setup")
+	}
+	if announced {
+		fmt.Fprintln(a.errOut, toolLabel(tool)+" ready.")
+	}
+	return os.RemoveAll(filepath.Join(a.root, "tools", ".cache"))
+}
+
+// Setup repairs only used tools, including interrupted installations.
+func (a *app) setup(force bool) error {
+	if err := a.ensure(); err != nil {
+		return err
+	}
+	unlock, err := a.lock("native")
+	if err != nil {
+		return err
+	}
+	defer unlock()
+	var failures []error
+	for _, tool := range managedTools {
+		if a.toolUsed(tool) {
+			if err := a.prepareTool(tool, force); err != nil {
+				failures = append(failures, err)
 			}
-			prefix = []string{apt}
-		}
-		if err = a.installCommand(command, append(append([]string{}, prefix...), "update"), nil); err != nil {
-			return err
-		}
-		if err = a.installCommand(command, append(prefix, "install", "-y", "git", "ca-certificates"), nil); err != nil {
-			return err
 		}
 	}
-	names := make([]string, 0, len(a.catalog.Archives))
-	for name := range a.catalog.Archives {
-		names = append(names, name)
-	}
-	sort.Strings(names)
-	for _, name := range names {
-		spec := a.catalog.Archives[name]
-		if err = a.installArchive(name, spec, force); err != nil {
-			return fmt.Errorf("%s setup: %w; run commander setup to resume", name, err)
-		}
-	}
-	if err = a.installPython(); err != nil {
-		return err
-	}
-	if err = a.installPackages(force); err != nil {
-		return err
-	}
-	if err = os.RemoveAll(filepath.Join(a.root, "tools", ".cache")); err != nil {
-		return err
-	}
-	fmt.Fprintln(a.out, "Commander ready. Projects:", filepath.Join(a.root, "workspaces"))
-	return nil
+	return errors.Join(failures...)
 }
 
 func (a *app) doctor() error {
 	fmt.Fprintln(a.out, "Commander", build, "\nFolder:", a.root, "\nProjects:", filepath.Join(a.root, "workspaces"))
 	failed := false
-	for _, tool := range []string{"git", "gh", "az", "m365", "hcloud", "gcloud", "docker", "devcontainer"} {
+	for _, tool := range append([]string{"git"}, managedTools...) {
+		if tool != "git" && !a.toolUsed(tool) {
+			fmt.Fprintln(a.out, tool+": not installed · available on demand")
+			continue
+		}
 		args := []string{"--version"}
 		if tool == "m365" || tool == "hcloud" {
 			args = []string{"version"}
 		}
-		data, err := a.run(tool, args, true, nil)
+		data, err := a.nativeRunContext(context.Background(), tool, args, true, nil)
 		if err != nil {
 			fmt.Fprintln(a.out, tool+": not ready")
 			failed = true
@@ -468,9 +577,12 @@ func (a *app) doctor() error {
 		}
 		fmt.Fprintf(a.out, "%s: %s\n", tool, clean(line))
 	}
-	if _, err := a.run("docker", []string{"info", "--format", "{{.ServerVersion}}"}, true, nil); err != nil {
-		fmt.Fprintln(a.out, "Docker engine: not running. Only needed for project containers.")
+	if a.toolUsed("docker") {
+		if _, err := a.nativeRunContext(context.Background(), "docker", []string{"info", "--format", "{{.ServerVersion}}"}, true, nil); err != nil {
+			fmt.Fprintln(a.out, "Docker engine: not running. Only needed for project containers.")
+		}
 	}
+	fmt.Fprintln(a.out, "dockerhub: built in\nconfluence: built in")
 	if failed {
 		return errors.New("run ./commander setup to finish installing tools")
 	}

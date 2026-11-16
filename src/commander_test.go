@@ -202,6 +202,9 @@ func TestAccountsEveryProviderAndNoSecretOutput(t *testing.T) {
 		return []byte(fixtures[tool]), nil
 	}
 	for _, service := range services {
+		if tokenService(service) {
+			continue
+		} // Built-in providers have HTTP fixture tests.
 		rows, err := a.accounts(service)
 		if err != nil || len(rows) != 1 || rows[0].State != "Active" {
 			t.Fatal(service, rows, err)
@@ -431,6 +434,9 @@ func TestUIHelper(t *testing.T) {
 	}
 	if err = a.ensure(); err != nil {
 		panic(err)
+	}
+	if endpoint := os.Getenv("COMMANDER_UI_SERVICE_URL"); endpoint != "" {
+		serviceHTTP = redirectServiceFixture(endpoint)
 	}
 	if url := os.Getenv("COMMANDER_UI_UPDATE_URL"); url != "" {
 		releaseURL = url

@@ -15,11 +15,11 @@ import (
 	"unicode/utf8"
 )
 
-var services = []string{"github", "azure", "office", "hetzner", "gcloud"}
-var serviceTools = map[string]string{"github": "gh", "azure": "az", "office": "m365", "hetzner": "hcloud", "gcloud": "gcloud"}
+var services = []string{"github", "azure", "office", "hetzner", "gcloud", "dockerhub", "confluence"}
+var serviceTools = map[string]string{"github": "gh", "azure": "az", "office": "m365", "hetzner": "hcloud", "gcloud": "gcloud", "dockerhub": "dockerhub", "confluence": "confluence"}
 
 func serviceName(service string) string {
-	if name := map[string]string{"github": "GitHub", "azure": "Azure", "office": "Microsoft 365", "hetzner": "Hetzner", "gcloud": "Google Cloud"}[service]; name != "" {
+	if name := map[string]string{"github": "GitHub", "azure": "Azure", "office": "Microsoft 365", "hetzner": "Hetzner", "gcloud": "Google Cloud", "dockerhub": "Docker Hub", "confluence": "Confluence Cloud"}[service]; name != "" {
 		return name
 	}
 	return service
@@ -218,6 +218,9 @@ func (a *app) profile(name string) (string, []member, error) {
 }
 
 func (a *app) accounts(service string) ([]account, error) {
+	if tokenService(service) {
+		return a.tokenAccounts(service)
+	}
 	commands := map[string][]string{
 		"github": {"auth", "status", "--json", "hosts"}, "azure": {"account", "list", "--all", "--output", "json"},
 		"office": {"connection", "list", "--output", "json"}, "hetzner": {"context", "list", "--output", "json", "--allow-sensitive=false"},
@@ -313,7 +316,7 @@ func (a *app) accounts(service string) ([]account, error) {
 func (a *app) resolve(members []member) []account {
 	found := map[string]account{}
 	queried := map[string]bool{}
-	failed := map[string]bool{}
+	failed := map[string]string{}
 	for _, m := range members {
 		if queried[m.Service] {
 			continue
@@ -321,7 +324,11 @@ func (a *app) resolve(members []member) []account {
 		queried[m.Service] = true
 		rows, err := a.accounts(m.Service)
 		if err != nil {
-			failed[m.Service] = true
+			failed[m.Service] = "Check login"
+			var preparation *toolPreparationError
+			if errors.As(err, &preparation) {
+				failed[m.Service] = "Tool not ready"
+			}
 			continue
 		}
 		for _, r := range rows {
@@ -332,11 +339,23 @@ func (a *app) resolve(members []member) []account {
 	for _, m := range members {
 		r, ok := found[m.id()]
 		state := "Missing account"
-		if failed[m.Service] {
-			state = "Check login"
+		if failed[m.Service] != "" {
+			state = failed[m.Service]
 		} else if ok {
 			state = r.State
+			if tokenService(m.Service) {
+				records, err := a.tokenLogins(m.Service)
+				if err == nil {
+					_, err = records[m.selector()].verify(m.Service)
+				}
+				if err != nil {
+					state = "Check login"
+				}
+			}
 			if r.Account != m.Account {
+				state = "Check identity"
+			}
+			if tokenService(m.Service) && r.Context != m.Context {
 				state = "Check identity"
 			}
 		}
@@ -384,6 +403,8 @@ func (a *app) describe(name string, context bool) error {
 			fmt.Fprintf(a.out, "Select: ./commander exec -- gh auth switch --hostname %s --user %s\nVerify: ./commander exec -- gh auth status\n", quote(host), quote(user))
 		case "office":
 			fmt.Fprintf(a.out, "Select: ./commander exec -- m365 connection use --name %s\nVerify: ./commander exec -- m365 connection list\n", quote(r.selector()))
+		case "dockerhub", "confluence":
+			fmt.Fprintf(a.out, "Use with %s: --account %s\nVerify: ./commander exec -- %s whoami --account %s\n", r.Service, quote(r.selector()), r.Service, quote(r.selector()))
 		default:
 			flag := map[string]string{"azure": "--subscription", "hetzner": "--context", "gcloud": "--account"}[r.Service]
 			fmt.Fprintf(a.out, "Use with %s: %s %s\n", serviceTools[r.Service], flag, quote(r.selector()))
@@ -500,6 +521,9 @@ func (a *app) officeOrganization() error {
 }
 
 func (a *app) login(service string) error {
+	if tokenService(service) {
+		return a.loginToken(service)
+	}
 	switch service {
 	case "github":
 		_, err := a.run("gh", []string{"auth", "login", "--hostname", "github.com", "--git-protocol", "https", "--web", "--clipboard=false", "--expiring", "--insecure-storage", "--scopes", githubScopes}, false, map[string]string{"GH_PROMPT_DISABLED": "1"})
@@ -567,6 +591,14 @@ func (a *app) login(service string) error {
 }
 
 func (a *app) deleteLogin(m member) error {
+	if tokenService(m.Service) {
+		records, err := a.tokenLogins(m.Service)
+		if err != nil {
+			return err
+		}
+		delete(records, m.selector())
+		return a.writeTokenLogins(m.Service, records)
+	}
 	var args []string
 	switch m.Service {
 	case "github":

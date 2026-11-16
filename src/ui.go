@@ -284,8 +284,8 @@ func (a *app) password(label string, confirm bool) (string, error) {
 		return "", errors.New("hidden input is unavailable")
 	}
 	value := string(data)
-	if value == "" || len(data) > 1024 || strings.ContainsAny(value, "\r\n\x00") {
-		return "", errors.New("enter a nonempty value of at most 1024 bytes")
+	if value == "" || len(data) > 8192 || strings.ContainsAny(value, "\r\n\x00") {
+		return "", errors.New("enter a nonempty value of at most 8192 bytes")
 	}
 	if confirm {
 		if utf8.RuneCount(data) < 4 {
@@ -324,8 +324,8 @@ func (a *app) readHidden() ([]byte, error) {
 				value = value[:len(value)-size]
 			}
 		default:
-			if len(value) >= 1024 {
-				return nil, errors.New("hidden input exceeds 1024 bytes")
+			if len(value) >= 8192 {
+				return nil, errors.New("hidden input exceeds 8192 bytes")
 			}
 			value = append(value, one[0])
 		}
@@ -586,6 +586,10 @@ func (a *app) addAccount(name string) error {
 	service := services[which]
 	for {
 		rows, err := a.accounts(service)
+		var preparation *toolPreparationError
+		if errors.As(err, &preparation) {
+			return err
+		}
 		notice := "Choose a saved login or sign in."
 		if err != nil {
 			notice = "Could not read saved logins. Sign in to reconnect."

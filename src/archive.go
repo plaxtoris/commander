@@ -72,6 +72,7 @@ var nativeFiles = map[string]bool{
 	".azure/azureProfile.json": true, ".azure/msal_token_cache.json": true,
 	".cli-m365-all-connections.json": true, ".cli-m365-connection.json": true, ".cli-m365-msal-cache.json": true,
 	".config/configstore/cli-m365-config.json": true, ".config/gcloud/credentials.db": true,
+	".config/commander/dockerhub.json": true, ".config/commander/confluence.json": true,
 }
 
 func newStorage(root string) *storage { return &storage{root: root, originals: map[string][]byte{}} }
@@ -120,6 +121,17 @@ func (s *storage) json(name string, fallback any) (any, error) {
 }
 
 func (s *storage) state(service string) (object, error) {
+	if tokenService(service) {
+		value, err := s.json(tokenFile(service), object{})
+		if err != nil {
+			return nil, err
+		}
+		state, ok := value.(map[string]any)
+		if !ok {
+			return nil, errFormat
+		}
+		return state, nil
+	}
 	switch service {
 	case "github":
 		data, err := s.read(".config/gh/hosts.yml")
@@ -288,6 +300,17 @@ func selectMSAL(cache object, identities, clients, localIDs, realms []string) (o
 }
 
 func selectLogins(service string, state object, members []member) (object, error) {
+	if tokenService(service) {
+		selected := object{}
+		for _, m := range members {
+			c, err := decodeTokenLogin(service, m.selector(), state[m.selector()])
+			if err != nil || c.member(service).Account != m.Account || c.member(service).Context != m.Context {
+				return nil, errFormat
+			}
+			selected[m.selector()] = obj(clone(c))
+		}
+		return selected, nil
+	}
 	if len(members) == 0 {
 		return nil, errFormat
 	}
@@ -495,6 +518,14 @@ func (s *storage) install(service string, incoming object) (map[string][]byte, e
 		return nil, err
 	}
 	files := map[string][]byte{}
+	if tokenService(service) {
+		merged, err := mergeMap(existing, incoming)
+		if err != nil {
+			return nil, err
+		}
+		files[tokenFile(service)] = encode(merged)
+		return files, nil
+	}
 	switch service {
 	case "github":
 		for host, v := range incoming {

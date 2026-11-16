@@ -24,16 +24,19 @@ func (a *app) start() error {
 	restarted := os.Getenv("COMMANDER_RESTARTED") == a.root
 	os.Unsetenv("COMMANDER_RESTARTED")
 	if !restarted {
-		fmt.Fprintln(a.out, "Checking for Commander updates...")
+		fmt.Fprintln(a.errOut, "Checking updates…")
 		updated, err := a.update()
 		if err != nil {
-			fmt.Fprintln(a.errOut, "Update unavailable; continuing with installed Commander:", err)
+			fmt.Fprintln(a.errOut, "Update skipped:", err)
 		} else if updated {
 			return a.restartCommander(nil)
 		}
 	}
-	if err := a.setup(false); err != nil {
+	if err := a.ensure(); err != nil {
 		return err
+	}
+	if err := a.setup(false); err != nil {
+		fmt.Fprintln(a.errOut, "Tools need attention; retry when needed:", err)
 	}
 	return a.menu()
 }

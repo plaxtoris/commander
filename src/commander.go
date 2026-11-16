@@ -94,14 +94,14 @@ func (a *app) command(args []string) error {
 		fmt.Fprintln(a.out, `Commander
 
   commander                         Update automatically, then open the menu
-  commander setup                   Prepare tools and agent instructions
+  commander setup                   Repair used tools and prepare this folder
   commander context [PROFILE]       Account scope for your agent
   commander overview [PROFILE]      Check profile accounts
   commander exec -- TOOL [ARGS...]   Run a native tool with Commander logins
   commander up PROJECT              Start a project devcontainer
   commander export [FILE.zip]        Export a profile and selected logins
   commander import FILE.zip         Import a profile and its logins
-  commander update                  Update Commander and its tools
+  commander update                  Update Commander and installed tools
   commander doctor                  Check the installation
   commander version                 Show the installed build
 
@@ -279,7 +279,7 @@ func (a *app) environment(tool string, extra map[string]string) []string {
 		key, value, _ := strings.Cut(line, "=")
 		env[key] = value
 	}
-	for _, key := range []string{"GH_TOKEN", "GITHUB_TOKEN", "GH_ENTERPRISE_TOKEN", "GITHUB_ENTERPRISE_TOKEN", "GH_DEBUG", "GH_PROMPT_DISABLED", "HCLOUD_TOKEN", "HCLOUD_CONTEXT", "HCLOUD_DEBUG", "HCLOUD_ENDPOINT", "HCLOUD_HETZNER_ENDPOINT", "CLOUDSDK_AUTH_ACCESS_TOKEN", "CLOUDSDK_AUTH_CREDENTIAL_FILE_OVERRIDE", "CLOUDSDK_AUTH_IMPERSONATE_SERVICE_ACCOUNT", "GOOGLE_APPLICATION_CREDENTIALS", "PYTHONPATH", "PYTHONHOME"} {
+	for _, key := range []string{"GH_TOKEN", "GITHUB_TOKEN", "GH_ENTERPRISE_TOKEN", "GITHUB_ENTERPRISE_TOKEN", "GH_DEBUG", "GH_PROMPT_DISABLED", "HCLOUD_TOKEN", "HCLOUD_CONTEXT", "HCLOUD_DEBUG", "HCLOUD_ENDPOINT", "HCLOUD_HETZNER_ENDPOINT", "CLOUDSDK_AUTH_ACCESS_TOKEN", "CLOUDSDK_AUTH_CREDENTIAL_FILE_OVERRIDE", "CLOUDSDK_AUTH_IMPERSONATE_SERVICE_ACCOUNT", "GOOGLE_APPLICATION_CREDENTIALS", "PYTHONPATH", "PYTHONHOME", "DOCKER_AUTH_CONFIG"} {
 		delete(env, key)
 	}
 	for key := range env {
@@ -292,6 +292,7 @@ func (a *app) environment(tool string, extra map[string]string) []string {
 	env["HCLOUD_CONFIG"] = filepath.Join(store, ".config", "hcloud", "cli.toml")
 	env["AZURE_CONFIG_DIR"] = filepath.Join(store, ".azure")
 	env["CLOUDSDK_CONFIG"] = filepath.Join(store, ".config", "gcloud")
+	env["DOCKER_CONFIG"] = filepath.Join(store, ".config", "docker")
 	env["COMMANDER_WORKSPACE"] = filepath.Join(a.root, "workspaces")
 	// Git inherits Commander credentials without changing the user's Git config.
 	count, parseErr := strconv.Atoi(env["GIT_CONFIG_COUNT"])
@@ -304,7 +305,7 @@ func (a *app) environment(tool string, extra map[string]string) []string {
 		count++
 	}
 	env["GIT_CONFIG_COUNT"] = strconv.Itoa(count)
-	env["PATH"] = strings.Join([]string{filepath.Join(a.root, "tools", "node", "bin"), filepath.Join(a.root, "tools", "npm", "node_modules", ".bin"), filepath.Join(a.root, "tools", "gh", "bin"), filepath.Join(a.root, "tools", "hcloud"), filepath.Join(a.root, "tools", "docker"), env["PATH"]}, string(os.PathListSeparator))
+	env["PATH"] = strings.Join([]string{filepath.Join(a.root, "tools", "node", "bin"), filepath.Join(a.packageDir("m365"), "node_modules", ".bin"), filepath.Join(a.packageDir("devcontainer"), "node_modules", ".bin"), filepath.Join(a.root, "tools", "gh", "bin"), filepath.Join(a.root, "tools", "hcloud"), filepath.Join(a.root, "tools", "docker"), env["PATH"]}, string(os.PathListSeparator))
 	if python, err := a.python(); err == nil {
 		env["CLOUDSDK_PYTHON"] = python
 	}
@@ -346,9 +347,9 @@ func (a *app) toolCommand(tool string, args []string) (string, []string, error) 
 		path = filepath.Join(dir, "compose", "docker-compose")
 	case "m365", "devcontainer":
 		path = filepath.Join(dir, "node", "bin", "node")
-		entry := filepath.Join(dir, "npm", "node_modules", "@pnp", "cli-microsoft365", "dist", "index.js")
+		entry := filepath.Join(a.packageDir("m365"), packageEntries["m365"])
 		if tool == "devcontainer" {
-			entry = filepath.Join(dir, "npm", "node_modules", "@devcontainers", "cli", "devcontainer.js")
+			entry = filepath.Join(a.packageDir("devcontainer"), packageEntries["devcontainer"])
 		}
 		args = append([]string{entry}, args...)
 	case "az":
@@ -366,12 +367,31 @@ func (a *app) toolCommand(tool string, args []string) (string, []string, error) 
 		}
 	}
 	if _, err := os.Stat(path); err != nil {
-		return "", nil, fmt.Errorf("%s is not ready; run commander setup", tool)
+		return "", nil, fmt.Errorf("%s is not installed; use commander exec -- %s to prepare it", tool, tool)
 	}
 	return path, args, nil
 }
 
 func (a *app) nativeRun(tool string, args []string, capture bool, extra map[string]string) ([]byte, error) {
+	if tool == "dockerhub" || tool == "confluence" {
+		return a.tokenRun(tool, args, capture)
+	}
+	if err := a.prepareTool(tool, false); err != nil {
+		return nil, &toolPreparationError{err}
+	}
+	if tool == "docker" || tool == "docker-compose" || tool == "devcontainer" {
+		config, cleanup, err := a.dockerConfig("")
+		if err != nil {
+			return nil, err
+		}
+		defer cleanup()
+		merged := map[string]string{}
+		for k, v := range extra {
+			merged[k] = v
+		}
+		merged["DOCKER_CONFIG"] = config
+		extra = merged
+	}
 	return a.nativeRunContext(context.Background(), tool, args, capture, extra)
 }
 
@@ -412,6 +432,14 @@ func (a *app) up(project string) error {
 	if err != nil || rel == "." || rel == ".." || strings.HasPrefix(rel, "../") {
 		return errors.New("choose a project inside Commander workspaces")
 	}
+	if err := a.ensure(); err != nil {
+		return err
+	}
+	unlock, err := a.lock("native")
+	if err != nil {
+		return err
+	}
+	defer unlock()
 	_, err = a.run("devcontainer", []string{"up", "--workspace-folder", project, "--docker-path", filepath.Join(a.root, "tools", "docker", "docker"), "--docker-compose-path", filepath.Join(a.root, "tools", "compose", "docker-compose")}, false, nil)
 	return err
 }
