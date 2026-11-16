@@ -2,6 +2,8 @@
 
 Commander keeps native tools, accounts and projects in this folder.
 Run `./commander` for the menu. Start your preferred agent here independently.
+Opening the menu automatically updates and restarts Commander when needed, then
+installs missing or changed tools. Direct commands such as `exec` do not auto-update.
 
 1. Before service work, run `./commander context` or `./commander context PROFILE`.
    Use only that profile's accounts. If it is missing or empty, ask the user to

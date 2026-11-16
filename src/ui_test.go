@@ -1,6 +1,7 @@
 package main
 
 import (
+	"archive/tar"
 	"bytes"
 	"crypto/sha256"
 	"fmt"
@@ -9,7 +10,9 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"strconv"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"unicode/utf8"
 
@@ -83,7 +86,7 @@ func TestInteractiveProfileSwitchAndScopedRemoval(t *testing.T) {
 	s.wait(t, "No accounts yet")
 	s.send(t, "\x1b")
 	s.wait(t, "Open Accounts to add")
-	s.send(t, "4\r")
+	s.send(t, "3\r")
 	if err := s.command.Wait(); err != nil {
 		t.Fatal(err)
 	}
@@ -106,7 +109,7 @@ func TestInteractiveSmallTerminalAndPaging(t *testing.T) {
 	if strings.Contains(s.output, "project-23") || !strings.Contains(s.output, "PgUp/PgDn") {
 		t.Fatal("long description was not paged", s.output)
 	}
-	// Home has four choices and six description lines per page at this size.
+	// Page through the description in a small terminal.
 	s.send(t, strings.Repeat("\x1b[6~", 20))
 	s.wait(t, "project-23")
 	s.send(t, strings.Repeat("\x1b[5~", 20))
@@ -135,43 +138,57 @@ func TestInteractiveSmallTerminalAndPaging(t *testing.T) {
 	}
 }
 
-func TestInteractiveUpdate(t *testing.T) {
+func TestInteractiveAutomaticUpdate(t *testing.T) {
 	for _, valid := range []bool{true, false} {
 		t.Run(fmt.Sprintf("checksum-valid-%t", valid), func(t *testing.T) {
 			a := testApp(t)
+			preparedTools(t, a)
 			saveProfile(t, a, "work")
 			original := []byte("original fixture executable")
 			mustWrite(t, filepath.Join(a.root, "commander"), original)
-			binary := []byte("#!/bin/sh\ncase \"$1\" in\nversion) echo 'Commander fixture';;\nsetup) echo prepared > \"$COMMANDER_WORKSPACE/update-fixture\";;\n*) exit 2;;\nesac\n")
+			exe, err := os.Executable()
+			if err != nil {
+				t.Fatal(err)
+			}
+			binary := []byte("#!/bin/sh\nif [ \"$1\" = version ]; then echo 'Commander fixture'; exit 0; fi\nprintf '%s' \"$$\" > \"$COMMANDER_HOME/workspaces/update-fixture\"\nexec " + quote(exe) + " -test.run=TestUIHelper\n")
 			sum := sha256.Sum256(binary)
+			tool := tarBytes(t, []*tar.Header{{Name: "hcloud", Mode: 0755, Size: 3, Typeflag: tar.TypeReg}}, []string{"new"})
+			toolSum := sha256.Sum256(tool)
 			if !valid {
 				sum = sha256.Sum256([]byte("different fixture"))
 			}
+			var checks, installs atomic.Int32
 			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 				switch r.URL.Path {
 				case "/SHA256SUMS":
+					checks.Add(1)
 					fmt.Fprintf(w, "%x  commander\n", sum)
 				case "/commander":
 					w.Write(binary)
+				case "/hcloud":
+					installs.Add(1)
+					w.Write(tool)
 				default:
 					http.NotFound(w, r)
 				}
 			}))
 			defer server.Close()
 			t.Setenv("COMMANDER_UI_UPDATE_URL", server.URL+"/")
+			if valid {
+				t.Setenv("COMMANDER_UI_TOOL_URL", server.URL+"/hcloud")
+				t.Setenv("COMMANDER_UI_TOOL_SUM", fmt.Sprintf("%x", toolSum))
+			}
 			s := openUI(t, a.root)
 			s.wait(t, "Esc Quit")
-			if strings.Contains(s.output, "Tools and updates") {
-				t.Fatal("obsolete tools submenu is still visible")
+			for _, unwanted := range []string{"Update Commander and all tools", "Tools and updates", "Setup"} {
+				if strings.Contains(s.output, unwanted) {
+					t.Fatal("unexpected menu item", unwanted)
+				}
+			}
+			if !valid && !strings.Contains(s.output, "checksum did not match") {
+				t.Fatal("failed update was not reported", s.output)
 			}
 			s.send(t, "3\r")
-			if valid {
-				s.wait(t, "Update complete")
-				s.send(t, "\r")
-			} else {
-				s.wait(t, "checksum did not match")
-				s.send(t, "q")
-			}
 			if err := s.command.Wait(); err != nil {
 				t.Fatal(err)
 			}
@@ -180,12 +197,23 @@ func TestInteractiveUpdate(t *testing.T) {
 			if valid {
 				want = binary
 				marker, err := os.ReadFile(filepath.Join(a.root, "workspaces", "update-fixture"))
-				if err != nil || string(marker) != "prepared\n" {
-					t.Fatal("updated executable did not prepare its tools", err)
+				if err != nil || string(marker) != strconv.Itoa(s.command.Process.Pid) {
+					t.Fatal("updated executable did not replace the original process", err)
+				}
+				installed, err := os.ReadFile(filepath.Join(a.root, "tools", "hcloud", "hcloud"))
+				if err != nil || string(installed) != "new" || installs.Load() != 1 {
+					t.Fatal("restart did not install the changed tool version", err)
 				}
 			}
 			if err != nil || !bytes.Equal(after, want) {
 				t.Fatal("unexpected installed executable", err)
+			}
+			if checks.Load() != 1 {
+				t.Fatal("startup repeated the update check", checks.Load())
+			}
+			staging, _ := filepath.Glob(filepath.Join(a.root, ".update-*"))
+			if len(staging) != 0 {
+				t.Fatal("restart left update staging directories", staging)
 			}
 		})
 	}

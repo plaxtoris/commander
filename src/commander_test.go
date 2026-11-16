@@ -4,6 +4,7 @@ import (
 	"archive/tar"
 	"bytes"
 	"compress/gzip"
+	"context"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
@@ -433,6 +434,14 @@ func TestUIHelper(t *testing.T) {
 	}
 	if url := os.Getenv("COMMANDER_UI_UPDATE_URL"); url != "" {
 		releaseURL = url
+		a.releaseRun = func(context.Context, []string) ([]byte, error) {
+			return nil, errors.New("private release fixture unavailable")
+		}
+		if url := os.Getenv("COMMANDER_UI_TOOL_URL"); url != "" {
+			spec := a.catalog.Archives["hcloud"]
+			spec.URL, spec.SHA256 = url, os.Getenv("COMMANDER_UI_TOOL_SUM")
+			a.catalog.Archives["hcloud"] = spec
+		}
 	}
 	created := ""
 	a.run = func(tool string, args []string, capture bool, extra map[string]string) ([]byte, error) {
@@ -455,7 +464,11 @@ func TestUIHelper(t *testing.T) {
 		}
 		return nil, errors.New("unexpected native fixture operation")
 	}
-	err = a.menu()
+	if os.Getenv("COMMANDER_UI_UPDATE_URL") != "" {
+		err = a.command(nil)
+	} else {
+		err = a.menu()
+	}
 	if err != nil && !errors.Is(err, errCancelled) {
 		fmt.Fprintln(os.Stderr, err)
 		os.Exit(1)

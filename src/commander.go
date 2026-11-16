@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	_ "embed"
 	"errors"
 	"fmt"
@@ -64,7 +65,8 @@ type app struct {
 	out, errOut io.Writer
 	catalog     catalog
 	// Tests replace native commands with local fixtures. Production uses nativeRun.
-	run func(string, []string, bool, map[string]string) ([]byte, error)
+	run        func(string, []string, bool, map[string]string) ([]byte, error)
+	releaseRun func(context.Context, []string) ([]byte, error)
 }
 
 func newApp(root string, in *os.File, out, errOut io.Writer) (*app, error) {
@@ -74,6 +76,9 @@ func newApp(root string, in *os.File, out, errOut io.Writer) (*app, error) {
 	}
 	a := &app{root: root, in: in, out: out, errOut: errOut, catalog: toolCatalog}
 	a.run = a.nativeRun
+	a.releaseRun = func(ctx context.Context, args []string) ([]byte, error) {
+		return a.nativeRunContext(ctx, "gh", args, true, map[string]string{"GH_HOST": "github.com", "GH_PROMPT_DISABLED": "1"})
+	}
 	return a, nil
 }
 
@@ -82,16 +87,13 @@ func (a *app) command(args []string) error {
 		if !a.terminal() {
 			return errors.New("open Commander in a terminal; use help, context or overview for text output")
 		}
-		if err := a.setup(false); err != nil {
-			return err
-		}
-		return a.menu()
+		return a.start()
 	}
 	switch args[0] {
 	case "help", "--help", "-h":
 		fmt.Fprintln(a.out, `Commander
 
-  commander                         Profiles and logins
+  commander                         Update automatically, then open the menu
   commander setup                   Prepare tools and agent instructions
   commander context [PROFILE]       Account scope for your agent
   commander overview [PROFILE]      Check profile accounts
@@ -149,7 +151,17 @@ Projects live in workspaces/. No shell configuration is required.`)
 	case "doctor":
 		return a.doctor()
 	case "update":
-		return a.update()
+		if len(args) != 1 {
+			return errors.New("usage: commander update")
+		}
+		updated, err := a.update()
+		if err != nil {
+			return err
+		}
+		if updated {
+			return a.restartCommander([]string{"setup"})
+		}
+		return a.setup(false)
 	case "export", "import":
 		return a.transfer(args)
 	default:
@@ -360,11 +372,15 @@ func (a *app) toolCommand(tool string, args []string) (string, []string, error) 
 }
 
 func (a *app) nativeRun(tool string, args []string, capture bool, extra map[string]string) ([]byte, error) {
+	return a.nativeRunContext(context.Background(), tool, args, capture, extra)
+}
+
+func (a *app) nativeRunContext(ctx context.Context, tool string, args []string, capture bool, extra map[string]string) ([]byte, error) {
 	path, args, err := a.toolCommand(tool, args)
 	if err != nil {
 		return nil, err
 	}
-	cmd := exec.Command(path, args...)
+	cmd := exec.CommandContext(ctx, path, args...)
 	cmd.Env = a.environment(tool, extra)
 	cmd.Stdin = a.in
 	if capture {

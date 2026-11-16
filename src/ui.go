@@ -507,7 +507,6 @@ func (a *app) menu() error {
 		index, err := a.choose("Home", description, []string{
 			"Accounts\tView, add or remove accounts",
 			"Profiles\tSwitch, manage or share profiles",
-			"Update\tUpdate Commander and all tools",
 			"Quit\tReturn to your terminal",
 		})
 		if err != nil {
@@ -523,13 +522,6 @@ func (a *app) menu() error {
 				name = chosen
 			}
 		case 2:
-			fmt.Fprintln(a.out, "Updating Commander and tools…")
-			err = a.update()
-			if err == nil {
-				a.pause("Update complete. Start ./commander again to use the new version.")
-				return nil
-			}
-		case 3:
 			return nil
 		}
 		if err != nil && !errors.Is(err, errCancelled) {

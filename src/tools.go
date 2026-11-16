@@ -3,6 +3,7 @@ package main
 import (
 	"archive/tar"
 	"compress/gzip"
+	"context"
 	"crypto/sha256"
 	"encoding/hex"
 	"errors"
@@ -85,7 +86,15 @@ var toolCatalog = catalog{
 var httpClient = &http.Client{Timeout: 20 * time.Minute}
 
 func fetch(url, path, expected string) error {
-	response, err := httpClient.Get(url)
+	return fetchContext(context.Background(), url, path, expected)
+}
+
+func fetchContext(ctx context.Context, url, path, expected string) error {
+	request, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
+	if err != nil {
+		return err
+	}
+	response, err := httpClient.Do(request)
 	if err != nil {
 		return fmt.Errorf("download failed: %w", err)
 	}
@@ -415,11 +424,13 @@ func (a *app) setup(force bool) error {
 			return err
 		}
 	}
-	for _, name := range []string{"gh", "hcloud", "node", "uv", "gcloud", "docker", "compose"} {
-		spec, ok := a.catalog.Archives[name]
-		if !ok {
-			return fmt.Errorf("no supported download for %s", name)
-		}
+	names := make([]string, 0, len(a.catalog.Archives))
+	for name := range a.catalog.Archives {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	for _, name := range names {
+		spec := a.catalog.Archives[name]
 		if err = a.installArchive(name, spec, force); err != nil {
 			return fmt.Errorf("%s setup: %w; run commander setup to resume", name, err)
 		}
@@ -464,78 +475,4 @@ func (a *app) doctor() error {
 		return errors.New("run ./commander setup to finish installing tools")
 	}
 	return nil
-}
-
-var releaseURL = "https://github.com/plaxtoris/commander/releases/download/latest/"
-
-func (a *app) update() error {
-	if err := a.ensure(); err != nil {
-		return err
-	}
-	unlock, err := a.lock("update")
-	if err != nil {
-		return err
-	}
-	defer unlock()
-	stage, err := os.MkdirTemp(a.root, ".update-")
-	if err != nil {
-		return err
-	}
-	defer os.RemoveAll(stage)
-	const name = "commander"
-	sums := filepath.Join(stage, "SHA256SUMS")
-	err = fetch(releaseURL+"SHA256SUMS", sums, "")
-	if err != nil {
-		// Private repositories use the user's existing GitHub login without exposing tokens.
-		_, err = a.run("gh", []string{"release", "download", "latest", "--repo", "plaxtoris/commander", "--pattern", "SHA256SUMS", "--pattern", name, "--dir", stage}, false, nil)
-		if err != nil {
-			return errors.New("could not download latest; the repository may be private or the network unavailable")
-		}
-	}
-	data, err := os.ReadFile(sums)
-	if err != nil {
-		return err
-	}
-	expected := ""
-	for _, line := range strings.Split(string(data), "\n") {
-		fields := strings.Fields(line)
-		if len(fields) == 2 && strings.TrimPrefix(fields[1], "*") == name {
-			expected = fields[0]
-		}
-	}
-	if len(expected) != 64 {
-		return errors.New("release checksum is missing")
-	}
-	path := filepath.Join(stage, name)
-	if _, err = os.Stat(path); os.IsNotExist(err) {
-		if err = fetch(releaseURL+name, path, expected); err != nil {
-			return err
-		}
-	}
-	binary, err := os.ReadFile(path)
-	if err != nil {
-		return err
-	}
-	sum := sha256.Sum256(binary)
-	if hex.EncodeToString(sum[:]) != expected {
-		return errors.New("release checksum did not match")
-	}
-	if err = os.Chmod(path, 0755); err != nil {
-		return err
-	}
-	check := exec.Command(path, "version")
-	check.Env = a.environment("setup", nil)
-	if err = check.Run(); err != nil {
-		return errors.New("downloaded Commander could not run on this system")
-	}
-	if err = os.Rename(path, filepath.Join(a.root, "commander")); err != nil {
-		return err
-	}
-	fmt.Fprintln(a.out, "Commander updated. Preparing its tools...")
-	cmd := exec.Command(filepath.Join(a.root, "commander"), "setup")
-	cmd.Env = a.environment("setup", nil)
-	cmd.Stdin = a.in
-	cmd.Stdout = a.out
-	cmd.Stderr = a.errOut
-	return cmd.Run()
 }

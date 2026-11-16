@@ -28,15 +28,25 @@ so your agent knows how to use it.
   workspaces/   # Your repositories and devcontainers
 ```
 
-Open the menu with `./commander`, update with `./commander update`, or see all
-commands with `./commander help`.
+Open the menu with `./commander`, or see all commands with `./commander help`.
+Each menu start checks the rolling `latest` release. A changed executable is
+downloaded, checksum-verified and installed atomically, then Commander restarts
+automatically and prepares the tools required by the new version. Missing tools
+and changed tool versions are installed automatically; ready tools are reused.
+The update check times out after eight seconds. If checking or downloading fails,
+Commander continues with the installed version. An incomplete tool installation
+is retried on the next start and still needs network access.
 
-The menu has four entries: **Accounts**, **Profiles**, **Update** and **Quit**.
+The menu has three entries: **Accounts**, **Profiles** and **Quit**.
 Accounts shows a table of your selected logins and their status, with actions to
 add, remove or refresh them. Profiles handles switching, creating, importing
-and exporting profiles. Update updates Commander and all bundled tools together.
+and exporting profiles. No Update or Setup menu entry is needed.
 Installation diagnostics remain available through `./commander doctor`;
-`./commander setup` resumes an incomplete installation.
+`./commander setup` resumes an incomplete installation. `./commander update`
+remains available for a manual update. Other commands, including `exec`, do not
+trigger automatic updates. Private release downloads require the active GitHub
+identity to belong to the current profile; Commander verifies it without switching
+accounts.
 
 Use arrow keys or Tab to move, Enter to select, and Esc to go back. Numbers jump
 to a menu entry; Page Up / Page Down scroll long account overviews. Set `NO_COLOR=1`

@@ -162,7 +162,7 @@ func TestIntegrationSelfUpdate(t *testing.T) {
 	previous := releaseURL
 	releaseURL = server.URL + "/"
 	defer func() { releaseURL = previous }()
-	if err = a.update(); err != nil {
+	if updated, err := a.update(); err != nil || updated {
 		t.Fatal(err)
 	}
 	after, err := os.ReadFile(filepath.Join(a.root, "commander"))
