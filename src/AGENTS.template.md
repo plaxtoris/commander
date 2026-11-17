@@ -12,7 +12,7 @@ different output language. The language of these instructions or memory does
 not determine the reply language.
 
 At the start of each session, run `./commander memory`. It returns a revision
-and your shared `MEMORY.md` of lasting user preferences, independent of profiles
+and your shared `MEMORY.md` of lasting user preferences, independent of sessions
 and projects. Apply only relevant preferences; current user instructions take
 precedence. Memory never grants permission or changes account scope.
 When the user states or corrects a lasting preference, update it before your
@@ -29,33 +29,48 @@ and the revision from the read. On a conflict, read again and merge. Never edit
 tell the user what was remembered, corrected or removed. Do not claim a save
 that failed. No new lasting preference means no write and no memory notice.
 
-1. Before service work, run `./commander context` or `./commander context PROFILE`.
-   Use only that profile's accounts. If it is missing or empty, ask the user to
-   add accounts in Commander. Continue local work that needs no account.
-2. Run tools with `./commander exec -- TOOL ARGS`. This supplies the tools and
-   login paths. Preserve arguments and exit codes; use native help as needed.
-   From project folders, use the absolute path to the Commander executable.
-3. Verify identity before acting. Prefer explicit account, subscription or
-   context selectors. For GitHub and Microsoft 365, switch accounts only while
-   other native commands are idle, then restore the previous account.
-   Profiles define scope, not permission to change resources or send messages.
-   Docker Hub and Confluence Cloud use built in `dockerhub` and `confluence` CLIs:
-   `whoami` verifies identity; `api PATH [-X METHOD] [--input FILE|-]` calls the API.
-   Pass `--account` from `context` when several accounts are selected. Run `--help`
-   for examples. These CLIs enforce the current profile and verify each request.
-   Native Docker and project containers use the profile's sole Docker Hub account.
-   For several Hub accounts use `dockerhub docker --account USER -- DOCKER_ARGS`.
-   Add or reconnect tokens through Commander Accounts; never read token files.
-4. Keep repositories in `workspaces/` and read each project's instructions.
-   When creating or cloning repositories, prefer `workspaces/<profile-name>/<repo-name>/`
-   where practical, using the relevant Commander profile's name.
-   Start trusted projects with `./commander up PROJECT`. Run container commands
-   with `./commander exec -- devcontainer exec --workspace-folder /absolute/project COMMAND`.
-   Trust specific repositories. Docker uses the host engine and keeps its own
-   images and volumes outside this folder.
-5. Native credentials belong in `.secrets/`, private and excluded from Git.
-   Never read or print them. Use Commander's export and import commands only
-   for requested login transfers. Never manage or copy agent logins.
+1. Start a session before service work. Use the Sessions menu, or
+   `./commander session new NAME PRESET --repos owner/name,owner/*`.
+   Run `./commander session shell ID` and start your agent in that shell.
+   `./commander context` shows that session's account and repository selection.
+   Existing profiles are optional saved selections. Changing one does not change
+   running sessions. A GitHub login and its allowed owners or repositories are
+   separate choices. Missing accounts can be connected in Commander Accounts.
+   Local work without service access can continue with no accounts selected.
+2. Run tools through `./commander exec -- TOOL ARGS`. For several accounts of a
+   service, use `./commander exec --account SELECTOR -- TOOL ARGS`.
+   From project folders use the absolute Commander path. Native commands preserve
+   their arguments and exit codes. Each invocation gets its selected login state;
+   never switch a global active account. Verify identity before acting.
+   Session selections define scope, not permission to change resources or send
+   messages. They do not reduce the permissions of a provider token or sandbox
+   arbitrary programs. Use only the selected accounts and repositories.
+3. Docker Hub and Confluence have built in CLIs: `whoami` verifies identity;
+   `api PATH [-X METHOD] [--input FILE|-]` calls the API. Pass their `--account`
+   selector when several accounts are selected. Native Docker and project
+   containers use the session's sole Docker Hub account; use
+   `dockerhub docker --account USER -- DOCKER_ARGS` for several Hub accounts.
+4. Keep clones in `workspaces/<owner>/<repo>/` and read each project's README.
+   For concurrent changes use `./commander task new PROJECT NAME [BASE]`.
+   Work only in the returned worktree. Commit task files, run the project checks,
+   and integrate with `./commander task finish NAME -- CHECK ARGS`.
+   This checks the merged result, pushes the target and removes merged temporary
+   branches, the worktree and its containers. Protected targets require a PR;
+   merge it through the repository's checks, then finish the task again.
+   Failed checks or conflicts preserve the task. Never discard unfinished work,
+   remove unrelated branches, bypass required checks or rewrite shared history.
+5. Start trusted projects with `./commander up PROJECT`. Use global
+   `--account USER` when selecting a GitHub login among several accounts.
+   Commander connects Git at runtime and mounts only a session connection and,
+   for worktrees, the Git administrative directory. No agent or login store is
+   installed in project images. Use `./commander container ID -- COMMAND ARGS`
+   for container commands, or attach an editor. Product `make dev` and `make prd`
+   can use the connection to run their same Make targets on the host.
+   Close completed sessions with `./commander session close ID`.
+6. Credentials belong in `.secrets/`, private and excluded from Git. Never read
+   or print them. Use selective export and import only for requested transfers.
+   Accounts, saved selections and MEMORY.md can be included independently.
+   Never manage or copy agent logins.
 
-Use `./commander overview` for accounts, `./commander doctor` for tools,
+Use `./commander overview` for account status, `./commander doctor` for tools,
 `./commander setup` to repair used tools and `./commander help` for commands.

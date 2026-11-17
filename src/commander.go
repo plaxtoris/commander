@@ -20,6 +20,9 @@ var build = "development"
 
 func main() {
 	syscall.Umask(0077)
+	if len(os.Args) > 1 && os.Args[1] == "bridge-client" {
+		os.Exit(bridgeClient(os.Args[2:]))
+	}
 	root := os.Getenv("COMMANDER_HOME")
 	if root == "" {
 		path, err := os.Executable()
@@ -64,6 +67,8 @@ type app struct {
 	in          *os.File
 	out, errOut io.Writer
 	catalog     catalog
+	session     *session
+	account     string
 	// Tests replace native commands with local fixtures. Production uses nativeRun.
 	run        func(string, []string, bool, map[string]string) ([]byte, error)
 	releaseRun func(context.Context, []string) ([]byte, error)
@@ -77,12 +82,39 @@ func newApp(root string, in *os.File, out, errOut io.Writer) (*app, error) {
 	a := &app{root: root, in: in, out: out, errOut: errOut, catalog: toolCatalog}
 	a.run = a.nativeRun
 	a.releaseRun = func(ctx context.Context, args []string) ([]byte, error) {
-		return a.nativeRunContext(ctx, "gh", args, true, map[string]string{"GH_HOST": "github.com", "GH_PROMPT_DISABLED": "1"})
+		if a.session == nil || !a.session.allows("plaxtoris/commander") {
+			return nil, errors.New("private updates require a session selecting plaxtoris/commander")
+		}
+		m, err := a.selectedMember("github", nil)
+		if err != nil {
+			return nil, err
+		}
+		token, err := a.githubToken(m)
+		if err != nil {
+			return nil, err
+		}
+		return a.nativeRunContext(ctx, "gh", args, true, map[string]string{"GH_HOST": "github.com", "GH_PROMPT_DISABLED": "1", "GH_TOKEN": token})
 	}
 	return a, nil
 }
 
 func (a *app) command(args []string) error {
+	id := os.Getenv("COMMANDER_SESSION")
+	for len(args) >= 2 && (args[0] == "--session" || args[0] == "--account") {
+		if args[0] == "--session" {
+			id = args[1]
+		} else {
+			a.account = args[1]
+		}
+		args = args[2:]
+	}
+	if id != "" {
+		s, err := a.readSession(id)
+		if err != nil {
+			return err
+		}
+		a.session = &s
+	}
 	if len(args) == 0 {
 		if !a.terminal() {
 			return errors.New("open Commander in a terminal; use help, context or overview for text output")
@@ -90,24 +122,44 @@ func (a *app) command(args []string) error {
 		return a.start()
 	}
 	switch args[0] {
+	case "bridge-serve":
+		return a.serveBridge()
+	case "task":
+		return a.taskCommand(args[1:])
+	case "container":
+		return a.containerCommand(args[1:])
+	case "session":
+		if err := a.ensure(); err != nil {
+			return err
+		}
+		return a.sessionCommand(args[1:])
+	case "git-credential":
+		return a.gitCredential(args[1:])
 	case "help", "--help", "-h":
 		fmt.Fprintln(a.out, `commander
 
-  commander                         update automatically, then open the menu
-  commander setup [profile]         repair used tools, or prepare a profile and check its accounts
-  commander context [profile]       account scope for your agent
-  commander memory [write REVISION]  read preferences, or replace them from stdin
-  commander overview [profile]      check profile accounts
-  commander exec -- tool [args...]   run a native tool with commander logins
-  commander up project              start a project devcontainer
-  commander export [file.zip]        export a profile and selected logins
-  commander import file.zip         import a profile, prepare its tools and check its accounts
-  commander update                  update commander and installed tools
-  commander doctor                  check the installation
-  commander version                 show the installed build
+  commander                              update, then open the menu
+  commander session new NAME [PRESET]     choose accounts and repositories
+  commander session shell ID             open an independent session shell
+  commander session list|edit|close ID    manage session selections and cleanup
+  commander context [PRESET]              show session scope or a saved selection
+  commander exec [--account ID] -- TOOL   run with isolated selected credentials
+  commander task new PROJECT NAME [BASE]  create an isolated worktree
+  commander task finish NAME -- CHECK    validate, integrate and clean up
+  commander up PROJECT                   build and connect a trusted devcontainer
+  commander container ID -- COMMAND      run a command in that container
+  commander export [FILE.zip]             select accounts, selections and memory
+  commander import FILE.zip               preview and select archive contents
+  commander memory [write REVISION]       read or update shared preferences
+  commander overview [PRESET]             check account status
+  commander setup [PRESET]                repair used tools or check a selection
+  commander update                       update Commander and used tools
+  commander doctor                       check the installation
+  commander version                      show the installed build
 
-start your agent yourself in the commander folder.
-projects live in workspaces/. no shell configuration is required.`)
+Use --session ID before a command outside its session shell.
+Use --account SELECTOR before up or task for several GitHub accounts.
+Start your preferred agent in a session shell. Projects live in workspaces/.`)
 		return nil
 	case "version", "--version":
 		fmt.Fprintln(a.out, "Commander", build, runtime.GOOS+"/"+runtime.GOARCH)
@@ -130,9 +182,15 @@ projects live in workspaces/. no shell configuration is required.`)
 		if len(args) == 2 {
 			name = args[1]
 		}
+		if args[0] == "context" && name == "" && a.session == nil {
+			return errors.New("start a session or name a saved selection explicitly")
+		}
 		return a.describe(name, args[0] == "context")
 	case "exec":
 		args = args[1:]
+		if len(args) >= 2 && args[0] == "--account" {
+			a.account, args = args[1], args[2:]
+		}
 		if len(args) > 0 && args[0] == "--" {
 			args = args[1:]
 		}
@@ -142,13 +200,7 @@ projects live in workspaces/. no shell configuration is required.`)
 		if err := a.ensure(); err != nil {
 			return err
 		}
-		unlock, err := a.lock("native")
-		if err != nil {
-			return err
-		}
-		defer unlock()
-		_, err = a.run(args[0], args[1:], false, nil)
-		return err
+		return a.execute(args[0], args[1:])
 	case "up":
 		if len(args) != 2 {
 			return errors.New("usage: commander up PROJECT")
@@ -179,7 +231,7 @@ func (a *app) ensure() error {
 	if err := os.MkdirAll(a.root, 0755); err != nil {
 		return err
 	}
-	for _, name := range []string{".secrets", "tools", "workspaces"} {
+	for _, name := range []string{".secrets", ".sessions", "tools", "workspaces"} {
 		path := filepath.Join(a.root, name)
 		if err := noSymlinks(a.root, path); err != nil {
 			return err
@@ -198,7 +250,7 @@ func (a *app) ensure() error {
 		if name == "AGENTS.md" {
 			data = []byte(agentInstructions)
 		} else if name == ".gitignore" {
-			data = []byte("/.secrets/\n/tools/\n/workspaces/\n/profiles.json\n/MEMORY.md\n/commander\n/*.zip\n")
+			data = []byte("/.secrets/\n/.sessions/\n/tools/\n/workspaces/\n/profiles.json\n/MEMORY.md\n/commander\n/*.zip\n")
 		}
 		file, err := os.OpenFile(filepath.Join(a.root, name), os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0644)
 		if os.IsExist(err) {
@@ -214,6 +266,23 @@ func (a *app) ensure() error {
 		}
 		if closeErr != nil {
 			return closeErr
+		}
+	}
+	ignore := filepath.Join(a.root, ".gitignore")
+	if err := noSymlinks(a.root, ignore); err != nil {
+		return err
+	}
+	data, err := os.ReadFile(ignore)
+	if err != nil {
+		return err
+	}
+	if !strings.Contains("\n"+string(data), "\n/.sessions/\n") {
+		if len(data) > 0 && !strings.HasSuffix(string(data), "\n") {
+			data = append(data, '\n')
+		}
+		data = append(data, []byte("/.sessions/\n")...)
+		if err = atomicWrite(ignore, data, 0644); err != nil {
+			return err
 		}
 	}
 	return nil
@@ -302,12 +371,17 @@ func (a *app) environment(tool string, extra map[string]string) []string {
 		}
 	}
 	store := filepath.Join(a.root, ".secrets")
+	if a.session != nil {
+		store = filepath.Join(a.root, ".sessions", a.session.ID, "empty")
+		env["COMMANDER_SESSION"] = a.session.ID
+	}
 	env["GH_CONFIG_DIR"] = filepath.Join(store, ".config", "gh")
 	env["HCLOUD_CONFIG"] = filepath.Join(store, ".config", "hcloud", "cli.toml")
 	env["AZURE_CONFIG_DIR"] = filepath.Join(store, ".azure")
 	env["CLOUDSDK_CONFIG"] = filepath.Join(store, ".config", "gcloud")
 	env["DOCKER_CONFIG"] = filepath.Join(store, ".config", "docker")
 	env["COMMANDER_WORKSPACE"] = filepath.Join(a.root, "workspaces")
+	env["COMMANDER_HOME"] = a.root
 	// Git inherits Commander credentials without changing the user's Git config.
 	count, parseErr := strconv.Atoi(env["GIT_CONFIG_COUNT"])
 	if parseErr != nil {
@@ -320,6 +394,17 @@ func (a *app) environment(tool string, extra map[string]string) []string {
 	}
 	env["GIT_CONFIG_COUNT"] = strconv.Itoa(count)
 	env["PATH"] = strings.Join([]string{filepath.Join(a.root, "tools", "node", "bin"), filepath.Join(a.packageDir("m365"), "node_modules", ".bin"), filepath.Join(a.packageDir("devcontainer"), "node_modules", ".bin"), filepath.Join(a.root, "tools", "gh", "bin"), filepath.Join(a.root, "tools", "hcloud"), filepath.Join(a.root, "tools", "docker"), env["PATH"]}, string(os.PathListSeparator))
+	if a.session != nil {
+		env["PATH"] = filepath.Join(a.root, ".sessions", a.session.ID, "bin") + string(os.PathListSeparator) + env["PATH"]
+		selector := ""
+		if a.account != "" {
+			selector = " --account " + quote(a.account)
+		}
+		env["GIT_CONFIG_VALUE_"+strconv.Itoa(count-1)] = "!" + quote(filepath.Join(a.root, "commander")) + " --session " + quote(a.session.ID) + selector + " git-credential"
+		env["GIT_CONFIG_KEY_"+strconv.Itoa(count)] = "credential.useHttpPath"
+		env["GIT_CONFIG_VALUE_"+strconv.Itoa(count)] = "true"
+		env["GIT_CONFIG_COUNT"] = strconv.Itoa(count + 1)
+	}
 	if python, err := a.python(); err == nil {
 		env["CLOUDSDK_PYTHON"] = python
 	}
@@ -375,7 +460,7 @@ func (a *app) toolCommand(tool string, args []string) (string, []string, error) 
 		args = append([]string{"-m", "azure.cli"}, args...)
 	default:
 		var err error
-		path, err = exec.LookPath(tool)
+		path, err = a.lookupTool(tool)
 		if err != nil {
 			return "", nil, fmt.Errorf("%s is not installed", tool)
 		}
@@ -384,6 +469,23 @@ func (a *app) toolCommand(tool string, args []string) (string, []string, error) 
 		return "", nil, fmt.Errorf("%s is not installed; use commander exec -- %s to prepare it", tool, tool)
 	}
 	return path, args, nil
+}
+
+func (a *app) lookupTool(tool string) (string, error) {
+	if strings.ContainsRune(tool, os.PathSeparator) {
+		return exec.LookPath(tool)
+	}
+	for _, dir := range filepath.SplitList(os.Getenv("PATH")) {
+		if dir == "" || strings.HasPrefix(dir, filepath.Join(a.root, ".sessions")+string(os.PathSeparator)) {
+			continue
+		}
+		path := filepath.Join(dir, tool)
+		info, err := os.Stat(path)
+		if err == nil && !info.IsDir() && info.Mode()&0111 != 0 {
+			return path, nil
+		}
+	}
+	return "", exec.ErrNotFound
 }
 
 func (a *app) nativeRun(tool string, args []string, capture bool, extra map[string]string) ([]byte, error) {
@@ -418,6 +520,9 @@ func (a *app) nativeRunContext(ctx context.Context, tool string, args []string, 
 	cmd.Env = a.environment(tool, extra)
 	cmd.Stdin = a.in
 	if capture {
+		if tool == "devcontainer" {
+			cmd.Stderr = a.errOut
+		}
 		// Native errors can contain tokens. Never include captured output in errors.
 		data, err := cmd.Output()
 		if err != nil {
@@ -428,32 +533,4 @@ func (a *app) nativeRunContext(ctx context.Context, tool string, args []string, 
 	cmd.Stdout = a.out
 	cmd.Stderr = a.errOut
 	return nil, cmd.Run()
-}
-
-func (a *app) up(project string) error {
-	base, err := filepath.EvalSymlinks(filepath.Join(a.root, "workspaces"))
-	if err != nil {
-		return err
-	}
-	if !filepath.IsAbs(project) {
-		project = filepath.Join(base, project)
-	}
-	project, err = filepath.EvalSymlinks(project)
-	if err != nil {
-		return err
-	}
-	rel, err := filepath.Rel(base, project)
-	if err != nil || rel == "." || rel == ".." || strings.HasPrefix(rel, "../") {
-		return errors.New("choose a project inside Commander workspaces")
-	}
-	if err := a.ensure(); err != nil {
-		return err
-	}
-	unlock, err := a.lock("native")
-	if err != nil {
-		return err
-	}
-	defer unlock()
-	_, err = a.run("devcontainer", []string{"up", "--workspace-folder", project, "--docker-path", filepath.Join(a.root, "tools", "docker", "docker"), "--docker-compose-path", filepath.Join(a.root, "tools", "compose", "docker-compose")}, false, nil)
-	return err
 }

@@ -199,7 +199,11 @@ func TestSetupAndManualUpdateRefreshAgentInstructions(t *testing.T) {
 			}
 			for _, path := range preserved {
 				data, err := os.ReadFile(filepath.Join(a.root, path))
-				if err != nil || string(data) != "local instructions\n" {
+				want := "local instructions\n"
+				if path == ".gitignore" {
+					want += "/.sessions/\n"
+				}
+				if err != nil || string(data) != want {
 					t.Fatal("changed unmanaged file", path, err)
 				}
 			}
@@ -213,6 +217,8 @@ func TestPrivateUpdateUsesSelectedIdentity(t *testing.T) {
 			a := testApp(t)
 			if identity != "no profile" {
 				saveProfile(t, a, "work", ghMember("selected"))
+				usePresetSession(t, a, "work")
+				a.session.Repositories = []string{"plaxtoris/commander"}
 			}
 			useRelease(t, http.NotFound)
 			binary := []byte("#!/bin/sh\nexit 0\n")
@@ -293,7 +299,7 @@ func TestInteractiveStartupCurrentAndOffline(t *testing.T) {
 				if offline && !strings.Contains(s.output, "update skipped:") {
 					t.Fatal("offline startup did not explain the skipped update")
 				}
-				s.send(t, "3\r")
+				s.send(t, "q")
 				if err := s.command.Wait(); err != nil {
 					t.Fatal(err)
 				}

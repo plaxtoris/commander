@@ -344,25 +344,21 @@ func (a *app) profilePicker() (string, error) {
 		sort.Strings(names)
 		options := []string{}
 		for _, name := range names {
-			state := ""
-			if p.Active != nil && name == *p.Active {
-				state = " · current"
-			}
-			options = append(options, name+"\t"+accountCount(len(p.Profiles[name]))+state)
+			options = append(options, name+"\t"+accountCount(len(p.Profiles[name])))
 		}
-		options = append(options, "new profile\tstart with an empty profile", "import profile\topen a profile archive")
+		options = append(options, "new selection\tstart with an empty profile", "import archive\topen a profile archive")
 		if p.Active != nil {
-			options = append(options, "export profile\tshare the current profile")
+			options = append(options, "export archive\tshare the current profile")
 		}
 		if len(names) > 0 {
-			options = append(options, "rename profile", "delete profile")
+			options = append(options, "rename selection", "delete selection")
 		}
 		options = append(options, "back")
-		description := "choose a profile to select its accounts."
+		description := "choose a saved selection to edit its accounts. Sessions keep independent copies."
 		if len(names) == 0 {
-			description = "welcome. create a profile or import an existing one.\na profile groups the accounts you want to work with."
+			description = "saved selections are optional reusable account sets."
 		}
-		index, err := a.choose("profiles", description, options)
+		index, err := a.choose("saved selections", description, options)
 		if err != nil {
 			return "", err
 		}
@@ -373,8 +369,8 @@ func (a *app) profilePicker() (string, error) {
 		}
 		action, _, _ := strings.Cut(options[index], "\t")
 		switch action {
-		case "new profile":
-			name, e := a.input("profile name", "")
+		case "new selection":
+			name, e := a.input("selection name", "")
 			if e != nil {
 				return "", e
 			}
@@ -392,13 +388,13 @@ func (a *app) profilePicker() (string, error) {
 			if err == nil {
 				return name, nil
 			}
-		case "rename profile", "delete profile":
+		case "rename selection", "delete selection":
 			which, e := a.choose("profiles / "+action, "choose a profile.", names)
 			if e != nil {
 				continue
 			}
 			old := names[which]
-			if action == "rename profile" {
+			if action == "rename selection" {
 				name, e := a.input("new name", old)
 				if e != nil {
 					continue
@@ -414,30 +410,36 @@ func (a *app) profilePicker() (string, error) {
 						return errors.New("that profile already exists")
 					}
 					p.Profiles[name] = p.Profiles[old]
+					if p.Scopes != nil {
+						p.Scopes[name] = p.Scopes[old]
+						delete(p.Scopes, old)
+					}
 					delete(p.Profiles, old)
+					delete(p.Scopes, old)
 					if p.Active != nil && *p.Active == old {
 						p.Active = &name
 					}
 					return nil
 				})
-			} else if a.confirm("delete profile " + old + "? saved logins remain available.") {
+			} else if a.confirm("delete selection " + old + "? saved logins remain available.") {
 				err = a.editProfiles(func(p *profiles) error {
 					delete(p.Profiles, old)
+					delete(p.Scopes, old)
 					if p.Active != nil && *p.Active == old {
 						p.Active = nil
 					}
 					return nil
 				})
 			}
-		case "import profile":
+		case "import archive":
 			path, e := a.input("archive path", "")
 			if e == nil {
 				err = a.transfer([]string{"import", path})
 				if err == nil {
-					a.pause("profile imported, tools prepared and account status checked. select it to start working.\ndocker engine/desktop is a separate prerequisite for project containers.")
+					a.pause("selected contents imported; tools prepared and account status checked.\ndocker engine/desktop is a separate prerequisite for project containers.")
 				}
 			}
-		case "export profile":
+		case "export archive":
 			err = a.transfer([]string{"export"})
 			if err == nil {
 				a.pause("profile exported successfully.")
@@ -452,34 +454,17 @@ func (a *app) profilePicker() (string, error) {
 }
 
 func (a *app) menu() error {
-	unlock, err := a.lock("menu")
-	if err != nil {
-		return err
-	}
-	defer unlock()
-	p, err := a.readProfiles()
-	if err != nil {
-		return err
-	}
-	name := ""
-	if p.Active != nil {
-		name = *p.Active
-	}
-	if name == "" {
-		name, err = a.profilePicker()
-		if err != nil {
-			return err
-		}
+	// Menus may coexist. Only mutations lock their own shared state.
+	admin := *a
+	admin.session = nil
+	if a.session != nil {
+		admin.run = admin.nativeRun
 	}
 	notice := ""
 	for {
-		_, members, err := a.profile(name)
+		members, err := admin.savedMembers()
 		if err != nil {
-			name, err = a.profilePicker()
-			if err != nil {
-				return err
-			}
-			continue
+			return err
 		}
 		rows := make([]account, len(members))
 		for i, m := range members {
@@ -487,11 +472,12 @@ func (a *app) menu() error {
 		}
 		message := notice
 		notice = ""
-		index, err := a.chooseView("home", func(width int) []uiLine {
-			return accountView(name, rows, false, message, width)
-		}, []string{
-			"accounts\tview, add or remove accounts",
-			"profiles\tswitch, manage or share profiles",
+		index, err := a.chooseView("home", func(width int) []uiLine { return accountView("connected accounts", rows, false, message, width) }, []string{
+			"accounts\tconnect and manage logins",
+			"sessions\tindependent account and repository selections",
+			"saved selections\toptional reusable starting points",
+			"export\tchoose accounts, selections and memory",
+			"import\tpreview and choose archive contents",
 			"quit\treturn to your terminal",
 		})
 		if err != nil {
@@ -499,25 +485,49 @@ func (a *app) menu() error {
 		}
 		switch index {
 		case 0:
-			err = a.accountMenu(name)
+			err = admin.accountMenu("")
 		case 1:
-			var chosen string
-			chosen, err = a.profilePicker()
-			if err == nil {
-				name = chosen
-			}
+			err = a.sessionMenu()
 		case 2:
+			var name string
+			name, err = admin.profilePicker()
+			if err == nil {
+				err = admin.accountMenu(name)
+			}
+		case 3:
+			err = admin.transfer([]string{"export"})
+			if err == nil {
+				a.pause("selected contents exported")
+			}
+		case 4:
+			var path string
+			path, err = a.input("archive path", "")
+			if err == nil {
+				err = admin.transfer([]string{"import", path})
+			}
+			if err == nil {
+				a.pause("selected contents imported; tools prepared and account status checked")
+			}
+		default:
 			return nil
 		}
 		if err != nil && !errors.Is(err, errCancelled) {
-			notice = "could not complete the action: " + err.Error()
+			notice = err.Error()
 		}
 	}
 }
 
+func (a *app) accountMembers(name string) ([]member, error) {
+	if name == "" {
+		return a.savedMembers()
+	}
+	_, members, err := a.profile(name)
+	return members, err
+}
+
 func (a *app) accountMenu(name string) error {
 	for {
-		_, members, err := a.profile(name)
+		members, err := a.accountMembers(name)
 		if err != nil {
 			return err
 		}
@@ -643,6 +653,9 @@ func (a *app) addAccount(name string) error {
 			}
 			selected = added[0]
 		}
+		if name == "" {
+			return nil
+		}
 		return a.editProfiles(func(p *profiles) error {
 			members, ok := p.Profiles[name]
 			if !ok {
@@ -661,7 +674,7 @@ func (a *app) addAccount(name string) error {
 }
 
 func (a *app) removeAccount(name string) error {
-	_, members, err := a.profile(name)
+	members, err := a.accountMembers(name)
 	if err != nil {
 		return err
 	}
@@ -677,7 +690,14 @@ func (a *app) removeAccount(name string) error {
 		return err
 	}
 	selected := members[i]
-	action, err := a.choose("remove account", selected.label()+"\n\nremoving a saved login affects every profile that uses it.\nazure removes all subscriptions of the sign in. google revokes its token.", []string{"remove from this profile\tkeep the saved login", "remove saved login from all profiles", "cancel"})
+	options := []string{"remove from this selection\tkeep the saved login", "remove saved login everywhere", "cancel"}
+	if name == "" {
+		options = []string{"remove saved login everywhere", "cancel"}
+	}
+	action, err := a.choose("remove account", selected.label()+"\n\nremoving a saved login affects every profile that uses it.\nazure removes all subscriptions of the sign in. google revokes its token.", options)
+	if name == "" {
+		action++
+	}
 	if err != nil || action == 2 {
 		return err
 	}
@@ -685,6 +705,9 @@ func (a *app) removeAccount(name string) error {
 		return m.id() == selected.id() || (action == 1 && m.Service == "azure" && selected.Service == "azure" && m.Account == selected.Account)
 	}
 	if action == 1 {
+		if err := a.accountNotInSession(selected); err != nil {
+			return err
+		}
 		if !a.confirm("remove saved login " + selected.Account + " from all profiles?") {
 			return errCancelled
 		}
@@ -716,59 +739,6 @@ func (a *app) removeAccount(name string) error {
 		}
 		return nil
 	})
-}
-
-func profileFilename(name string) string {
-	name = strings.NewReplacer("/", "_", "\\", "_").Replace(name)
-	for len(name) > 240 {
-		name = name[:len(name)-1]
-	}
-	for !utf8.ValidString(name) {
-		name = name[:len(name)-1]
-	}
-	return name + ".zip"
-}
-
-func (a *app) selectExport(members []member) ([]member, error) {
-	if len(members) == 0 {
-		return nil, errors.New("this profile has no logins to export")
-	}
-	selected := make([]bool, len(members))
-	for i := range selected {
-		selected[i] = true
-	}
-	for {
-		options := []string{}
-		for i, m := range members {
-			mark := "○ "
-			if selected[i] {
-				mark = "✓ "
-			}
-			options = append(options, mark+serviceName(m.Service)+"\t"+m.Account+"\t"+m.Context)
-		}
-		options = append(options, "export selected logins", "cancel")
-		i, err := a.choose("profiles / export", "enter toggles an account. choose export when ready.\nthe recipient receives the selected accounts' existing access.", options)
-		if err != nil {
-			return nil, err
-		}
-		if i < len(members) {
-			selected[i] = !selected[i]
-			continue
-		}
-		if i == len(members)+1 {
-			return nil, errCancelled
-		}
-		result := []member{}
-		for j, m := range members {
-			if selected[j] {
-				result = append(result, m)
-			}
-		}
-		if len(result) == 0 {
-			continue
-		}
-		return result, nil
-	}
 }
 
 // Keep absolute paths readable in the menu and relative paths relative to cwd.

@@ -85,7 +85,7 @@ jobs:
         run: |
           cd dist
           sha256sum commander > SHA256SUMS
-          printf 'Commander for WSL and Linux on x86_64.\n\nProfile import prepares Git and the required service CLIs, then checks account status. Retry incomplete preparation with commander setup PROFILE. Docker Engine/Desktop remains a separate prerequisite for project containers.\n\nBuild: %s\n' "$GITHUB_SHA" > "$RUNNER_TEMP/release-notes"
+          printf 'Commander for WSL and Linux on x86_64.\n\nIndependent sessions select accounts and repositories. Selective encrypted transfer optionally includes shared memory. Project containers connect Git at runtime. Tasks integrate verified work and remove temporary branches and worktrees. Docker Engine/Desktop remains a prerequisite for project containers.\n\nBuild: %s\n' "$GITHUB_SHA" > "$RUNNER_TEMP/release-notes"
           if gh api "repos/$GH_REPO/git/ref/tags/latest" >/dev/null 2>&1; then
             gh api --method PATCH "repos/$GH_REPO/git/refs/tags/latest" -f sha="$GITHUB_SHA" -F force=true >/dev/null
           else

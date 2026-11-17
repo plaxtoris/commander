@@ -65,7 +65,10 @@ func (a *app) memory(args []string) error {
 		return err
 	}
 	if !strings.Contains("\n"+strings.ReplaceAll(string(data), "\r\n", "\n")+"\n", "\n/MEMORY.md\n") {
-		data = append(data, []byte("\n/MEMORY.md\n")...)
+		if len(data) > 0 && !strings.HasSuffix(string(data), "\n") {
+			data = append(data, '\n')
+		}
+		data = append(data, []byte("/MEMORY.md\n")...)
 		if err = atomicWrite(ignore, data, 0644); err != nil {
 			return err
 		}

@@ -187,7 +187,7 @@ func TestMemoryIgnoreUpgradeAndRelocation(t *testing.T) {
 		t.Fatal(err)
 	}
 	data, err := os.ReadFile(ignore)
-	if err != nil || string(data) != "# User rules\n/local-data\n/MEMORY.md\n" {
+	if err != nil || string(data) != "# User rules\n/local-data\n/.sessions/\n/MEMORY.md\n" {
 		t.Fatal("ignore upgrade lost user rules or added duplicates", err)
 	}
 	if out, err := exec.Command("git", "init", "--quiet", a.root).CombinedOutput(); err != nil {

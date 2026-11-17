@@ -188,7 +188,10 @@ func accountLines(rows []account, status bool, width int) []uiLine {
 }
 
 func accountView(name string, rows []account, status bool, notice string, width int) []uiLine {
-	lines := uiLine{{"profile  ", "2"}, {name, "1"}, {"  ·  " + accountCount(len(rows)), "2"}}.wrap(width)
+	if name == "" {
+		name = "connected accounts"
+	}
+	lines := uiLine{{name, "1"}, {"  ·  " + accountCount(len(rows)), "2"}}.wrap(width)
 	lines = append(lines, uiLine{})
 	if notice != "" {
 		lines = append(lines, uiLine{{notice, "33"}}.wrap(width)...)

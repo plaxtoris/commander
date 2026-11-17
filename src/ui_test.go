@@ -72,11 +72,9 @@ func TestInteractiveProfileSwitchAndScopedRemoval(t *testing.T) {
 	}
 	s := openUI(t, a.root)
 	s.wait(t, "esc quit")
-	s.send(t, "\t\r")
-	s.wait(t, "choose a profile")
+	s.send(t, "3\r")
+	s.wait(t, "choose a saved selection")
 	s.send(t, "1\r")
-	s.wait(t, "profile  personal")
-	s.send(t, "\r")
 	s.wait(t, "refresh")
 	s.send(t, "2\r")
 	s.wait(t, "choose an account")
@@ -85,8 +83,8 @@ func TestInteractiveProfileSwitchAndScopedRemoval(t *testing.T) {
 	s.send(t, "\r")
 	s.wait(t, "no accounts yet")
 	s.send(t, "\x1b")
-	s.wait(t, "open accounts to add")
-	s.send(t, "3\r")
+	s.wait(t, "esc quit")
+	s.send(t, "q")
 	if err := s.command.Wait(); err != nil {
 		t.Fatal(err)
 	}
@@ -109,20 +107,28 @@ func TestInteractiveImportPreparesProfile(t *testing.T) {
 	}
 	a := testApp(t)
 	s := openUI(t, a.root)
-	s.wait(t, "import profile")
-	s.send(t, "\x1b[B\r")
+	s.wait(t, "esc quit")
+	s.send(t, "5\r")
 	s.wait(t, "archive path")
 	s.send(t, archive+"\r")
 	s.wait(t, "archive password")
 	s.send(t, "fixture password\r")
+	s.wait(t, "import accounts")
+	s.send(t, "\r")
+	s.wait(t, "✓")
+	s.send(t, "2\r")
+	s.wait(t, "saved selections")
+	s.send(t, "\r")
+	s.wait(t, "✓ imported")
+	s.send(t, "2\r")
+	s.wait(t, "Running sessions keep their selections")
+	s.send(t, "2\r")
 	s.wait(t, "tools prepared and account status checked")
-	if !strings.Contains(s.output, "profile ready: imported") || !strings.Contains(s.output, "existing") || strings.Contains(s.output, "fixture-secret") {
+	if !strings.Contains(s.output, "existing") || strings.Contains(s.output, "fixture-secret") {
 		t.Fatal("import did not check accounts or exposed login data", s.output)
 	}
 	s.send(t, "\r")
-	s.wait(t, "1 account · current")
-	s.send(t, "\r")
-	s.wait(t, "accounts")
+	s.wait(t, "esc quit")
 	s.send(t, "q")
 	if err := s.command.Wait(); err != nil {
 		t.Fatal(err)
@@ -143,10 +149,10 @@ func TestInteractiveSmallTerminalAndPaging(t *testing.T) {
 		t.Fatal("long description was not paged", s.output)
 	}
 	// Page through the description in a small terminal.
-	s.send(t, strings.Repeat("\x1b[6~", 20))
+	s.send(t, strings.Repeat("\x1b[6~", 40))
 	s.wait(t, "project-23")
-	s.send(t, strings.Repeat("\x1b[5~", 20))
-	s.wait(t, "profile  work")
+	s.send(t, strings.Repeat("\x1b[5~", 40))
+	s.wait(t, "connected accounts")
 	s.send(t, "q")
 	if err := s.command.Wait(); err != nil {
 		t.Fatal(err)
@@ -226,7 +232,7 @@ func TestInteractiveAutomaticUpdate(t *testing.T) {
 			if !valid && !strings.Contains(s.output, "checksum did not match") {
 				t.Fatal("failed update was not reported", s.output)
 			}
-			s.send(t, "3\r")
+			s.send(t, "q")
 			if err := s.command.Wait(); err != nil {
 				t.Fatal(err)
 			}
@@ -290,7 +296,7 @@ func TestInteractiveAccountPresentationAndResize(t *testing.T) {
 			s.send(t, "1\r")
 			s.wait(t, "esc back")
 			frame := terminalControls.ReplaceAllString(s.output, "")
-			for _, want := range []string{"commander / accounts", "Work Team", "service", "account", "context", "status", "hetzner", "Production-EU", "Case.Sensitive", "● active", "! missing account"} {
+			for _, want := range []string{"commander / accounts", "service", "account", "context", "status", "hetzner", "Production-EU", "Case.Sensitive", "● active", "! missing account"} {
 				if !strings.Contains(frame, want) {
 					t.Fatalf("missing %q in account view: %s", want, frame)
 				}

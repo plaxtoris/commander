@@ -1,4 +1,5 @@
 /.secrets/
+/.sessions/
 /.env
 *.age
 *.gpg

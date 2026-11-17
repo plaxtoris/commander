@@ -39,7 +39,7 @@ func TestLazyExecRelocationAndStreams(t *testing.T) {
 		}
 		a.in = f
 		a.out, a.errOut = &bytes.Buffer{}, &bytes.Buffer{}
-		err = a.command([]string{"exec", "--", "gh", "a b", "$(literal)"})
+		_, err = a.nativeRun("gh", []string{"a b", "$(literal)"}, false, nil)
 		f.Close()
 		var status *exec.ExitError
 		if !errors.As(err, &status) || status.ExitCode() != 37 {
