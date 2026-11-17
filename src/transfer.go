@@ -49,11 +49,22 @@ func hasLogin(service string, state object, m member) bool {
 	return false
 }
 
+// LoginConflict reports whether importing m would replace different saved
+// login data.
+func loginConflict(service string, current, incoming object, m member) (bool, error) {
+	next, err := selectLogins(service, incoming, []member{m})
+	if err != nil {
+		return false, err
+	}
+	old, oldErr := selectLogins(service, current, []member{m})
+	return hasLogin(service, current, m) && (oldErr != nil || !reflect.DeepEqual(old, next)), nil
+}
+
 func normalizeArchive(p profileArchive) (profileArchive, error) {
 	if p.Format != "commander-profile" || p.Version != 2 || p.Profile.Active != nil {
 		return p, errFormat
 	}
-	if err := validateProfiles(p.Profile); err != nil {
+	if err := validateSelections(p.Profile); err != nil {
 		return p, err
 	}
 	if p.Accounts == nil {
@@ -84,7 +95,7 @@ func normalizeArchive(p profileArchive) (profileArchive, error) {
 }
 
 func (a *app) selectedArchive(accounts []member, sessions []session, memory bool) (profileArchive, error) {
-	p := profileArchive{Format: "commander-profile", Version: 2, Accounts: accounts, Profile: profiles{Version: 1, Profiles: map[string][]member{}, Scopes: map[string][]string{}}, Logins: map[string]object{}}
+	p := profileArchive{Format: "commander-profile", Version: 2, Accounts: accounts, Profile: selections{Version: 1, Profiles: map[string][]member{}, Scopes: map[string][]string{}}, Logins: map[string]object{}}
 	for _, s := range sessions {
 		p.Profile.Profiles[s.Name] = s.Accounts
 		p.Profile.Scopes[s.Name] = s.Repositories
@@ -154,12 +165,11 @@ func (a *app) importSelected(payload profileArchive, selection importSelection) 
 			return err
 		}
 		for _, m := range members {
-			old, oldErr := selectLogins(service, current, []member{m})
-			next, err := selectLogins(service, incoming, []member{m})
+			conflict, err := loginConflict(service, current, incoming, m)
 			if err != nil {
 				return err
 			}
-			if hasLogin(service, current, m) && (oldErr != nil || !reflect.DeepEqual(old, next)) && !selection.Replace[m.id()] {
+			if conflict && !selection.Replace[m.id()] {
 				return errConflict
 			}
 		}
@@ -187,11 +197,16 @@ func (a *app) importSelected(payload profileArchive, selection importSelection) 
 		if err != nil {
 			return err
 		}
+		taken := map[string]bool{}
 		for _, name := range selection.Sessions {
 			members, ok := p.Profile.Profiles[name]
 			if !ok {
 				return errors.New("session was not in the archive")
 			}
+			if taken[strings.ToLower(name)] {
+				return errors.New("the archive names two sessions " + name)
+			}
+			taken[strings.ToLower(name)] = true
 			s := session{Name: name, Accounts: members, Repositories: p.Profile.Scopes[name]}
 			for _, old := range existing {
 				if strings.EqualFold(old.Name, name) {
@@ -199,6 +214,7 @@ func (a *app) importSelected(payload profileArchive, selection importSelection) 
 						return errors.New("session " + old.Name + " already exists")
 					}
 					s.ID, s.Name = old.ID, old.Name
+					break
 				}
 			}
 			if s.ID == "" {
@@ -392,12 +408,11 @@ func (a *app) importArchive(path string) (string, error) {
 		if err != nil {
 			return "", err
 		}
-		old, exists := selectLogins(m.Service, current, []member{m})
-		next, err := selectLogins(m.Service, p.Logins[m.Service], []member{m})
+		conflict, err := loginConflict(m.Service, current, p.Logins[m.Service], m)
 		if err != nil {
 			return "", err
 		}
-		if hasLogin(m.Service, current, m) && (exists != nil || !reflect.DeepEqual(old, next)) {
+		if conflict {
 			if !a.ask("replace the existing login " + m.label() + "?") {
 				continue
 			}

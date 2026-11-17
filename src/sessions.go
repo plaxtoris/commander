@@ -131,14 +131,11 @@ func (a *app) saveSession(s session) error {
 	if err = s.validate(); err != nil {
 		return err
 	}
-	if err = os.MkdirAll(p, 0700); err != nil {
-		return err
-	}
 	return atomicWrite(filepath.Join(p, "session.json"), encode(s), 0600)
 }
 
-// Sessions are listed by name. Directories without a session file belong to
-// an interrupted creation or removal and are skipped.
+// Sessions are listed by name. Unreadable ones, such as an interrupted
+// creation, are skipped so they never block the others.
 func (a *app) sessions() ([]session, error) {
 	entries, err := os.ReadDir(filepath.Join(a.root, ".sessions"))
 	if os.IsNotExist(err) {
@@ -152,16 +149,14 @@ func (a *app) sessions() ([]session, error) {
 		if !sessionID.MatchString(entry.Name()) {
 			continue
 		}
-		if _, err := os.Lstat(filepath.Join(a.root, ".sessions", entry.Name(), "session.json")); os.IsNotExist(err) {
-			continue
+		if s, err := a.readSession(entry.Name()); err == nil {
+			result = append(result, s)
 		}
-		s, err := a.readSession(entry.Name())
-		if err != nil {
-			return nil, err
-		}
-		result = append(result, s)
 	}
-	sort.Slice(result, func(i, j int) bool { return strings.ToLower(result[i].Name) < strings.ToLower(result[j].Name) })
+	sort.Slice(result, func(i, j int) bool {
+		a, b := strings.ToLower(result[i].Name), strings.ToLower(result[j].Name)
+		return a < b || a == b && result[i].ID < result[j].ID
+	})
 	return result, nil
 }
 
@@ -175,12 +170,19 @@ func (a *app) findSession(ref string) (session, error) {
 	if err != nil {
 		return session{}, err
 	}
+	matches := []session{}
 	for _, s := range all {
-		if s.Name == ref {
-			return s, nil
+		if strings.EqualFold(s.Name, ref) {
+			matches = append(matches, s)
 		}
 	}
-	return session{}, fmt.Errorf("no session %q; see commander session list", ref)
+	if len(matches) > 1 {
+		return session{}, fmt.Errorf("several sessions are named %q; use the ID from %s", ref, filepath.Join(a.root, ".sessions"))
+	}
+	if len(matches) == 0 {
+		return session{}, fmt.Errorf("no session %q; see commander session list", ref)
+	}
+	return matches[0], nil
 }
 
 // Names are unique regardless of case, so a name always selects one session.
@@ -215,6 +217,9 @@ func (a *app) newSession(name string, accounts []member, repos []string) (sessio
 	}
 	s := session{ID: id, Name: name, Accounts: accounts, Repositories: repos}
 	if err = s.validate(); err != nil {
+		return session{}, err
+	}
+	if err = os.MkdirAll(filepath.Join(a.root, ".sessions", id), 0700); err != nil {
 		return session{}, err
 	}
 	return s, a.saveSession(s)
@@ -274,6 +279,11 @@ func (a *app) deleteSession(s session) error {
 	if err = scoped.stopBridge(); err != nil {
 		return err
 	}
+	release, err := a.waitLock("sessions")
+	if err != nil {
+		return err
+	}
+	defer release()
 	return os.RemoveAll(p)
 }
 
@@ -442,11 +452,7 @@ func (a *app) logins() ([]account, map[string]string) {
 		}
 		found, err := admin.accounts(service)
 		if err != nil {
-			failed[service] = "Check login"
-			var preparation *toolPreparationError
-			if errors.As(err, &preparation) {
-				failed[service] = "Tool not ready"
-			}
+			failed[service] = serviceFailure(err)
 			continue
 		}
 		rows = append(rows, found...)

@@ -140,18 +140,18 @@ func TestSymlinkRejection(t *testing.T) {
 }
 
 func TestArchiveSelectionValidation(t *testing.T) {
-	good := profiles{Version: 1, Profiles: map[string][]member{"work": {ghMember("user")}}}
-	if err := validateProfiles(good); err != nil {
+	good := selections{Version: 1, Profiles: map[string][]member{"work": {ghMember("user")}}}
+	if err := validateSelections(good); err != nil {
 		t.Fatal(err)
 	}
-	for _, p := range []profiles{
+	for _, p := range []selections{
 		{Version: 2, Profiles: map[string][]member{}},
 		{Version: 1, Profiles: map[string][]member{"bad\nname": {}}},
 		{Version: 1, Profiles: map[string][]member{"work": nil}},
 		{Version: 1, Profiles: map[string][]member{"work": {ghMember("user"), ghMember("user")}}},
 		{Version: 1, Profiles: map[string][]member{"work": {}}, Scopes: map[string][]string{"work": {"../*"}}},
 	} {
-		if validateProfiles(p) == nil {
+		if validateSelections(p) == nil {
 			t.Errorf("accepted invalid selection: %+v", p)
 		}
 	}

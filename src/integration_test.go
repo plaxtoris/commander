@@ -63,7 +63,9 @@ func TestIntegrationNativeFixtures(t *testing.T) {
 	t.Cleanup(func() {
 		os.RemoveAll(store)
 		os.Rename(backup, store)
-		os.Remove(filepath.Join(a.root, "profiles.json"))
+		if s, err := a.findSession("fixture"); err == nil {
+			a.deleteSession(s)
+		}
 	})
 	if _, err = a.importPayload(payload, ""); err != nil {
 		t.Fatal(err)

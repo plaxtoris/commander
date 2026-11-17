@@ -138,6 +138,8 @@ type target struct {
 // ticked accounts and repositories. Ticked accounts that are no longer
 // connected stay visible until they are unticked.
 func (a *app) editSelection(title string, accounts []member, repos []string) ([]member, []string, error) {
+	// Logins are added and removed in the global store, even from a session shell.
+	a = a.admin()
 	chosen, ticked := map[string]bool{}, map[string]bool{}
 	for _, m := range accounts {
 		chosen[m.id()] = true
@@ -320,14 +322,13 @@ func (a *app) githubOwners(m member) ([]string, error) {
 	return owners, nil
 }
 
-var loginChoices = [][2]string{
-	{"github", "github"}, {"azure", "azure"}, {"office", "microsoft 365"}, {"hetzner", "hetzner"},
-	{"gcloud", "google cloud"}, {"dockerhub", "dockerhub"}, {"confluence", "confluence"},
-	{"office setup", "microsoft 365 · new organization"}, {"office repair", "microsoft 365 · repair permissions"},
-}
-
 // AddLogin signs in to a service and returns the accounts it added.
 func (a *app) addLogin() ([]member, error) {
+	loginChoices := [][2]string{}
+	for _, service := range services {
+		loginChoices = append(loginChoices, [2]string{service, serviceName(service)})
+	}
+	loginChoices = append(loginChoices, [2]string{"office setup", serviceName("office") + " · new organization"}, [2]string{"office repair", serviceName("office") + " · repair permissions"})
 	rows := []row{}
 	for _, choice := range loginChoices {
 		rows = append(rows, row{pick: true, line: uiLine{{choice[1], ""}}})

@@ -82,12 +82,17 @@ jobs:
           name: commander
           path: dist
       - name: Publish a fresh latest release
+        shell: bash
         run: |
+          set -euo pipefail
           cd dist
           sha256sum commander > SHA256SUMS
           printf 'Commander for WSL and Linux on x86_64.\n\nNamed sessions select accounts and repositories. Selective encrypted transfer optionally includes shared memory. Project containers connect Git at runtime. Tasks integrate verified work and remove temporary branches and worktrees. Docker Engine/Desktop remains a prerequisite for project containers.\n\nBuild: %s\n' "$GITHUB_SHA" > "$RUNNER_TEMP/release-notes"
-          # A new release per build keeps its date equal to the binary's.
-          gh release list --limit 100 --json tagName --jq '.[].tagName' |
+          # A new release per build keeps its date equal to the binary's. The
+          # draft holds the uploaded files, so latest is missing only briefly.
+          draft="build-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT"
+          gh release create "$draft" commander SHA256SUMS --draft --target "$GITHUB_SHA" --title latest --notes-file "$RUNNER_TEMP/release-notes"
+          gh release list --limit 100 --json tagName --jq '.[].tagName' | { grep -vx "$draft" || true; } |
           while IFS= read -r tag; do
             gh release delete "$tag" --cleanup-tag --yes
           done
@@ -96,7 +101,7 @@ jobs:
           fi
           # Deleted tags can take a moment to disappear on GitHub.
           for attempt in 1 2 3 4 5; do
-            gh release create latest commander SHA256SUMS --target "$GITHUB_SHA" --title latest --latest --notes-file "$RUNNER_TEMP/release-notes" && break
+            gh release edit "$draft" --tag latest --target "$GITHUB_SHA" --draft=false --latest && break
             test "$attempt" -lt 5
             sleep 5
           done

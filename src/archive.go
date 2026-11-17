@@ -60,7 +60,7 @@ func contains(values []string, s string) bool {
 type profileArchive struct {
 	Format   string            `json:"format"`
 	Version  int               `json:"version"`
-	Profile  profiles          `json:"profile"`
+	Profile  selections        `json:"profile"`
 	Logins   map[string]object `json:"logins"`
 	Accounts []member          `json:"accounts,omitempty"`
 	Memory   *string           `json:"memory,omitempty"`

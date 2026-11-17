@@ -35,7 +35,7 @@ type account struct {
 
 // Archives keep sessions in this named selection layout, which earlier
 // releases used for saved selections.
-type profiles struct {
+type selections struct {
 	Version  int                 `json:"version"`
 	Active   *string             `json:"active"` // always null; kept for readable archives
 	Profiles map[string][]member `json:"profiles"`
@@ -128,7 +128,7 @@ func validateMembers(members []member) error {
 	return nil
 }
 
-func validateProfiles(p profiles) error {
+func validateSelections(p selections) error {
 	invalid := errors.New("invalid archive selection")
 	if p.Version != 1 || p.Profiles == nil {
 		return invalid
