@@ -1,24 +1,13 @@
 package main
 
 import (
+	"bytes"
 	"os"
 	"path/filepath"
 	"reflect"
+	"strings"
 	"testing"
 )
-
-func usePresetSession(t *testing.T, a *app, name string) {
-	t.Helper()
-	_, members, err := a.profile(name)
-	if err != nil {
-		t.Fatal(err)
-	}
-	s, err := a.newSession(name, members, nil)
-	if err != nil {
-		t.Fatal(err)
-	}
-	a.session = &s
-}
 
 func TestSessionSelectionsAreIndependent(t *testing.T) {
 	a := testApp(t)
@@ -68,12 +57,12 @@ func TestSessionCommandsCanOverlapAndPreventClose(t *testing.T) {
 	if err != nil {
 		t.Fatal("parallel command blocked", err)
 	}
-	if a.sessionCommand([]string{"close", s.ID}) == nil {
+	if a.sessionCommand([]string{"delete", s.Name}) == nil {
 		t.Fatal("closed active session")
 	}
 	first()
 	second()
-	if err = a.sessionCommand([]string{"close", s.ID}); err != nil {
+	if err = a.sessionCommand([]string{"delete", s.Name}); err != nil {
 		t.Fatal(err)
 	}
 }
@@ -195,5 +184,81 @@ func TestGitChecksPushURLsAndDefaultRemote(t *testing.T) {
 	}
 	if a.checkGit([]string{"-C", dir, "push", "origin", "main"}) == nil {
 		t.Fatal("unselected push URL accepted")
+	}
+}
+
+func TestSessionNamesRenameAndDelete(t *testing.T) {
+	a := testApp(t)
+	work := addSession(t, a, "Work")
+	if _, err := a.newSession("work", nil, nil); err == nil {
+		t.Fatal("accepted a name differing only in case")
+	}
+	if err := a.sessionCommand([]string{"new", "other", "--repos", "acme/*,acme/tool"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := a.sessionCommand([]string{"rename", "Work", "other"}); err == nil {
+		t.Fatal("renamed onto an existing name")
+	}
+	if err := a.sessionCommand([]string{"rename", "Work", "client"}); err != nil {
+		t.Fatal(err)
+	}
+	renamed, err := a.findSession("client")
+	if err != nil || renamed.ID != work.ID {
+		t.Fatal("rename changed the session ID", err)
+	}
+	if _, err = a.findSession("Work"); err == nil {
+		t.Fatal("old name still resolves")
+	}
+	if byID, err := a.findSession(work.ID); err != nil || byID.Name != "client" {
+		t.Fatal("ID no longer resolves", err)
+	}
+	a.out = &bytes.Buffer{}
+	if err = a.sessionCommand([]string{"list"}); err != nil {
+		t.Fatal(err)
+	}
+	if got := a.out.(*bytes.Buffer).String(); got != "client  no accounts\nother   no accounts  acme/* acme/tool\n" {
+		t.Fatalf("list output: %q", got)
+	}
+	if err = a.command([]string{"--session", "other", "context"}); err == nil || !strings.Contains(err.Error(), `session "other" has no accounts`) {
+		t.Fatal("--session did not resolve the name", err)
+	}
+	if err = a.sessionCommand([]string{"delete", "client"}); err != nil {
+		t.Fatal(err)
+	}
+	if all, _ := a.sessions(); len(all) != 1 || all[0].Name != "other" {
+		t.Fatal("delete removed the wrong session", all)
+	}
+}
+
+func TestInteractiveRepositoriesFromOrganizations(t *testing.T) {
+	a := testApp(t)
+	mustWrite(t, filepath.Join(a.root, ".secrets/.config/gh/hosts.yml"), []byte("github.com:\n  user: alice\n  oauth_token: alice-secret\n  git_protocol: https\n  users:\n    alice:\n      oauth_token: alice-secret\n"))
+	mustWrite(t, filepath.Join(a.root, "tools", ".requested", "gh"), nil)
+	s, err := a.newSession("work", []member{ghMember("alice")}, []string{"alice/tool"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ui := openUI(t, a.root)
+	ui.wait(t, "[q]uit")
+	ui.send(t, "e")
+	ui.wait(t, "+ add account")
+	frame := terminalControls.ReplaceAllString(ui.output, "")
+	for _, want := range []string{"[x] alice", "repositories", "[ ] alice/*", "[ ] acme/*", "[x] alice/tool"} {
+		if !strings.Contains(frame, want) {
+			t.Fatalf("missing %q: %s", want, frame)
+		}
+	}
+	if strings.Contains(frame, "bad/name") || strings.Contains(frame, "alice-secret") {
+		t.Fatal("showed an invalid owner or a token")
+	}
+	// alice, alice/*, acme/*, alice/tool: tick acme/* and untick alice/tool.
+	ui.send(t, "\x1b[B\x1b[B \x1b[B \r")
+	ui.wait(t, "work saved")
+	ui.send(t, "q")
+	if err := ui.command.Wait(); err != nil {
+		t.Fatal(err)
+	}
+	if s, err = a.readSession(s.ID); err != nil || !reflect.DeepEqual(s.Repositories, []string{"acme/*"}) {
+		t.Fatal("repositories not saved", s.Repositories, err)
 	}
 }

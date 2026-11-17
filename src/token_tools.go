@@ -17,7 +17,7 @@ import (
 	"time"
 )
 
-// The two small HTTP CLIs share Commander's private storage and profile scope.
+// The two small HTTP CLIs share Commander's private storage and session scope.
 // Tokens never appear in command arguments, diagnostics or account listings.
 type tokenLogin struct {
 	User     string `json:"user"`
@@ -205,7 +205,7 @@ func (a *app) loginToken(service string) error {
 	c := tokenLogin{}
 	var err error
 	if service == "confluence" {
-		site, e := a.input("confluence url", "")
+		site, e := a.prompt("confluence url", "")
 		if e != nil {
 			return e
 		}
@@ -214,13 +214,13 @@ func (a *app) loginToken(service string) error {
 			return err
 		}
 		c.API = c.Site + "/wiki"
-		c.User, err = a.input("atlassian email", "")
+		c.User, err = a.prompt("atlassian email", "")
 		if err != nil {
 			return err
 		}
 		fmt.Fprintln(a.out, "create a token at https://id.atlassian.com/manage-profile/security/api-tokens")
 	} else {
-		c.User, err = a.input("dockerhub username", "")
+		c.User, err = a.prompt("dockerhub username", "")
 		if err != nil {
 			return err
 		}
@@ -292,18 +292,17 @@ func (a *app) tokenAccounts(service string) ([]account, error) {
 }
 
 func (a *app) selectedToken(service, selector string) (tokenLogin, error) {
-	_, members, err := a.profile("")
-	if err != nil {
-		return tokenLogin{}, err
+	if a.session == nil {
+		return tokenLogin{}, errors.New("open a session first: commander session shell NAME")
 	}
 	candidates := []member{}
-	for _, m := range members {
+	for _, m := range a.session.Accounts {
 		if m.Service == service && (selector == "" || selector == m.selector()) {
 			candidates = append(candidates, m)
 		}
 	}
 	if len(candidates) == 0 {
-		return tokenLogin{}, errors.New("add this account to the current profile first")
+		return tokenLogin{}, errors.New("select this account in the session first")
 	}
 	if len(candidates) > 1 {
 		return tokenLogin{}, errors.New("choose an account with --account; see commander context")
@@ -375,7 +374,7 @@ func (a *app) tokenRun(service string, args []string, capture bool) ([]byte, err
 		return nil, err
 	}
 	if len(args) == 0 || args[0] == "help" || args[0] == "--help" || args[0] == "-h" {
-		fmt.Fprintf(&out, "%s · commander built-in cli\n\n  whoami [--account ACCOUNT]\n  api PATH [-X METHOD] [--input FILE|-] [--account ACCOUNT]\n\nuses the current profile. add tokens through commander accounts.\n", serviceName(service))
+		fmt.Fprintf(&out, "%s · commander built-in cli\n\n  whoami [--account ACCOUNT]\n  api PATH [-X METHOD] [--input FILE|-] [--account ACCOUNT]\n\nuses the session selection. add tokens in the commander menu.\n", serviceName(service))
 		if service == "dockerhub" {
 			fmt.Fprint(&out, "  docker [--account ACCOUNT] -- DOCKER_ARGS\n\n")
 			fmt.Fprintln(&out, "example: api /v2/namespaces/USERNAME/repositories")
@@ -467,26 +466,17 @@ func (a *app) tokenRun(service string, args []string, capture bool) ([]byte, err
 }
 
 // A private, short-lived Docker config supplies only the selected Hub account.
-// Docker and devcontainers inherit it; other profiles and host logins stay out.
+// Docker and devcontainers inherit it; other sessions and host logins stay out.
 func (a *app) dockerConfig(selector string) (string, func(), error) {
 	empty := func() {}
-	p, err := a.readProfiles()
-	if err != nil {
-		return "", empty, err
-	}
 	hasAccount := false
 	if a.session != nil {
 		for _, m := range a.session.Accounts {
 			hasAccount = hasAccount || m.Service == "dockerhub"
 		}
 	}
-	if p.Active != nil && a.session == nil {
-		for _, m := range p.Profiles[*p.Active] {
-			hasAccount = hasAccount || m.Service == "dockerhub"
-		}
-	}
 	// An explicit empty Hub entry also prevents Docker from discovering a host
-	// credential helper when this profile has no Hub login.
+	// credential helper when this session has no Hub login.
 	auths := object{"https://index.docker.io/v1/": object{}}
 	if hasAccount || selector != "" {
 		c, err := a.selectedToken("dockerhub", selector)

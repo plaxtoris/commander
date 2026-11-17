@@ -98,6 +98,34 @@ func newApp(root string, in *os.File, out, errOut io.Writer) (*app, error) {
 	return a, nil
 }
 
+const help = `commander
+
+  commander                                open sessions
+  commander session [list]                 list sessions
+  commander session new NAME [--accounts service=user,...] [--repos owner/*,...]
+  commander session edit NAME [--accounts ...] [--repos ...]
+  commander session rename NAME NEW
+  commander session delete NAME
+  commander session shell NAME             open a shell with this selection
+  commander context                        show the session scope
+  commander exec [--account ID] -- TOOL    run with isolated selected credentials
+  commander task new PROJECT NAME [BASE]   create an isolated worktree
+  commander task finish NAME -- CHECK      validate, integrate and clean up
+  commander up PROJECT                     build and connect a trusted devcontainer
+  commander container ID -- COMMAND        run a command in that container
+  commander export [FILE.zip]              choose accounts, sessions and memory
+  commander import FILE.zip                choose archive contents
+  commander memory [write REVISION]        read or update shared preferences
+  commander overview [SESSION]             check account status
+  commander setup                          repair used tools
+  commander update                         update Commander and used tools
+  commander doctor                         check the installation
+  commander version                        show the installed build
+
+Use --session NAME before a command outside its session shell.
+Use --account SELECTOR before up or task for several GitHub accounts.
+`
+
 func (a *app) command(args []string) error {
 	id := os.Getenv("COMMANDER_SESSION")
 	for len(args) >= 2 && (args[0] == "--session" || args[0] == "--account") {
@@ -109,7 +137,7 @@ func (a *app) command(args []string) error {
 		args = args[2:]
 	}
 	if id != "" {
-		s, err := a.readSession(id)
+		s, err := a.findSession(id)
 		if err != nil {
 			return err
 		}
@@ -136,30 +164,7 @@ func (a *app) command(args []string) error {
 	case "git-credential":
 		return a.gitCredential(args[1:])
 	case "help", "--help", "-h":
-		fmt.Fprintln(a.out, `commander
-
-  commander                              update, then open the menu
-  commander session new NAME [PRESET]     choose accounts and repositories
-  commander session shell ID             open an independent session shell
-  commander session list|edit|close ID    manage session selections and cleanup
-  commander context [PRESET]              show session scope or a saved selection
-  commander exec [--account ID] -- TOOL   run with isolated selected credentials
-  commander task new PROJECT NAME [BASE]  create an isolated worktree
-  commander task finish NAME -- CHECK    validate, integrate and clean up
-  commander up PROJECT                   build and connect a trusted devcontainer
-  commander container ID -- COMMAND      run a command in that container
-  commander export [FILE.zip]             select accounts, selections and memory
-  commander import FILE.zip               preview and select archive contents
-  commander memory [write REVISION]       read or update shared preferences
-  commander overview [PRESET]             check account status
-  commander setup [PRESET]                repair used tools or check a selection
-  commander update                       update Commander and used tools
-  commander doctor                       check the installation
-  commander version                      show the installed build
-
-Use --session ID before a command outside its session shell.
-Use --account SELECTOR before up or task for several GitHub accounts.
-Start your preferred agent in a session shell. Projects live in workspaces/.`)
+		fmt.Fprint(a.out, help)
 		return nil
 	case "version", "--version":
 		fmt.Fprintln(a.out, "Commander", build, runtime.GOOS+"/"+runtime.GOARCH)
@@ -167,25 +172,20 @@ Start your preferred agent in a session shell. Projects live in workspaces/.`)
 	case "memory":
 		return a.memory(args[1:])
 	case "setup":
-		if len(args) > 2 {
-			return errors.New("usage: commander setup [PROFILE]")
-		}
-		if len(args) == 2 {
-			return a.setupProfile(args[1])
+		if len(args) != 1 {
+			return errors.New("usage: commander setup")
 		}
 		return a.setup(false)
-	case "context", "overview":
+	case "context":
+		if len(args) != 1 {
+			return errors.New("usage: commander context")
+		}
+		return a.describe("", true)
+	case "overview":
 		if len(args) > 2 {
-			return errors.New("usage: commander " + args[0] + " [PROFILE]")
+			return errors.New("usage: commander overview [SESSION]")
 		}
-		name := ""
-		if len(args) == 2 {
-			name = args[1]
-		}
-		if args[0] == "context" && name == "" && a.session == nil {
-			return errors.New("start a session or name a saved selection explicitly")
-		}
-		return a.describe(name, args[0] == "context")
+		return a.describe(strings.Join(args[1:], ""), false)
 	case "exec":
 		args = args[1:]
 		if len(args) >= 2 && args[0] == "--account" {
@@ -250,7 +250,7 @@ func (a *app) ensure() error {
 		if name == "AGENTS.md" {
 			data = []byte(agentInstructions)
 		} else if name == ".gitignore" {
-			data = []byte("/.secrets/\n/.sessions/\n/tools/\n/workspaces/\n/profiles.json\n/MEMORY.md\n/commander\n/*.zip\n")
+			data = []byte("/.secrets/\n/.sessions/\n/tools/\n/workspaces/\n/MEMORY.md\n/commander\n/*.zip\n")
 		}
 		file, err := os.OpenFile(filepath.Join(a.root, name), os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0644)
 		if os.IsExist(err) {

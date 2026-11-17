@@ -610,60 +610,6 @@ func (a *app) installGit() error {
 	return nil
 }
 
-// Import commits the profile before preparing anything. This same operation can
-// be retried without re-importing, replacing logins or switching active accounts.
-func (a *app) prepareProfile(name string) error {
-	name, _, err := a.profile(name)
-	if err != nil {
-		return err
-	}
-	defer a.dockerStatus()
-	if _, err = a.run("git", []string{"--version"}, true, nil); err == nil {
-		err = a.describe(name, false)
-	}
-	if err != nil {
-		return fmt.Errorf("profile %q is saved, but preparation needs attention: %v; retry ./commander setup %s without importing again", name, err, quote(name))
-	}
-	fmt.Fprintf(a.out, "profile ready: %s · tools prepared; account status checked\n", clean(name))
-	return nil
-}
-
-func (a *app) setupProfile(name string) error {
-	if err := a.ensure(); err != nil {
-		return err
-	}
-	if err := a.refreshAgentInstructions(); err != nil {
-		return err
-	}
-	unlock, err := a.lock("native")
-	if err != nil {
-		return err
-	}
-	defer unlock()
-	return a.prepareProfile(name)
-}
-
-// Checking the engine must not install container tools or use a registry login.
-func (a *app) dockerStatus() {
-	path, _, err := a.toolCommand("docker", nil)
-	if err != nil {
-		path, err = exec.LookPath("docker")
-	}
-	if err != nil {
-		fmt.Fprintln(a.out, "docker engine: not checked (CLI not installed); project containers need Docker Engine/Desktop installed separately")
-		return
-	}
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
-	cmd := exec.CommandContext(ctx, path, "info", "--format", "{{.ServerVersion}}")
-	cmd.Env = a.environment("docker", nil)
-	if err := cmd.Run(); err != nil {
-		fmt.Fprintln(a.out, "docker engine: unavailable; install/start Docker Engine/Desktop and enable access for project containers")
-		return
-	}
-	fmt.Fprintln(a.out, "docker engine: ready")
-}
-
 // Setup refreshes agent instructions and repairs only used tools, including
 // interrupted installations. After an update, the restarted binary supplies
 // its own embedded instructions.

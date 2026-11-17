@@ -45,14 +45,18 @@ func mustWrite(t *testing.T, path string, data []byte) {
 		t.Fatal(err)
 	}
 }
-func saveProfile(t *testing.T, a *app, name string, members ...member) {
+func addSession(t *testing.T, a *app, name string, members ...member) session {
 	t.Helper()
-	if members == nil {
-		members = []member{}
-	}
-	if err := a.writeProfiles(profiles{Version: 1, Active: &name, Profiles: map[string][]member{name: members}}); err != nil {
+	s, err := a.newSession(name, members, nil)
+	if err != nil {
 		t.Fatal(err)
 	}
+	return s
+}
+func useSession(t *testing.T, a *app, name string, members ...member) {
+	t.Helper()
+	s := addSession(t, a, name, members...)
+	a.session = &s
 }
 func ghMember(user string) member {
 	return member{Service: "github", Key: jsonKey([]string{"github.com", user}), Account: user + " @ github.com", Context: ""}
@@ -72,7 +76,7 @@ func TestEnsureAndRelocation(t *testing.T) {
 	if output, err := cmd.CombinedOutput(); err != nil {
 		t.Fatalf("private installation files are not ignored: %v %s", err, output)
 	}
-	saveProfile(t, a, "work", hMember("project"))
+	addSession(t, a, "work", hMember("project"))
 	mustWrite(t, filepath.Join(a.root, "AGENTS.md"), []byte("my instructions\n"))
 	if err := a.ensure(); err != nil {
 		t.Fatal(err)
@@ -81,7 +85,7 @@ func TestEnsureAndRelocation(t *testing.T) {
 	if string(data) != "my instructions\n" {
 		t.Fatal("instructions overwritten outside startup or setup")
 	}
-	for path, mode := range map[string]os.FileMode{".secrets": 0700, "profiles.json": 0600} {
+	for path, mode := range map[string]os.FileMode{".secrets": 0700, ".sessions": 0700} {
 		info, err := os.Stat(filepath.Join(a.root, path))
 		if err != nil || info.Mode().Perm() != mode {
 			t.Fatalf("%s permissions: %v", path, err)
@@ -95,9 +99,9 @@ func TestEnsureAndRelocation(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	name, members, err := b.profile("")
-	if err != nil || name != "work" || len(members) != 1 {
-		t.Fatal(name, members, err)
+	s, err := b.findSession("work")
+	if err != nil || len(s.Accounts) != 1 {
+		t.Fatal(s, err)
 	}
 	env := strings.Join(b.environment("gh", nil), "\n")
 	if strings.Contains(env, a.root+"/.secrets") || !strings.Contains(env, newRoot+"/.secrets") {
@@ -106,7 +110,7 @@ func TestEnsureAndRelocation(t *testing.T) {
 }
 
 func TestSymlinkRejection(t *testing.T) {
-	for _, name := range []string{".secrets", "profiles.json", "AGENTS.md"} {
+	for _, name := range []string{".secrets", ".sessions", "AGENTS.md"} {
 		t.Run(name, func(t *testing.T) {
 			a := testApp(t)
 			os.RemoveAll(filepath.Join(a.root, name))
@@ -114,20 +118,13 @@ func TestSymlinkRejection(t *testing.T) {
 			if name == "AGENTS.md" {
 				target = filepath.Join(target, "instructions")
 				mustWrite(t, target, []byte("external instructions\n"))
-			} else if name == "profiles.json" {
-				target = filepath.Join(target, "profile")
-				mustWrite(t, target, []byte(`{"version":1,"active":null,"profiles":{}}`))
 			}
 			if err := os.Symlink(target, filepath.Join(a.root, name)); err != nil {
 				t.Fatal(err)
 			}
-			var err error
-			if name == ".secrets" {
-				err = a.ensure()
-			} else if name == "AGENTS.md" {
+			err := a.ensure()
+			if name == "AGENTS.md" {
 				err = a.setup(false)
-			} else {
-				_, err = a.readProfiles()
 			}
 			if err == nil {
 				t.Fatal("accepted symlink")
@@ -142,35 +139,27 @@ func TestSymlinkRejection(t *testing.T) {
 	}
 }
 
-func TestProfilesStrictValidationAndLegacyMetadata(t *testing.T) {
-	a := testApp(t)
+func TestArchiveSelectionValidation(t *testing.T) {
 	good := profiles{Version: 1, Profiles: map[string][]member{"work": {ghMember("user")}}}
-	mustWrite(t, filepath.Join(a.root, ".secrets", "profiles.json"), encode(good))
-	p, err := a.readProfiles()
-	if err != nil || len(p.Profiles) != 1 {
-		t.Fatal(p, err)
+	if err := validateProfiles(good); err != nil {
+		t.Fatal(err)
 	}
-	for _, data := range []string{
-		`{"version":2,"active":null,"profiles":{}}`,
-		`{"version":1,"active":"missing","profiles":{}}`,
-		`{"version":1,"active":null,"profiles":{"bad\nname":[]}}`,
-		`{"version":1,"active":null,"profiles":{"work":null}}`,
-		`{"version":1,"active":null,"profiles":{},"token":"secret"}`,
-		`{"version":1,"active":null,"profiles":{}} {}`,
+	for _, p := range []profiles{
+		{Version: 2, Profiles: map[string][]member{}},
+		{Version: 1, Profiles: map[string][]member{"bad\nname": {}}},
+		{Version: 1, Profiles: map[string][]member{"work": nil}},
+		{Version: 1, Profiles: map[string][]member{"work": {ghMember("user"), ghMember("user")}}},
+		{Version: 1, Profiles: map[string][]member{"work": {}}, Scopes: map[string][]string{"work": {"../*"}}},
 	} {
-		if _, err := decodeProfiles([]byte(data)); err == nil {
-			t.Errorf("accepted invalid profile: %s", data)
+		if validateProfiles(p) == nil {
+			t.Errorf("accepted invalid selection: %+v", p)
 		}
-	}
-	p.Profiles["work"] = append(p.Profiles["work"], p.Profiles["work"][0])
-	if validateProfiles(p) == nil {
-		t.Fatal("accepted duplicate account")
 	}
 }
 
 func TestContextScopeAndIdentity(t *testing.T) {
 	a := testApp(t)
-	saveProfile(t, a, "work", ghMember("allowed"))
+	work := addSession(t, a, "work", ghMember("allowed"))
 	calls := 0
 	a.run = func(tool string, args []string, capture bool, extra map[string]string) ([]byte, error) {
 		calls++
@@ -179,7 +168,7 @@ func TestContextScopeAndIdentity(t *testing.T) {
 		}
 		return []byte(`{"hosts":{"github.com":[{"login":"allowed","active":false,"state":"success","oauth_token":"do-not-print"},{"login":"other","active":true,"state":"success"}]}}`), nil
 	}
-	if err := a.describe("", true); err != nil {
+	if err := a.describe("work", true); err != nil {
 		t.Fatal(err)
 	}
 	output := a.out.(*bytes.Buffer).String()
@@ -188,15 +177,21 @@ func TestContextScopeAndIdentity(t *testing.T) {
 	}
 	a.out = &bytes.Buffer{}
 	if err := a.describe("missing", true); err == nil || calls != 1 {
-		t.Fatal("missing profile queried native accounts")
+		t.Fatal("missing session queried native accounts")
 	}
-	saveProfile(t, a, "empty")
+	addSession(t, a, "empty")
+	if err := a.describe("empty", true); err == nil || calls != 1 {
+		t.Fatal("empty session queried native accounts")
+	}
 	if err := a.describe("", true); err == nil || calls != 1 {
-		t.Fatal("empty profile queried native accounts")
+		t.Fatal("context without a session queried native accounts")
 	}
-	saveProfile(t, a, "work", ghMember("missing"))
+	work.Accounts = []member{ghMember("missing")}
+	if err := a.saveSession(work); err != nil {
+		t.Fatal(err)
+	}
 	a.out = &bytes.Buffer{}
-	if err := a.describe("", true); err == nil || a.out.(*bytes.Buffer).Len() != 0 {
+	if err := a.describe("work", true); err == nil || a.out.(*bytes.Buffer).Len() != 0 {
 		t.Fatal("printed partial invalid context")
 	}
 }
@@ -469,8 +464,14 @@ func TestUIHelper(t *testing.T) {
 		if tool == "git" {
 			return []byte("git version fixture"), nil
 		}
+		if tool == "gh" && args[0] == "auth" {
+			return []byte(`{"hosts":{"github.com":[{"login":"alice","state":"success","active":true}]}}`), nil
+		}
+		if tool == "gh" && args[0] == "api" && extra["GH_CONFIG_DIR"] != "" {
+			return []byte("acme\nbad/name\n"), nil
+		}
 		if tool != "hcloud" {
-			return nil, errors.New("fixture supports Hetzner only")
+			return nil, errors.New("fixture supports Hetzner and GitHub only")
 		}
 		if len(args) > 1 && args[1] == "list" {
 			rows := []any{object{"name": "existing", "active": true}}
@@ -575,24 +576,24 @@ func (s *terminalSession) send(t *testing.T, value string) {
 	}
 }
 
-func TestInteractiveFirstProfileAndHiddenLogin(t *testing.T) {
+func TestInteractiveNewSessionWithHiddenLogin(t *testing.T) {
 	root := t.TempDir()
 	session := openUI(t, root)
-	session.wait(t, "esc quit")
-	session.send(t, "\r")
-	session.wait(t, "add account")
-	session.send(t, "\r")
-	session.wait(t, "choose a service")
+	session.wait(t, "[q]uit")
+	session.send(t, "n")
+	session.wait(t, "name:")
+	session.send(t, "work\r")
+	session.wait(t, "+ add account")
+	session.send(t, "a")
+	session.wait(t, "google cloud")
 	session.send(t, "\x1b[B\x1b[B\x1b[B\r")
-	session.wait(t, "choose a saved login")
-	session.send(t, "\x1b[B\r")
-	session.wait(t, "project token (hidden)")
+	session.wait(t, "project token:")
 	session.send(t, strings.Repeat("a", 64)+"\n")
-	session.wait(t, "project name")
+	session.wait(t, "project name:")
 	session.send(t, "newproject\n")
-	session.wait(t, "refresh")
-	session.send(t, "q")
-	session.wait(t, "home")
+	session.wait(t, "[x] newproject")
+	session.send(t, "\x1b[H\r")
+	session.wait(t, "hetzner newproject")
 	session.send(t, "q")
 	if err := session.command.Wait(); err != nil {
 		t.Fatal(err)
@@ -603,29 +604,32 @@ func TestInteractiveFirstProfileAndHiddenLogin(t *testing.T) {
 	if strings.Contains(session.output, strings.Repeat("a", 64)) {
 		t.Fatal("token was echoed")
 	}
-	if !strings.Contains(session.output, "newproject") {
-		t.Fatal("connected account is missing")
+	a, _ := newApp(root, os.Stdin, io.Discard, io.Discard)
+	s, err := a.findSession("work")
+	if err != nil || len(s.Accounts) != 1 || s.Accounts[0].Account != "newproject" {
+		t.Fatal("session did not keep the new login", s, err)
 	}
-
 }
 
-func TestInteractiveProfileCancellation(t *testing.T) {
-	root := t.TempDir()
-	a, err := newApp(root, os.Stdin, os.Stdout, os.Stderr)
-	if err != nil {
-		t.Fatal(err)
-	}
-	a.ensure()
-	saveProfile(t, a, "work")
-	session := openUI(t, root)
+func TestInteractiveCancelKeepsSession(t *testing.T) {
+	a := testApp(t)
+	addSession(t, a, "work")
+	session := openUI(t, a.root)
+	session.wait(t, "1 session")
+	session.send(t, "e")
 	session.wait(t, "no accounts yet")
+	session.send(t, "\x1b")
+	session.wait(t, "[q]uit")
+	session.send(t, "d")
+	session.wait(t, "delete session work?")
+	session.send(t, "n")
+	session.wait(t, "[q]uit")
 	session.send(t, "q")
 	if err := session.command.Wait(); err != nil {
 		t.Fatal(err)
 	}
-	p, err := a.readProfiles()
-	if err != nil || len(p.Profiles) != 1 || len(p.Profiles["work"]) != 0 {
-		t.Fatal(p, err)
+	if s, err := a.findSession("work"); err != nil || len(s.Accounts) != 0 {
+		t.Fatal(s, err)
 	}
 }
 

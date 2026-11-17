@@ -7,15 +7,15 @@ import (
 	"testing"
 )
 
-func TestSelectiveArchiveAccountsPresetsAndMemory(t *testing.T) {
+func TestSelectiveArchiveAccountsSessionsAndMemory(t *testing.T) {
 	source := testApp(t)
 	members := fixtureLogins(t, source)
-	saveProfile(t, source, "work", members...)
-	if err := source.editProfiles(func(p *profiles) error { p.Scopes = map[string][]string{"work": {"company/*"}}; return nil }); err != nil {
+	work, err := source.newSession("work", members, []string{"company/*"})
+	if err != nil {
 		t.Fatal(err)
 	}
 	mustWrite(t, filepath.Join(source.root, "MEMORY.md"), []byte("* Keep replies concise.\n"))
-	payload, err := source.selectedArchive(members, []string{"work"}, true)
+	payload, err := source.selectedArchive(members, []session{work}, true)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -37,7 +37,7 @@ func TestSelectiveArchiveAccountsPresetsAndMemory(t *testing.T) {
 		t.Fatal(err)
 	}
 	selected := []member{members[0], members[3]}
-	if err = target.importSelected(payload, importSelection{Accounts: selected, Presets: []string{"work"}, Memory: "replace"}); err != nil {
+	if err = target.importSelected(payload, importSelection{Accounts: selected, Sessions: []string{"work"}, Memory: "replace"}); err != nil {
 		t.Fatal(err)
 	}
 	for _, service := range []string{"github", "office"} {
@@ -64,9 +64,18 @@ func TestSelectiveArchiveAccountsPresetsAndMemory(t *testing.T) {
 	if err != nil || !reflect.DeepEqual(s, after) {
 		t.Fatal("changed running session", err)
 	}
-	book, err := target.readProfiles()
-	if err != nil || !reflect.DeepEqual(book.Scopes["work"], []string{"company/*"}) {
-		t.Fatal("lost repository selection", err)
+	imported, err := target.findSession("work")
+	if err != nil || imported.ID == work.ID || !reflect.DeepEqual(imported.Repositories, []string{"company/*"}) || len(imported.Accounts) != len(members) {
+		t.Fatal("session was not imported with its repositories", imported, err)
+	}
+	if err = target.importSelected(payload, importSelection{Sessions: []string{"work"}}); err == nil {
+		t.Fatal("replaced a session without confirmation")
+	}
+	if err = target.importSelected(payload, importSelection{Sessions: []string{"work"}, Replace: map[string]bool{"session:work": true}}); err != nil {
+		t.Fatal(err)
+	}
+	if replaced, err := target.findSession("work"); err != nil || replaced.ID != imported.ID {
+		t.Fatal("replacing a session changed its ID", err)
 	}
 	memory, _ := os.ReadFile(filepath.Join(target.root, "MEMORY.md"))
 	if string(memory) != *payload.Memory {
@@ -74,7 +83,7 @@ func TestSelectiveArchiveAccountsPresetsAndMemory(t *testing.T) {
 	}
 }
 
-func TestArchiveMemoryOnlyAndLegacy(t *testing.T) {
+func TestArchiveMemoryOnly(t *testing.T) {
 	source := testApp(t)
 	fixtureLogins(t, source)
 	mustWrite(t, filepath.Join(source.root, "MEMORY.md"), []byte("* Keep replies concise.\n"))
@@ -93,17 +102,6 @@ func TestArchiveMemoryOnlyAndLegacy(t *testing.T) {
 	got, _ := os.ReadFile(filepath.Join(target.root, "MEMORY.md"))
 	if string(got) != "* Keep replies concise.\n* Test meaningful changes.\n" {
 		t.Fatal("memory duplicate", string(got))
-	}
-	legacy, err := source.exportPayload("old", []member{hMember("project")})
-	if err != nil {
-		t.Fatal(err)
-	}
-	normalized, err := normalizeArchive(legacy)
-	if err != nil || len(normalized.Accounts) != 1 {
-		t.Fatal("legacy archive not readable", err)
-	}
-	if err = target.importSelected(legacy, importSelection{Accounts: normalized.Accounts}); err != nil {
-		t.Fatal(err)
 	}
 }
 

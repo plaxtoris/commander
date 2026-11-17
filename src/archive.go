@@ -12,6 +12,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"regexp"
 	"sort"
 	"strings"
 
@@ -64,6 +65,9 @@ type profileArchive struct {
 	Accounts []member          `json:"accounts,omitempty"`
 	Memory   *string           `json:"memory,omitempty"`
 }
+
+var sessionFile = regexp.MustCompile(`^\.sessions/[a-f0-9]{24}/session\.json$`)
+
 type storage struct {
 	root      string
 	originals map[string][]byte
@@ -656,7 +660,7 @@ func (s *storage) publish(files map[string][]byte) error {
 	}
 	sort.Strings(paths)
 	for _, name := range paths {
-		if name != "profiles.json" && name != "MEMORY.md" && !nativeFiles[strings.TrimPrefix(filepath.ToSlash(name), ".secrets/")] {
+		if name != "MEMORY.md" && !sessionFile.MatchString(filepath.ToSlash(name)) && !nativeFiles[strings.TrimPrefix(filepath.ToSlash(name), ".secrets/")] {
 			return errFormat
 		}
 		if err := noSymlinks(s.root, filepath.Join(s.root, name)); err != nil {

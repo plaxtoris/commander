@@ -101,7 +101,7 @@ func TestIntegrationProjectContainer(t *testing.T) {
 		t.Fatal(err)
 	}
 	a.session = &s
-	t.Cleanup(func() { a.sessionCommand([]string{"close", s.ID}) })
+	t.Cleanup(func() { a.sessionCommand([]string{"delete", s.Name}) })
 	t.Cleanup(func() {
 		data, err := a.run("docker", []string{"ps", "-aq", "--filter", "label=commander.session=" + a.session.ID}, true, nil)
 		if err == nil {

@@ -10,9 +10,11 @@ import (
 	"strings"
 )
 
+// An import selection names archive accounts and sessions. Replace holds
+// account IDs and "session:NAME" keys whose existing data may be replaced.
 type importSelection struct {
 	Accounts []member
-	Presets  []string
+	Sessions []string
 	Memory   string
 	Replace  map[string]bool
 }
@@ -48,22 +50,16 @@ func hasLogin(service string, state object, m member) bool {
 }
 
 func normalizeArchive(p profileArchive) (profileArchive, error) {
-	if p.Format != "commander-profile" || (p.Version != 1 && p.Version != 2) {
+	if p.Format != "commander-profile" || p.Version != 2 || p.Profile.Active != nil {
 		return p, errFormat
 	}
 	if err := validateProfiles(p.Profile); err != nil {
 		return p, err
 	}
-	if p.Version == 1 {
-		if len(p.Profile.Profiles) != 1 || p.Profile.Active == nil || p.Memory != nil || len(p.Accounts) > 0 {
-			return p, errFormat
-		}
-		p.Accounts = p.Profile.Profiles[*p.Profile.Active]
-	}
 	if p.Accounts == nil {
 		p.Accounts = []member{}
 	}
-	if err := validateProfiles(profiles{Version: 1, Profiles: map[string][]member{"archive": p.Accounts}}); err != nil {
+	if err := validateMembers(p.Accounts); err != nil {
 		return p, err
 	}
 	grouped := map[string][]member{}
@@ -84,24 +80,14 @@ func normalizeArchive(p profileArchive) (profileArchive, error) {
 			return p, err
 		}
 	}
-	p.Version = 2
-	p.Profile.Active = nil
 	return p, nil
 }
 
-func (a *app) selectedArchive(accounts []member, presets []string, memory bool) (profileArchive, error) {
+func (a *app) selectedArchive(accounts []member, sessions []session, memory bool) (profileArchive, error) {
 	p := profileArchive{Format: "commander-profile", Version: 2, Accounts: accounts, Profile: profiles{Version: 1, Profiles: map[string][]member{}, Scopes: map[string][]string{}}, Logins: map[string]object{}}
-	book, err := a.readProfiles()
-	if err != nil {
-		return p, err
-	}
-	for _, name := range presets {
-		members, ok := book.Profiles[name]
-		if !ok {
-			return p, errors.New("saved selection changed")
-		}
-		p.Profile.Profiles[name] = members
-		p.Profile.Scopes[name] = book.Scopes[name]
+	for _, s := range sessions {
+		p.Profile.Profiles[s.Name] = s.Accounts
+		p.Profile.Scopes[s.Name] = s.Repositories
 	}
 	grouped := map[string][]member{}
 	for _, m := range accounts {
@@ -213,32 +199,41 @@ func (a *app) importSelected(payload profileArchive, selection importSelection) 
 			files[filepath.Join(".secrets", name)] = data
 		}
 	}
-	if len(selection.Presets) > 0 {
-		book, err := a.readProfiles()
+	if len(selection.Sessions) > 0 {
+		existing, err := a.sessions()
 		if err != nil {
 			return err
 		}
-		if book.Scopes == nil {
-			book.Scopes = map[string][]string{}
-		}
-		for _, name := range selection.Presets {
+		for _, name := range selection.Sessions {
 			members, ok := p.Profile.Profiles[name]
 			if !ok {
-				return errors.New("selection was not in the archive")
+				return errors.New("session was not in the archive")
 			}
-			if _, exists := book.Profiles[name]; exists && !selection.Replace["preset:"+name] {
-				return errors.New("saved selection already exists")
+			s := session{Name: name, Accounts: members, Repositories: p.Profile.Scopes[name]}
+			for _, old := range existing {
+				if strings.EqualFold(old.Name, name) {
+					if !selection.Replace["session:"+name] {
+						return errors.New("session " + old.Name + " already exists")
+					}
+					s.ID, s.Name = old.ID, old.Name
+				}
 			}
-			book.Profiles[name] = members
-			book.Scopes[name] = p.Profile.Scopes[name]
+			if s.ID == "" {
+				if s.ID, err = newSessionID(); err != nil {
+					return err
+				}
+			}
+			if err = s.validate(); err != nil {
+				return err
+			}
+			path := filepath.Join(".sessions", s.ID, "session.json")
+			before, err := os.ReadFile(filepath.Join(a.root, path))
+			if err != nil && !os.IsNotExist(err) {
+				return err
+			}
+			store.originals[path] = before
+			files[path] = encode(s)
 		}
-		path := filepath.Join(a.root, "profiles.json")
-		before, err := os.ReadFile(path)
-		if err != nil && !os.IsNotExist(err) {
-			return err
-		}
-		store.originals["profiles.json"] = before
-		files["profiles.json"] = encode(book)
 	}
 	if selection.Memory != "" && selection.Memory != "keep" {
 		if p.Memory == nil {
@@ -269,40 +264,6 @@ func (a *app) importSelected(payload profileArchive, selection importSelection) 
 	return store.publish(files)
 }
 
-func (a *app) choosePresets(book profiles) ([]string, error) {
-	names := []string{}
-	for name := range book.Profiles {
-		names = append(names, name)
-	}
-	sort.Strings(names)
-	selected := map[string]bool{}
-	for {
-		options := []string{}
-		for _, name := range names {
-			mark := "○ "
-			if selected[name] {
-				mark = "✓ "
-			}
-			options = append(options, mark+name)
-		}
-		options = append(options, "continue")
-		i, err := a.choose("saved selections", "optional: include reusable account and repository selections.", options)
-		if err != nil {
-			return nil, err
-		}
-		if i == len(names) {
-			result := []string{}
-			for _, name := range names {
-				if selected[name] {
-					result = append(result, name)
-				}
-			}
-			return result, nil
-		}
-		selected[names[i]] = !selected[names[i]]
-	}
-}
-
 func (a *app) transfer(args []string) error {
 	if !a.terminal() {
 		return errors.New("open a terminal to select archive contents and enter its password")
@@ -313,187 +274,202 @@ func (a *app) transfer(args []string) error {
 	if err := a.ensure(); err != nil {
 		return err
 	}
-	path := ""
-	if len(args) == 2 {
-		path = args[1]
+	path := strings.Join(args[1:], "")
+	run := a.exportArchive
+	if args[0] == "import" {
+		run = a.importArchive
 	}
-	if args[0] == "export" {
-		all, err := a.savedMembers()
-		if err != nil {
-			return err
-		}
-		initial := []member{}
-		if a.session != nil {
-			initial = a.session.Accounts
-		}
-		accounts, err := a.selectMembers("export accounts", all, initial, true)
-		if err != nil {
-			return err
-		}
-		book, err := a.readProfiles()
-		if err != nil {
-			return err
-		}
-		presets, err := a.choosePresets(book)
-		if err != nil {
-			return err
-		}
-		choice, err := a.choose("export memory", "MEMORY.md contains personal preferences. Include it only when wanted.", []string{"leave memory out", "include MEMORY.md"})
-		if err != nil {
-			return err
-		}
-		if len(accounts) == 0 && len(presets) == 0 && choice == 0 {
-			return errors.New("nothing selected")
-		}
-		if path == "" {
-			path, err = a.input("archive path", "commander.zip")
-			if err != nil {
-				return err
-			}
-		}
-		path, err = archivePath(path)
-		if err != nil {
-			return err
-		}
-		if filepath.Ext(path) != ".zip" {
-			return errors.New("use a .zip archive")
-		}
-		password, err := a.password("archive password", true)
-		if err != nil {
-			return err
-		}
-		unlock, err := a.lock("native")
-		if err != nil {
-			return err
-		}
-		payload, err := a.selectedArchive(accounts, presets, choice == 1)
-		unlock()
-		if err != nil {
-			return err
-		}
-		if err = writeArchive(path, payload, password); err != nil {
-			return err
-		}
-		fmt.Fprintf(a.out, "exported %d accounts, %d selections, memory=%t: %s\n", len(accounts), len(presets), choice == 1, path)
-		return nil
+	message, err := run(path)
+	a.clear()
+	if err == nil {
+		fmt.Fprintln(a.out, message)
 	}
-	path, err := archivePath(path)
+	return err
+}
+
+func (a *app) exportArchive(path string) (string, error) {
+	logins, _ := a.logins()
+	all, err := a.sessions()
 	if err != nil {
-		return err
+		return "", err
+	}
+	items := []choice{}
+	for _, r := range logins {
+		name, context := r.display()
+		items = append(items, choice{group: serviceName(r.Service), label: name, detail: context})
+	}
+	for _, s := range all {
+		items = append(items, choice{group: "sessions", label: s.Name, detail: s.summary()})
+	}
+	items = append(items, choice{group: "memory", label: "MEMORY.md", detail: "personal preferences"})
+	items, err = a.checklist("export", items)
+	if err != nil {
+		return "", err
+	}
+	accounts, sessions := []member{}, []session{}
+	for i, item := range items[:len(logins)] {
+		if item.on {
+			accounts = append(accounts, logins[i].member)
+		}
+	}
+	for i, item := range items[len(logins) : len(logins)+len(all)] {
+		if item.on {
+			sessions = append(sessions, all[i])
+		}
+	}
+	memory := items[len(items)-1].on
+	if len(accounts) == 0 && len(sessions) == 0 && !memory {
+		return "", errors.New("nothing selected")
+	}
+	if path == "" {
+		if path, err = a.prompt("archive", "commander.zip"); err != nil {
+			return "", err
+		}
+	}
+	if path, err = archivePath(path); err != nil {
+		return "", err
+	}
+	if filepath.Ext(path) != ".zip" {
+		return "", errors.New("use a .zip archive")
+	}
+	password, err := a.password("archive password", true)
+	if err != nil {
+		return "", err
+	}
+	unlock, err := a.lock("native")
+	if err != nil {
+		return "", err
+	}
+	payload, err := a.selectedArchive(accounts, sessions, memory)
+	unlock()
+	if err != nil {
+		return "", err
+	}
+	if err = writeArchive(path, payload, password); err != nil {
+		return "", err
+	}
+	return fmt.Sprintf("exported %s to %s", contents(len(accounts), len(sessions), memory), path), nil
+}
+
+func contents(accounts, sessions int, memory bool) string {
+	parts := []string{count(accounts, "account"), count(sessions, "session")}
+	if memory {
+		parts = append(parts, "memory")
+	}
+	return strings.Join(parts, ", ")
+}
+
+func (a *app) importArchive(path string) (string, error) {
+	var err error
+	if path == "" {
+		if path, err = a.prompt("archive", ""); err != nil {
+			return "", err
+		}
+	}
+	if path, err = archivePath(path); err != nil {
+		return "", err
 	}
 	password, err := a.password("archive password", false)
 	if err != nil {
-		return err
+		return "", err
 	}
 	p, err := readArchive(path, password)
 	if err != nil {
-		return err
+		return "", err
 	}
-	p, err = normalizeArchive(p)
-	if err != nil {
-		return err
+	if p, err = normalizeArchive(p); err != nil {
+		return "", err
 	}
-	accounts, err := a.selectMembers("import accounts", p.Accounts, nil, true)
-	if err != nil {
-		return err
+	names := []string{}
+	for name := range p.Profile.Profiles {
+		names = append(names, name)
 	}
-	presets, err := a.choosePresets(p.Profile)
-	if err != nil {
-		return err
+	sort.Slice(names, func(i, j int) bool { return strings.ToLower(names[i]) < strings.ToLower(names[j]) })
+	items := []choice{}
+	for _, m := range p.Accounts {
+		name, context := m.display()
+		items = append(items, choice{group: serviceName(m.Service), label: name, detail: context, on: true})
 	}
-	selection := importSelection{Accounts: accounts, Presets: presets, Memory: "keep", Replace: map[string]bool{}}
+	for _, name := range names {
+		items = append(items, choice{group: "sessions", label: name, detail: session{Accounts: p.Profile.Profiles[name]}.summary(), on: true})
+	}
 	if p.Memory != nil {
-		current, _ := os.ReadFile(filepath.Join(a.root, "MEMORY.md"))
-		i, err := a.choose("import memory", "Current memory:\n"+string(current)+"\nImported memory:\n"+*p.Memory, []string{"keep current memory", "merge unique statements", "replace with imported memory"})
-		if err != nil {
-			return err
-		}
-		selection.Memory = []string{"keep", "merge", "replace"}[i]
+		items = append(items, choice{group: "memory", label: "merge MEMORY.md", radio: "memory"}, choice{group: "memory", label: "replace MEMORY.md", radio: "memory"})
 	}
+	if items, err = a.checklist("import", items); err != nil {
+		return "", err
+	}
+	selection := importSelection{Memory: "keep", Replace: map[string]bool{}}
 	store := newStorage(a.root)
-	kept := []member{}
-	for _, m := range accounts {
+	for i, m := range p.Accounts {
+		if !items[i].on {
+			continue
+		}
 		current, err := store.state(m.Service)
 		if err != nil {
-			return err
+			return "", err
 		}
 		old, exists := selectLogins(m.Service, current, []member{m})
 		next, err := selectLogins(m.Service, p.Logins[m.Service], []member{m})
 		if err != nil {
-			return err
+			return "", err
 		}
 		if hasLogin(m.Service, current, m) && (exists != nil || !reflect.DeepEqual(old, next)) {
-			i, err := a.choose("account conflict", m.label()+" already exists with different login data.", []string{"keep existing account", "replace selected account"})
-			if err != nil {
-				return err
-			}
-			if i == 0 {
+			if !a.ask("replace the existing login " + m.label() + "?") {
 				continue
 			}
 			selection.Replace[m.id()] = true
 		}
-		kept = append(kept, m)
+		selection.Accounts = append(selection.Accounts, m)
 	}
-	selection.Accounts = kept
-	book, err := a.readProfiles()
+	existing, err := a.sessions()
 	if err != nil {
-		return err
+		return "", err
 	}
-	selection.Presets = nil
-	for _, name := range presets {
-		if _, exists := book.Profiles[name]; exists {
-			i, err := a.choose("selection conflict", name+" already exists.", []string{"keep existing selection", "replace saved selection"})
-			if err != nil {
-				return err
-			}
-			if i == 0 {
-				continue
-			}
-			selection.Replace["preset:"+name] = true
+	for i, name := range names {
+		if !items[len(p.Accounts)+i].on {
+			continue
 		}
-		selection.Presets = append(selection.Presets, name)
+		for _, s := range existing {
+			if strings.EqualFold(s.Name, name) {
+				if !a.ask("replace session " + s.Name + "?") {
+					name = ""
+					break
+				}
+				selection.Replace["session:"+name] = true
+			}
+		}
+		if name != "" {
+			selection.Sessions = append(selection.Sessions, name)
+		}
 	}
-	if len(selection.Accounts) == 0 && len(selection.Presets) == 0 && selection.Memory == "keep" {
-		return errors.New("nothing selected")
+	for _, item := range items[len(p.Accounts)+len(names):] {
+		if item.on {
+			selection.Memory, _, _ = strings.Cut(item.label, " ")
+		}
 	}
-	if !a.confirm(fmt.Sprintf("import %d accounts, %d selections, memory: %s? Running sessions keep their selections.", len(selection.Accounts), len(selection.Presets), selection.Memory)) {
-		return errCancelled
+	if len(selection.Accounts) == 0 && len(selection.Sessions) == 0 && selection.Memory == "keep" {
+		return "", errors.New("nothing selected")
 	}
-	unlock, err := a.lock("native")
-	if err != nil {
-		return err
+	for _, name := range []string{"native", "sessions", "memory"} {
+		unlock, err := a.lock(name)
+		if err != nil {
+			return "", err
+		}
+		defer unlock()
 	}
-	defer unlock()
-	profileUnlock, err := a.lock("profiles")
-	if err != nil {
-		return err
-	}
-	defer profileUnlock()
-	memoryUnlock, err := a.lock("memory")
-	if err != nil {
-		return err
-	}
-	defer memoryUnlock()
 	if err = a.importSelected(p, selection); err != nil {
-		return err
+		return "", err
 	}
-	fmt.Fprintln(a.out, "selected archive contents imported; running session selections unchanged")
+	message := "imported " + contents(len(selection.Accounts), len(selection.Sessions), selection.Memory != "keep")
 	if len(selection.Accounts) > 0 {
-		admin := *a
-		admin.session = nil
-		if a.session != nil {
-			admin.run = admin.nativeRun
-		}
+		admin := a.admin()
 		if _, err = admin.run("git", []string{"--version"}, true, nil); err != nil {
-			return fmt.Errorf("import saved; tool preparation needs attention: %w", err)
+			return "", fmt.Errorf("%s; tool preparation needs attention: %w", message, err)
 		}
-		rows := admin.resolve(selection.Accounts)
-		admin.printAccounts(rows)
-		for _, row := range rows {
-			if row.State != "Saved" && row.State != "Active" {
-				return errors.New("import saved; reconnect accounts marked for attention in Commander Accounts")
-			}
+		if err = attention(admin.resolve(selection.Accounts)); err != nil {
+			return "", fmt.Errorf("%s; %w", message, err)
 		}
 	}
-	return nil
+	return message, nil
 }

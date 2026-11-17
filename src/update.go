@@ -73,24 +73,20 @@ func fileChecksum(path string) (string, error) {
 	return hex.EncodeToString(hash.Sum(nil)), nil
 }
 
-// Private releases may use only the currently active GitHub identity if it is
-// selected in the current profile. No credentials are read or accounts switched.
+// Private releases may use only a GitHub identity selected in the session.
+// No credentials are read or accounts switched.
 func (a *app) verifyReleaseAccount(ctx context.Context) error {
 	if a.session == nil || !a.session.allows("plaxtoris/commander") {
 		return errors.New("private updates require a session selecting plaxtoris/commander")
 	}
-	_, members, err := a.profile("")
-	if err != nil {
-		return errors.New("private updates need a GitHub account in the current profile")
-	}
 	selected := map[string]bool{}
-	for _, m := range members {
+	for _, m := range a.session.Accounts {
 		if host, user := m.github(); m.Service == "github" && host == "github.com" {
 			selected[strings.ToLower(user)] = true
 		}
 	}
 	if len(selected) == 0 {
-		return errors.New("private updates need a GitHub account in the current profile")
+		return errors.New("private updates need a GitHub account in the session")
 	}
 	data, err := a.releaseRun(ctx, []string{"api", "--hostname", "github.com", "user", "--jq", ".login"})
 	if err != nil || !selected[strings.ToLower(strings.TrimSpace(string(data)))] {

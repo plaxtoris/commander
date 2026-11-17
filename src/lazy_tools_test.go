@@ -154,16 +154,16 @@ func TestGitInstallerPrivilegesAndUnsupportedHost(t *testing.T) {
 	}
 }
 
-func TestImportedProfilePreparationAndRecovery(t *testing.T) {
+func TestImportedSessionPreparationAndRecovery(t *testing.T) {
 	source := testApp(t)
 	fixtureLogins(t, source)
 	members := []member{ghMember("alice"), hMember("project")}
-	payload, err := source.exportPayload("imported profile", members)
+	payload, err := source.exportPayload("imported session", members)
 	if err != nil {
 		t.Fatal(err)
 	}
 	a := testApp(t)
-	saveProfile(t, a, "existing", member{Service: "office", Key: jsonKey("unrelated"), Account: "unrelated"})
+	addSession(t, a, "existing", member{Service: "office", Key: jsonKey("unrelated"), Account: "unrelated"})
 	name, err := a.importPayload(payload, "")
 	if err != nil {
 		t.Fatal(err)
@@ -202,26 +202,22 @@ func TestImportedProfilePreparationAndRecovery(t *testing.T) {
 	for tool, data := range archives {
 		a.catalog.Archives[tool] = download{URL: server.URL + "/" + tool, SHA256: fmt.Sprintf("%x", sha256.Sum256(data))}
 	}
-	if err := a.prepareProfile(name); err == nil || !strings.Contains(err.Error(), "setup 'imported profile'") {
-		t.Fatal("missing retry instruction", err)
-	}
-	if strings.Contains(a.out.(*bytes.Buffer).String(), "profile ready:") {
-		t.Fatal("incomplete preparation reported success")
+	if err := a.command([]string{"overview", name}); err == nil || !strings.Contains(err.Error(), "tool not ready") {
+		t.Fatal("incomplete preparation reported success", err)
 	}
 	fail.Store(false)
 	a.out.(*bytes.Buffer).Reset()
-	if err := a.command([]string{"setup", name}); err != nil {
+	if err := a.command([]string{"overview", name}); err != nil {
 		t.Fatal("retry failed", err)
 	}
-	if err := a.command([]string{"setup", name}); err != nil {
+	if err := a.command([]string{"overview", name}); err != nil {
 		t.Fatal("repeat failed", err)
 	}
 	if ghDownloads.Load() != 2 || hcloudDownloads.Load() != 1 || unexpectedDownloads.Load() != 0 {
 		t.Fatal("downloaded unrelated or already prepared tools", ghDownloads.Load(), hcloudDownloads.Load(), unexpectedDownloads.Load())
 	}
-	book, _ := a.readProfiles()
-	if *book.Active != "existing" || len(book.Profiles) != 2 {
-		t.Fatal("changed existing profiles or selection")
+	if all, err := a.sessions(); err != nil || len(all) != 2 || all[0].Name != "existing" || len(all[0].Accounts) != 1 {
+		t.Fatal("changed existing sessions", all, err)
 	}
 	again, err := a.exportPayload(name, members)
 	if err != nil || !reflect.DeepEqual(payload, again) {
@@ -233,14 +229,14 @@ func TestImportedProfilePreparationAndRecovery(t *testing.T) {
 		}
 	}
 	out := a.out.(*bytes.Buffer).String()
-	if !strings.Contains(out, "profile ready:") || !strings.Contains(out, "docker engine: unavailable") || strings.Contains(out, "private daemon diagnostics") {
+	if !strings.Contains(out, "alice") || !strings.Contains(out, "● active") || strings.Contains(out, "private daemon diagnostics") {
 		t.Fatal("incorrect final status", out)
 	}
 }
 
-func TestProfilePreparationReportsInvalidLogin(t *testing.T) {
+func TestOverviewReportsInvalidLogin(t *testing.T) {
 	a := testApp(t)
-	saveProfile(t, a, "work", ghMember("alice"))
+	addSession(t, a, "work", ghMember("alice"))
 	t.Setenv("PATH", t.TempDir())
 	a.run = func(tool string, args []string, capture bool, extra map[string]string) ([]byte, error) {
 		if tool == "git" {
@@ -248,11 +244,11 @@ func TestProfilePreparationReportsInvalidLogin(t *testing.T) {
 		}
 		return []byte(`{"hosts":{"github.com":[{"login":"alice","state":"error","token":"private-fixture"}]}}`), nil
 	}
-	if err := a.command([]string{"setup", "work"}); err == nil {
+	if err := a.command([]string{"overview", "work"}); err == nil {
 		t.Fatal("reported invalid login as ready")
 	}
 	out := a.out.(*bytes.Buffer).String()
-	if !strings.Contains(out, "sign in again") || !strings.Contains(out, "not checked") || strings.Contains(out, "profile ready:") || strings.Contains(out, "private-fixture") {
+	if !strings.Contains(out, "sign in again") || strings.Contains(out, "private-fixture") {
 		t.Fatal("misleading or unsafe status", out)
 	}
 }
@@ -346,7 +342,7 @@ func TestFreshDoctorDoesNotInstallTools(t *testing.T) {
 func TestMenuSurvivesUsedToolDownloadFailure(t *testing.T) {
 	a := testApp(t)
 	preparedTools(t, a)
-	saveProfile(t, a, "work")
+	addSession(t, a, "work")
 	binary := []byte("installed fixture")
 	mustWrite(t, filepath.Join(a.root, "commander"), binary)
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -361,7 +357,7 @@ func TestMenuSurvivesUsedToolDownloadFailure(t *testing.T) {
 	t.Setenv("COMMANDER_UI_TOOL_URL", server.URL+"/hcloud")
 	t.Setenv("COMMANDER_UI_TOOL_SUM", strings.Repeat("a", 64))
 	s := openUI(t, a.root)
-	s.wait(t, "esc quit")
+	s.wait(t, "[q]uit")
 	if !strings.Contains(s.output, "tools need attention") {
 		t.Fatal("missing repair feedback")
 	}

@@ -69,8 +69,7 @@ func TestTokenCLIScopeIdentityAndStreams(t *testing.T) {
 			a := testApp(t)
 			selected, other := tokenFixture(service, "alice"), tokenFixture(service, "other")
 			saveTokenFixture(t, a, service, selected, other)
-			saveProfile(t, a, "work", selected.member(service))
-			usePresetSession(t, a, "work")
+			useSession(t, a, "work", selected.member(service))
 			calls := []string{}
 			useServiceFixture(t, func(w http.ResponseWriter, r *http.Request) {
 				calls = append(calls, r.Method+" "+r.URL.Path)
@@ -155,8 +154,7 @@ func TestTokenAPIBoundariesAndFailures(t *testing.T) {
 			a := testApp(t)
 			c := tokenFixture("confluence", "alice")
 			saveTokenFixture(t, a, "confluence", c)
-			saveProfile(t, a, "work", c.member("confluence"))
-			usePresetSession(t, a, "work")
+			useSession(t, a, "work", c.member("confluence"))
 			calls := 0
 			useServiceFixture(t, func(w http.ResponseWriter, r *http.Request) {
 				calls++
@@ -176,8 +174,7 @@ func TestConfluenceIdentityChangeBlocksAction(t *testing.T) {
 	a := testApp(t)
 	c := tokenFixture("confluence", "alice")
 	saveTokenFixture(t, a, "confluence", c)
-	saveProfile(t, a, "work", c.member("confluence"))
-	usePresetSession(t, a, "work")
+	useSession(t, a, "work", c.member("confluence"))
 	calls := 0
 	useServiceFixture(t, func(w http.ResponseWriter, r *http.Request) {
 		calls++
@@ -216,7 +213,8 @@ func TestTokenArchiveRelocationAndDeletion(t *testing.T) {
 		t.Fatal(err)
 	}
 	b := testApp(t)
-	if _, err = b.importPayload(payload, ""); err != nil {
+	name, err := b.importPayload(payload, "")
+	if err != nil {
 		t.Fatal(err)
 	}
 	moved := filepath.Join(t.TempDir(), "moved Commander")
@@ -224,6 +222,11 @@ func TestTokenArchiveRelocationAndDeletion(t *testing.T) {
 		t.Fatal(err)
 	}
 	b.root = moved
+	s, err := b.findSession(name)
+	if err != nil {
+		t.Fatal(err)
+	}
+	b.session = &s
 	for _, service := range []string{"dockerhub", "confluence"} {
 		got, err := b.selectedToken(service, "")
 		if err != nil || !reflect.DeepEqual(got, tokenFixture(service, "alice")) {
@@ -247,8 +250,7 @@ func TestDockerConfigScopeAndCleanup(t *testing.T) {
 	a := testApp(t)
 	c, other := tokenFixture("dockerhub", "alice"), tokenFixture("dockerhub", "other")
 	saveTokenFixture(t, a, "dockerhub", c, other)
-	saveProfile(t, a, "work", c.member("dockerhub"))
-	usePresetSession(t, a, "work")
+	useSession(t, a, "work", c.member("dockerhub"))
 	checks := 0
 	useServiceFixture(t, func(w http.ResponseWriter, r *http.Request) { checks++; fmt.Fprint(w, `{"access_token":"fixture"}`) })
 	path, cleanup, err := a.dockerConfig("")
@@ -263,8 +265,7 @@ func TestDockerConfigScopeAndCleanup(t *testing.T) {
 	if _, err = os.Stat(path); !os.IsNotExist(err) {
 		t.Fatal("retained temporary credentials")
 	}
-	saveProfile(t, a, "work", c.member("dockerhub"), other.member("dockerhub"))
-	usePresetSession(t, a, "work")
+	useSession(t, a, "both", c.member("dockerhub"), other.member("dockerhub"))
 	if _, cleanup, err = a.dockerConfig(""); err == nil {
 		cleanup()
 		t.Fatal("silently selected an account")
@@ -274,8 +275,7 @@ func TestDockerConfigScopeAndCleanup(t *testing.T) {
 		t.Fatal(err)
 	}
 	cleanup()
-	saveProfile(t, a, "empty")
-	usePresetSession(t, a, "empty")
+	useSession(t, a, "empty")
 	path, cleanup, err = a.dockerConfig("")
 	if err != nil {
 		t.Fatal(err)
@@ -283,7 +283,7 @@ func TestDockerConfigScopeAndCleanup(t *testing.T) {
 	defer cleanup()
 	data, _ = os.ReadFile(filepath.Join(path, "config.json"))
 	if bytes.Contains(data, []byte("auth\"")) {
-		t.Fatal("empty profile inherited a login")
+		t.Fatal("empty session inherited a login")
 	}
 }
 
@@ -314,7 +314,7 @@ func TestInteractiveTokenLogins(t *testing.T) {
 		for _, mode := range modes {
 			t.Run(service+"/"+mode, func(t *testing.T) {
 				a := testApp(t)
-				saveProfile(t, a, "work")
+				addSession(t, a, "work")
 				token := "fixture-hidden-token-" + strings.Repeat("x", 1500)
 				server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 					if mode == "rejected" {
@@ -358,38 +358,34 @@ func TestInteractiveTokenLogins(t *testing.T) {
 				defer server.Close()
 				t.Setenv("COMMANDER_UI_SERVICE_URL", server.URL)
 				s := openUI(t, a.root)
-				s.wait(t, "esc quit")
-				s.send(t, "1\r")
-				s.wait(t, "add account")
-				s.send(t, "1\r")
-				s.wait(t, "choose a service")
-				choice := "6\r"
+				s.wait(t, "[q]uit")
+				s.send(t, "e")
+				s.wait(t, "+ add account")
+				s.send(t, "a")
+				s.wait(t, "google cloud")
+				choice := strings.Repeat("\x1b[B", 5) + "\r"
 				if service == "confluence" {
-					choice = "7\r"
+					choice = strings.Repeat("\x1b[B", 6) + "\r"
 				}
 				s.send(t, choice)
-				s.wait(t, "choose a saved login")
-				s.send(t, "1\r")
 				if service == "confluence" {
-					s.wait(t, "confluence url")
+					s.wait(t, "confluence url:")
 					s.send(t, "https://team.atlassian.net/wiki\n")
-					s.wait(t, "atlassian email")
+					s.wait(t, "atlassian email:")
 					s.send(t, "alice@example.test\n")
 				} else {
-					s.wait(t, "dockerhub username")
+					s.wait(t, "dockerhub username:")
 					s.send(t, "alice\n")
 				}
-				s.wait(t, "api token (hidden)")
+				s.wait(t, "api token:")
 				s.send(t, token+"\n")
 				if mode == "rejected" {
-					s.wait(t, "could not complete the action")
-					s.send(t, "\r")
-					s.wait(t, "add account")
+					s.wait(t, "no accounts yet")
 				} else {
-					s.wait(t, "refresh")
+					s.wait(t, "[x] alice")
 				}
-				s.send(t, "q")
-				s.wait(t, "esc quit")
+				s.send(t, "\x1b")
+				s.wait(t, "[q]uit")
 				s.send(t, "q")
 				if err := s.command.Wait(); err != nil {
 					t.Fatal(err)
@@ -400,10 +396,7 @@ func TestInteractiveTokenLogins(t *testing.T) {
 				if strings.Contains(s.output, token) || strings.Contains(s.output, "fixture-bearer") {
 					t.Fatal("terminal exposed token")
 				}
-				members, err := a.savedMembers()
-				if err != nil {
-					t.Fatal(err)
-				}
+				members, _ := a.logins()
 				if mode == "rejected" {
 					if len(members) != 0 {
 						t.Fatal("saved rejected login")
@@ -436,8 +429,7 @@ func TestDockerHubNativeCommandPreservesArgumentsAndExitCode(t *testing.T) {
 	a := testApp(t)
 	c := tokenFixture("dockerhub", "alice")
 	saveTokenFixture(t, a, "dockerhub", c)
-	saveProfile(t, a, "work", c.member("dockerhub"))
-	usePresetSession(t, a, "work")
+	useSession(t, a, "work", c.member("dockerhub"))
 	preparedTools(t, a)
 	executable := filepath.Join(a.root, "tools", "docker", "docker")
 	mustWrite(t, executable, []byte("#!/bin/sh\ntest -f \"$DOCKER_CONFIG/config.json\" || exit 99\nprintf '%s\\n' \"$@\"\nprintf 'native error' >&2\nexit 37\n"))

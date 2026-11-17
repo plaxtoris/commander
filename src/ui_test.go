@@ -21,15 +21,15 @@ import (
 
 func TestOverviewShowsOnlySelectedAccounts(t *testing.T) {
 	a := testApp(t)
-	saveProfile(t, a, "work", ghMember("selected"))
+	addSession(t, a, "work", ghMember("selected"))
 	a.run = func(tool string, args []string, capture bool, extra map[string]string) ([]byte, error) {
 		return []byte(`{"hosts":{"github.com":[{"login":"selected","state":"success","active":false,"token":"fixture-secret"},{"login":"unselected","state":"success","active":true}]}}`), nil
 	}
-	if err := a.command([]string{"overview"}); err != nil {
+	if err := a.command([]string{"overview", "work"}); err != nil {
 		t.Fatal(err)
 	}
 	out := a.out.(*bytes.Buffer).String()
-	for _, want := range []string{"service", "account", "context", "status", "github", "selected @ github.com", "○ saved"} {
+	for _, want := range []string{"session: work", "github\n    selected  github.com  ○ saved"} {
 		if !strings.Contains(out, want) {
 			t.Fatalf("missing %q: %s", want, out)
 		}
@@ -44,12 +44,12 @@ func TestOverviewShowsOnlySelectedAccounts(t *testing.T) {
 func TestAccountTablePreservesLongIdentities(t *testing.T) {
 	identity := "jörg." + strings.Repeat("long-", 20) + "@example.invalid"
 	rows := []account{{member: member{Service: "office", Account: identity, Context: "Production"}, State: "Sign in again"}}
-	full := accountTable(rows, true, 0)
+	full := accountTable(rows, 0)
 	if !strings.Contains(full, identity) || !strings.Contains(full, "! sign in again") {
 		t.Fatal(full)
 	}
 	for _, width := range []int{24, 40, 60, 77, 100} {
-		out := accountTable(rows, true, width)
+		out := accountTable(rows, width)
 		for _, line := range strings.Split(out, "\n") {
 			if !utf8.ValidString(line) || utf8.RuneCountInString(line) > width {
 				t.Fatalf("table exceeds width %d: %q", width, line)
@@ -61,98 +61,96 @@ func TestAccountTablePreservesLongIdentities(t *testing.T) {
 	}
 }
 
-func TestInteractiveProfileSwitchAndScopedRemoval(t *testing.T) {
+func useHetzner(t *testing.T, a *app) {
+	t.Helper()
+	mustWrite(t, filepath.Join(a.root, "tools", ".requested", "hcloud"), nil)
+}
+
+func TestInteractiveRenameEditAndDelete(t *testing.T) {
 	a := testApp(t)
-	saveProfile(t, a, "work", hMember("existing"))
-	if err := a.editProfiles(func(p *profiles) error {
-		p.Profiles["personal"] = []member{hMember("existing")}
-		return nil
-	}); err != nil {
-		t.Fatal(err)
-	}
+	useHetzner(t, a)
+	addSession(t, a, "personal", hMember("existing"))
+	addSession(t, a, "work", hMember("existing"))
 	s := openUI(t, a.root)
-	s.wait(t, "esc quit")
-	s.send(t, "3\r")
-	s.wait(t, "choose a saved selection")
-	s.send(t, "1\r")
-	s.wait(t, "refresh")
-	s.send(t, "2\r")
-	s.wait(t, "choose an account")
-	s.send(t, "\r")
-	s.wait(t, "keep the saved login")
-	s.send(t, "\r")
-	s.wait(t, "no accounts yet")
-	s.send(t, "\x1b")
-	s.wait(t, "esc quit")
+	s.wait(t, "2 sessions")
+	s.send(t, "r")
+	s.wait(t, "rename personal:")
+	s.send(t, "\x15private\r")
+	s.wait(t, "renamed to private")
+	s.send(t, "\x1b[Br")
+	s.wait(t, "rename work:")
+	s.send(t, "\x15Private\r")
+	s.wait(t, "session private already exists")
+	s.send(t, "\x1b[Ae")
+	s.wait(t, "[x] existing")
+	s.send(t, " \r")
+	s.wait(t, "private saved")
+	if p, err := a.findSession("private"); err != nil || len(p.Accounts) != 0 {
+		t.Fatal("edit did not save", p, err)
+	}
+	s.send(t, "d")
+	s.wait(t, "delete session private?")
+	s.send(t, "y")
+	s.wait(t, "private deleted")
 	s.send(t, "q")
 	if err := s.command.Wait(); err != nil {
 		t.Fatal(err)
 	}
-	p, err := a.readProfiles()
-	if err != nil || p.Active == nil || *p.Active != "personal" || len(p.Profiles["personal"]) != 0 || len(p.Profiles["work"]) != 1 {
-		t.Fatal("profile removal changed another profile", p, err)
+	all, err := a.sessions()
+	if err != nil || len(all) != 1 || all[0].Name != "work" || len(all[0].Accounts) != 1 {
+		t.Fatal("changed another session", all, err)
 	}
 }
 
-func TestInteractiveImportPreparesProfile(t *testing.T) {
+func TestInteractiveImport(t *testing.T) {
 	source := testApp(t)
 	mustWrite(t, filepath.Join(source.root, ".secrets", ".config", "hcloud", "cli.toml"), []byte("active_context = 'existing'\n[[contexts]]\nname = 'existing'\ntoken = 'fixture-secret'\n"))
 	payload, err := source.exportPayload("imported", []member{hMember("existing")})
 	if err != nil {
 		t.Fatal(err)
 	}
-	archive := filepath.Join(t.TempDir(), "profile.zip")
+	archive := filepath.Join(t.TempDir(), "commander.zip")
 	if err := writeArchive(archive, payload, "fixture password"); err != nil {
 		t.Fatal(err)
 	}
 	a := testApp(t)
 	s := openUI(t, a.root)
-	s.wait(t, "esc quit")
-	s.send(t, "5\r")
-	s.wait(t, "archive path")
+	s.wait(t, "[q]uit")
+	s.send(t, "i")
+	s.wait(t, "archive:")
 	s.send(t, archive+"\r")
-	s.wait(t, "archive password")
+	s.wait(t, "archive password:")
 	s.send(t, "fixture password\r")
-	s.wait(t, "import accounts")
+	s.wait(t, "[x] imported")
 	s.send(t, "\r")
-	s.wait(t, "✓")
-	s.send(t, "2\r")
-	s.wait(t, "saved selections")
-	s.send(t, "\r")
-	s.wait(t, "✓ imported")
-	s.send(t, "2\r")
-	s.wait(t, "Running sessions keep their selections")
-	s.send(t, "2\r")
-	s.wait(t, "tools prepared and account status checked")
-	if !strings.Contains(s.output, "existing") || strings.Contains(s.output, "fixture-secret") {
-		t.Fatal("import did not check accounts or exposed login data", s.output)
+	s.wait(t, "imported 1 account, 1 session")
+	if strings.Contains(s.output, "fixture-secret") {
+		t.Fatal("import exposed login data")
 	}
-	s.send(t, "\r")
-	s.wait(t, "esc quit")
 	s.send(t, "q")
 	if err := s.command.Wait(); err != nil {
 		t.Fatal(err)
+	}
+	if imported, err := a.findSession("imported"); err != nil || len(imported.Accounts) != 1 {
+		t.Fatal(imported, err)
 	}
 }
 
 func TestInteractiveSmallTerminalAndPaging(t *testing.T) {
 	t.Setenv("NO_COLOR", "1")
 	a := testApp(t)
-	members := []member{}
-	for i := 0; i < 24; i++ {
-		members = append(members, hMember(fmt.Sprintf("project-%02d", i)))
+	for i := 0; i < 30; i++ {
+		addSession(t, a, fmt.Sprintf("session-%02d", i), hMember("project"))
 	}
-	saveProfile(t, a, "work", members...)
 	s := openUI(t, a.root, &pty.Winsize{Rows: 18, Cols: 44})
-	s.wait(t, "esc quit")
-	if strings.Contains(s.output, "project-23") || !strings.Contains(s.output, "pgup/pgdn") {
-		t.Fatal("long description was not paged", s.output)
+	s.wait(t, "[q]uit")
+	if strings.Contains(s.output, "session-29") {
+		t.Fatal("long list was not paged", s.output)
 	}
-	// Page through the description in a small terminal.
-	s.send(t, strings.Repeat("\x1b[6~", 40))
-	s.wait(t, "project-23")
-	s.send(t, strings.Repeat("\x1b[5~", 40))
-	s.wait(t, "connected accounts")
+	s.send(t, "\x1b[F")
+	s.wait(t, "session-29")
+	s.send(t, strings.Repeat("\x1b[5~", 5))
+	s.wait(t, "session-00")
 	s.send(t, "q")
 	if err := s.command.Wait(); err != nil {
 		t.Fatal(err)
@@ -182,7 +180,7 @@ func TestInteractiveAutomaticUpdate(t *testing.T) {
 		t.Run(fmt.Sprintf("checksum-valid-%t", valid), func(t *testing.T) {
 			a := testApp(t)
 			preparedTools(t, a)
-			saveProfile(t, a, "work")
+			addSession(t, a, "work")
 			original := []byte("original fixture executable")
 			mustWrite(t, filepath.Join(a.root, "commander"), original)
 			mustWrite(t, filepath.Join(a.root, "AGENTS.md"), []byte("outdated instructions\n"))
@@ -223,7 +221,7 @@ func TestInteractiveAutomaticUpdate(t *testing.T) {
 				t.Setenv("COMMANDER_UI_TOOL_SUM", fmt.Sprintf("%x", toolSum))
 			}
 			s := openUI(t, a.root)
-			s.wait(t, "esc quit")
+			s.wait(t, "[q]uit")
 			for _, unwanted := range []string{"Update Commander and all tools", "Tools and updates", "Setup"} {
 				if strings.Contains(s.output, unwanted) {
 					t.Fatal("unexpected menu item", unwanted)
@@ -287,18 +285,16 @@ func TestInteractiveAccountPresentationAndResize(t *testing.T) {
 				t.Setenv("TERM", "dumb")
 			}
 			a := testApp(t)
-			active := hMember("existing")
-			active.Context = "Production-EU"
-			missing := hMember("Case.Sensitive")
-			saveProfile(t, a, "Work Team", active, missing)
+			useHetzner(t, a)
+			addSession(t, a, "Work Team", hMember("existing"), hMember("Case.Sensitive"))
 			s := openUI(t, a.root)
-			s.wait(t, "esc quit")
-			s.send(t, "1\r")
-			s.wait(t, "esc back")
+			s.wait(t, "hetzner existing · hetzner Case.Sensitive")
+			s.send(t, "e")
+			s.wait(t, "+ add account")
 			frame := terminalControls.ReplaceAllString(s.output, "")
-			for _, want := range []string{"commander / accounts", "service", "account", "context", "status", "hetzner", "Production-EU", "Case.Sensitive", "● active", "! missing account"} {
+			for _, want := range []string{"commander · Work Team", "hetzner", "[x] existing", "[x] Case.Sensitive", "! missing account", "[space] select"} {
 				if !strings.Contains(frame, want) {
-					t.Fatalf("missing %q in account view: %s", want, frame)
+					t.Fatalf("missing %q in edit view: %s", want, frame)
 				}
 			}
 			if mode == "color" {
@@ -315,18 +311,14 @@ func TestInteractiveAccountPresentationAndResize(t *testing.T) {
 			}
 			start := len(s.output)
 			s.send(t, "\x1b[H")
-			s.wait(t, "context  Production-EU")
-			narrow := terminalControls.ReplaceAllString(s.output[start:], "")
-			if strings.Contains(narrow, "service  account") {
-				t.Fatal("kept wide table after resize")
+			s.wait(t, "[esc] cancel")
+			for _, line := range strings.Split(terminalControls.ReplaceAllString(s.output[start:], ""), "\n") {
+				if utf8.RuneCountInString(strings.TrimRight(line, "\r")) > 44 {
+					t.Fatal("line exceeds narrow terminal", line)
+				}
 			}
-			if err := pty.Setsize(s.file, &pty.Winsize{Rows: 32, Cols: 100}); err != nil {
-				t.Fatal(err)
-			}
-			s.send(t, "\x1b[H")
-			s.wait(t, "service")
-			s.send(t, "q")
-			s.wait(t, "esc quit")
+			s.send(t, "\x1b")
+			s.wait(t, "[q]uit")
 			s.send(t, "q")
 			if err := s.command.Wait(); err != nil {
 				t.Fatal(err)
@@ -339,7 +331,7 @@ func TestAccountPresentationPreservesDataAndRejectsEscapes(t *testing.T) {
 	a := testApp(t)
 	rows := []account{{member: member{Service: "dockerhub", Account: "Case.Sensitive@example.test", Context: "Production-EU"}, State: "Check login"}}
 	for _, width := range []int{0, 24, 44, 64, 100} {
-		text := accountTable(rows, true, width)
+		text := accountTable(rows, width)
 		compact := strings.ReplaceAll(text, "\n", "")
 		if width == 0 && !strings.Contains(compact, "Case.Sensitive@example.test") {
 			t.Fatal("changed account casing")

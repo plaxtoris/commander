@@ -23,7 +23,6 @@ func (line uiLine) wrap(width int) []uiLine {
 	if width <= 0 {
 		return []uiLine{line}
 	}
-	width = max(1, width)
 	lines := []uiLine{}
 	current := uiLine{}
 	used := 0
@@ -72,10 +71,35 @@ func (a *app) renderLine(line uiLine, width int) string {
 	return out.String()
 }
 
-func plainLines(text string, width int) []uiLine {
-	lines := []uiLine{}
-	for _, line := range strings.Split(strings.TrimRight(text, "\n"), "\n") {
-		lines = append(lines, uiLine{{line, ""}}.wrap(width)...)
+func textWidth(s string) int { return utf8.RuneCountInString(clean(s)) }
+
+func pad(s string, n int) string { return clean(s) + strings.Repeat(" ", max(0, n-textWidth(s))) }
+
+func count(n int, noun string) string {
+	if n == 1 {
+		return "1 " + noun
+	}
+	return fmt.Sprintf("%d %ss", n, noun)
+}
+
+// Table aligns plain text columns for command output.
+func table(rows [][]string) []string {
+	widths := []int{}
+	for _, row := range rows {
+		for i, cell := range row {
+			if i == len(widths) {
+				widths = append(widths, 0)
+			}
+			widths[i] = max(widths[i], textWidth(cell))
+		}
+	}
+	lines := make([]string, len(rows))
+	for r, row := range rows {
+		cells := make([]string, len(row))
+		for i, cell := range row {
+			cells[i] = pad(cell, widths[i])
+		}
+		lines[r] = strings.TrimRight(strings.Join(cells, "  "), " ")
 	}
 	return lines
 }
@@ -93,132 +117,89 @@ func statusLabel(state string) (string, string) {
 	}
 }
 
-func accountLines(rows []account, status bool, width int) []uiLine {
+// Account lines group accounts under their service with aligned columns.
+// Narrow terminals stack each account instead of truncating its identity.
+func accountLines(rows []account, limit int) []uiLine {
 	if len(rows) == 0 {
-		return plainLines("no accounts yet. choose add account to get started.", width)
+		return []uiLine{{{"no accounts yet", "2"}}}
 	}
-	if width > 0 && width < 64 {
-		lines := []uiLine{}
-		for i, r := range rows {
-			if i > 0 {
-				lines = append(lines, uiLine{})
-			}
-			label := uiLine{{serviceName(r.Service), "1"}}
-			if status {
-				text, tone := statusLabel(r.State)
-				label = append(label, uiSpan{"  ", ""}, uiSpan{text, tone})
-			}
-			lines = append(lines, label.wrap(width)...)
-			lines = append(lines, uiLine{{"  " + r.Account, ""}}.wrap(width)...)
-			if r.Context != "" {
-				lines = append(lines, uiLine{{"  context  ", "2"}, {r.Context, ""}}.wrap(width)...)
-			}
-		}
-		return lines
-	}
-	headers := []string{"service", "account", "context"}
-	if status {
-		headers = append(headers, "status")
-	}
-	table := [][]string{headers}
-	tones := [][]string{{"2", "2", "2", "2"}}
-	for _, r := range rows {
-		context := r.Context
-		if context == "" {
-			context = "—"
-		}
-		cells := []string{serviceName(r.Service), r.Account, context}
-		colors := []string{"", "", "2"}
-		if status {
-			text, tone := statusLabel(r.State)
-			cells = append(cells, text)
-			colors = append(colors, tone)
-		}
-		table = append(table, cells)
-		tones = append(tones, colors)
-	}
-	widths := make([]int, len(headers))
-	for _, row := range table {
-		for i, cell := range row {
-			widths[i] = max(widths[i], utf8.RuneCountInString(clean(cell)))
+	cells := make([][3]string, len(rows))
+	widths := [3]int{}
+	for i, r := range rows {
+		name, context := r.display()
+		status, _ := statusLabel(r.State)
+		cells[i] = [3]string{name, context, status}
+		for j, cell := range cells[i] {
+			widths[j] = max(widths[j], textWidth(cell))
 		}
 	}
-	for width > 0 {
-		total, widest := 2*(len(headers)-1), -1
-		for i, size := range widths {
-			total += size
-			if size > len(headers[i]) && (widest < 0 || size > widths[widest]) {
-				widest = i
-			}
-		}
-		if total <= width || widest < 0 {
-			break
-		}
-		widths[widest]--
-	}
+	wide := limit <= 0 || 4+widths[0]+2+widths[1]+2+widths[2] <= limit
 	lines := []uiLine{}
-	for index, row := range table {
-		cells := make([][]rune, len(row))
-		for i, cell := range row {
-			cells[i] = []rune(clean(cell))
-		}
-		for more := true; more; {
-			more = false
-			line := uiLine{}
-			for i, cell := range cells {
-				n := min(len(cell), widths[i])
-				line = append(line, uiSpan{string(cell[:n]), tones[index][i]})
-				if i < len(row)-1 {
-					line = append(line, uiSpan{strings.Repeat(" ", widths[i]-n+2), ""})
-				}
-				cells[i] = cell[n:]
-				more = more || len(cells[i]) > 0
+	for _, service := range services {
+		header := true
+		for i, r := range rows {
+			if r.Service != service {
+				continue
 			}
-			lines = append(lines, line)
-		}
-		if index == 0 {
-			parts := make([]string, len(widths))
-			for i, w := range widths {
-				parts[i] = strings.Repeat("─", w)
+			if header {
+				lines = append(lines, uiLine{{serviceName(service), "1"}})
+				header = false
 			}
-			lines = append(lines, uiLine{{strings.Join(parts, "  "), "2"}})
+			c := cells[i]
+			_, tone := statusLabel(r.State)
+			if wide {
+				lines = append(lines, uiLine{{"    " + pad(c[0], widths[0]) + "  ", ""}, {pad(c[1], widths[1]) + "  ", "2"}, {c[2], tone}})
+				continue
+			}
+			lines = append(lines, uiLine{{"    " + c[0], ""}}.wrap(limit)...)
+			if c[1] != "" {
+				lines = append(lines, uiLine{{"      " + c[1], "2"}}.wrap(limit)...)
+			}
+			lines = append(lines, uiLine{{"      " + c[2], tone}}.wrap(limit)...)
 		}
 	}
 	return lines
 }
 
-func accountView(name string, rows []account, status bool, notice string, width int) []uiLine {
-	if name == "" {
-		name = "connected accounts"
+func accountTable(rows []account, limit int) string {
+	lines := accountLines(rows, limit)
+	text := make([]string, len(lines))
+	for i, line := range lines {
+		text[i] = strings.TrimRight(line.plain(), " ")
 	}
-	lines := uiLine{{name, "1"}, {"  ·  " + accountCount(len(rows)), "2"}}.wrap(width)
-	lines = append(lines, uiLine{})
-	if notice != "" {
-		lines = append(lines, uiLine{{notice, "33"}}.wrap(width)...)
-		lines = append(lines, uiLine{})
-	}
-	if len(rows) == 0 && !status {
-		lines = append(lines, plainLines("no accounts yet. open accounts to add your first login.", width)...)
-	} else {
-		lines = append(lines, accountLines(rows, status, width)...)
-		if len(rows) > 0 {
-			hint := "selected accounts · open accounts to check logins"
-			if status {
-				attention := 0
-				for _, r := range rows {
-					if r.State != "Active" && r.State != "Saved" {
-						attention++
-					}
-				}
-				if attention == 0 {
-					hint = "all accounts ready"
-				} else {
-					hint = fmt.Sprintf("%d need attention · add account to reconnect", attention)
-				}
-			}
-			lines = append(lines, uiLine{})
-			lines = append(lines, uiLine{{hint, "2"}}.wrap(width)...)
+	return strings.Join(text, "\n")
+}
+
+// Key hints render "[k]ey" with the bracketed part highlighted and wrap
+// between hints when the terminal is narrow.
+func hints(keys string, limit int) []uiLine {
+	lines := []uiLine{{}}
+	used := 0
+	for _, hint := range strings.Split(keys, "  ") {
+		if hint == "" {
+			continue
 		}
+		size := textWidth(hint)
+		if used > 0 && used+2+size > limit {
+			lines = append(lines, uiLine{})
+			used = 0
+		}
+		line := &lines[len(lines)-1]
+		if used > 0 {
+			*line = append(*line, uiSpan{"  ", ""})
+			used += 2
+		}
+		for hint != "" {
+			before, rest, found := strings.Cut(hint, "[")
+			key, after, closed := strings.Cut(rest, "]")
+			if !found || !closed {
+				*line = append(*line, uiSpan{hint, "2"})
+				break
+			}
+			*line = append(*line, uiSpan{before, "2"}, uiSpan{"[" + key + "]", "1"})
+			hint = after
+		}
+		used += size
 	}
 	return lines
 }

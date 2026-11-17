@@ -216,8 +216,7 @@ func TestPrivateUpdateUsesSelectedIdentity(t *testing.T) {
 		t.Run(identity, func(t *testing.T) {
 			a := testApp(t)
 			if identity != "no profile" {
-				saveProfile(t, a, "work", ghMember("selected"))
-				usePresetSession(t, a, "work")
+				useSession(t, a, "work", ghMember("selected"))
 				a.session.Repositories = []string{"plaxtoris/commander"}
 			}
 			useRelease(t, http.NotFound)
@@ -273,7 +272,7 @@ func TestInteractiveStartupCurrentAndOffline(t *testing.T) {
 	for _, offline := range []bool{false, true} {
 		t.Run(fmt.Sprint(offline), func(t *testing.T) {
 			a := testApp(t)
-			saveProfile(t, a, "work")
+			addSession(t, a, "work")
 			binary := []byte("installed fixture")
 			mustWrite(t, filepath.Join(a.root, "commander"), binary)
 			// Exercise setup and update after moving the portable installation.
@@ -295,7 +294,7 @@ func TestInteractiveStartupCurrentAndOffline(t *testing.T) {
 			for i := 0; i < 2; i++ {
 				mustWrite(t, filepath.Join(moved, "AGENTS.md"), []byte("outdated instructions\n"))
 				s := openUI(t, moved)
-				s.wait(t, "esc quit")
+				s.wait(t, "[q]uit")
 				if offline && !strings.Contains(s.output, "update skipped:") {
 					t.Fatal("offline startup did not explain the skipped update")
 				}

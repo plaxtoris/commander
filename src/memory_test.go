@@ -200,7 +200,7 @@ func TestMemoryIgnoreUpgradeAndRelocation(t *testing.T) {
 	if err := a.command([]string{"setup"}); err != nil {
 		t.Fatal(err)
 	}
-	saveProfile(t, a, "another profile")
+	addSession(t, a, "another profile")
 	before := memoryRevision(t, a)
 	moved := filepath.Join(t.TempDir(), "Commander moved")
 	if err := os.Rename(a.root, moved); err != nil {

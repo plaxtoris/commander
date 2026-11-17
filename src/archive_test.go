@@ -4,7 +4,6 @@ import (
 	"bytes"
 	"database/sql"
 	"encoding/json"
-	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -59,7 +58,6 @@ func fixtureLogins(t *testing.T, a *app) []member {
 func TestProfileArchiveRoundTripAllServices(t *testing.T) {
 	source := testApp(t)
 	members := fixtureLogins(t, source)
-	saveProfile(t, source, "work", members...)
 	payload, err := source.exportPayload("work", members)
 	if err != nil {
 		t.Fatal(err)
@@ -102,7 +100,7 @@ func TestProfileArchiveRoundTripAllServices(t *testing.T) {
 		t.Fatal("archive permissions", info.Mode())
 	}
 	if _, err = target.importPayload(restored, ""); err == nil {
-		t.Fatal("overwrote existing profile")
+		t.Fatal("overwrote existing session")
 	}
 }
 
@@ -114,14 +112,13 @@ func TestArchiveMergePreservesDefaultsAndRejectsConflicts(t *testing.T) {
 		t.Fatal(err)
 	}
 	target := testApp(t)
-	saveProfile(t, target, "existing", ghMember("other"))
+	existing := addSession(t, target, "existing", ghMember("other"))
 	mustWrite(t, filepath.Join(target.root, ".secrets/.config/gh/hosts.yml"), encode(object{"github.com": object{"user": "other", "oauth_token": "other-secret", "users": object{"other": object{"oauth_token": "other-secret"}}}}))
 	if _, err = target.importPayload(payload, ""); err != nil {
 		t.Fatal(err)
 	}
-	p, _ := target.readProfiles()
-	if *p.Active != "existing" {
-		t.Fatal("switched profile")
+	if s, err := target.readSession(existing.ID); err != nil || !bytes.Equal(encode(s), encode(existing)) {
+		t.Fatal("import changed an existing session", s, err)
 	}
 	state, err := newStorage(target.root).state("github")
 	if err != nil || obj(state["github.com"])["user"] != "other" {
@@ -135,13 +132,12 @@ func TestArchiveMergePreservesDefaultsAndRejectsConflicts(t *testing.T) {
 	obj(obj(obj(changed.Logins["github"]["github.com"])["users"])["alice"])["oauth_token"] = "different-secret"
 	// Keep the selected native representation internally consistent.
 	obj(changed.Logins["github"]["github.com"])["oauth_token"] = "different-secret"
-	before, _ := os.ReadFile(filepath.Join(target.root, "profiles.json"))
+	before, _ := target.sessions()
 	if _, err = target.importPayload(changed, "conflict"); err == nil {
 		t.Fatal("accepted conflicting credential")
 	}
-	after, _ := os.ReadFile(filepath.Join(target.root, "profiles.json"))
-	if !bytes.Equal(before, after) {
-		t.Fatal("failed import changed profiles")
+	if after, _ := target.sessions(); !reflect.DeepEqual(before, after) {
+		t.Fatal("failed import changed sessions")
 	}
 }
 
@@ -290,30 +286,9 @@ func TestRefreshableGitHubLogin(t *testing.T) {
 	}
 }
 
-// Legacy fixture generation exercises compatibility without shipping a retired UI.
+// Fixture archives hold the given accounts and one session using them all.
 func (a *app) exportPayload(name string, members []member) (profileArchive, error) {
-	payload := profileArchive{Format: "commander-profile", Version: 1, Profile: profiles{Version: 1, Active: &name, Profiles: map[string][]member{name: members}}, Logins: map[string]object{}}
-	store := newStorage(a.root)
-	for _, service := range services {
-		selected := []member{}
-		for _, m := range members {
-			if m.Service == service {
-				selected = append(selected, m)
-			}
-		}
-		if len(selected) == 0 {
-			continue
-		}
-		state, err := store.state(service)
-		if err == nil {
-			state, err = selectLogins(service, state, selected)
-		}
-		if err != nil {
-			return payload, fmt.Errorf("%s: %w", service, err)
-		}
-		payload.Logins[service] = state
-	}
-	return payload, nil
+	return a.selectedArchive(members, []session{{Name: name, Accounts: members, Repositories: []string{}}}, false)
 }
 
 func (a *app) importPayload(payload profileArchive, rename string) (string, error) {
@@ -329,19 +304,10 @@ func (a *app) importPayload(payload profileArchive, rename string) (string, erro
 		name = n
 	}
 	if rename != "" {
-		members := p.Profile.Profiles[name]
+		p.Profile.Profiles[rename], p.Profile.Scopes[rename] = p.Profile.Profiles[name], p.Profile.Scopes[name]
 		delete(p.Profile.Profiles, name)
-		p.Profile.Profiles[rename] = members
+		delete(p.Profile.Scopes, name)
 		name = rename
 	}
-	if err = a.importSelected(p, importSelection{Accounts: p.Accounts, Presets: []string{name}}); err != nil {
-		return "", err
-	}
-	err = a.editProfiles(func(book *profiles) error {
-		if book.Active == nil {
-			book.Active = &name
-		}
-		return nil
-	})
-	return name, err
+	return name, a.importSelected(p, importSelection{Accounts: p.Accounts, Sessions: []string{name}})
 }

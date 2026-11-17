@@ -15,7 +15,8 @@ import (
 	"syscall"
 )
 
-// Sessions contain selections, never credentials. Each command reads one snapshot.
+// Sessions are named account and repository selections without credentials.
+// The ID never changes, so renames keep shells, tasks and containers working.
 type session struct {
 	ID           string   `json:"id"`
 	Name         string   `json:"name"`
@@ -38,12 +39,6 @@ func validRepositoryScope(value string) bool {
 	return true
 }
 
-func repositoryInput(repos []string) string {
-	if len(repos) == 0 {
-		return "-"
-	}
-	return strings.Join(repos, ",")
-}
 func parseRepositories(value string) []string {
 	result := []string{}
 	for _, part := range strings.Split(value, ",") {
@@ -54,15 +49,13 @@ func parseRepositories(value string) []string {
 	}
 	return result
 }
+
 func (a *app) parseAccounts(value string) ([]member, error) {
 	selected := []member{}
 	if value == "-" || value == "none" {
 		return selected, nil
 	}
-	all, err := a.savedMembers()
-	if err != nil {
-		return nil, err
-	}
+	all, _ := a.logins()
 	for _, part := range strings.Split(value, ",") {
 		service, selector, ok := strings.Cut(strings.TrimSpace(part), "=")
 		if !ok {
@@ -72,7 +65,7 @@ func (a *app) parseAccounts(value string) ([]member, error) {
 		for _, m := range all {
 			_, user := m.github()
 			if m.Service == service && (m.selector() == selector || m.Account == selector || user == selector) {
-				matches = append(matches, m)
+				matches = append(matches, m.member)
 			}
 		}
 		if len(matches) != 1 {
@@ -102,34 +95,25 @@ func (a *app) readSession(id string) (session, error) {
 	}
 	b, err := os.ReadFile(filepath.Join(p, "session.json"))
 	if err != nil {
-		return s, errors.New("session is missing; run commander session new")
+		return s, errors.New("session is missing; see commander session list")
 	}
-	if json.Unmarshal(b, &s) != nil || s.ID != id || !validName(s.Name) {
+	if json.Unmarshal(b, &s) != nil || s.ID != id {
 		return s, errors.New("invalid session")
 	}
-	if err := validateProfiles(profiles{Version: 1, Profiles: map[string][]member{s.Name: s.Accounts}}); err != nil {
-		return s, err
-	}
-	for _, r := range s.Repositories {
-		if !validRepositoryScope(r) {
-			return s, errors.New("invalid repository selection")
-		}
-	}
-	return s, nil
+	return s, s.validate()
 }
 
-func (a *app) saveSession(s session) error {
+func (s *session) validate() error {
 	if s.Accounts == nil {
 		s.Accounts = []member{}
 	}
-	p, err := a.sessionPath(s.ID)
-	if err != nil {
-		return err
+	if s.Repositories == nil {
+		s.Repositories = []string{}
 	}
 	if !validName(s.Name) {
-		return errors.New("use a visible session name")
+		return errors.New("use a visible session name of at most 80 characters")
 	}
-	if err := validateProfiles(profiles{Version: 1, Profiles: map[string][]member{s.Name: s.Accounts}}); err != nil {
+	if err := validateMembers(s.Accounts); err != nil {
 		return err
 	}
 	for _, r := range s.Repositories {
@@ -137,22 +121,153 @@ func (a *app) saveSession(s session) error {
 			return errors.New("repositories use owner/name or owner/*")
 		}
 	}
-	if err := os.MkdirAll(p, 0700); err != nil {
+	return nil
+}
+
+func (a *app) saveSession(s session) error {
+	p, err := a.sessionPath(s.ID)
+	if err != nil {
+		return err
+	}
+	if err = s.validate(); err != nil {
+		return err
+	}
+	if err = os.MkdirAll(p, 0700); err != nil {
 		return err
 	}
 	return atomicWrite(filepath.Join(p, "session.json"), encode(s), 0600)
 }
 
-func (a *app) newSession(name string, accounts []member, repos []string) (session, error) {
-	if accounts == nil {
-		accounts = []member{}
+// Sessions are listed by name. Directories without a session file belong to
+// an interrupted creation or removal and are skipped.
+func (a *app) sessions() ([]session, error) {
+	entries, err := os.ReadDir(filepath.Join(a.root, ".sessions"))
+	if os.IsNotExist(err) {
+		return []session{}, nil
 	}
-	b := make([]byte, 12)
-	if _, err := rand.Read(b); err != nil {
+	if err != nil {
+		return nil, err
+	}
+	result := []session{}
+	for _, entry := range entries {
+		if !sessionID.MatchString(entry.Name()) {
+			continue
+		}
+		if _, err := os.Lstat(filepath.Join(a.root, ".sessions", entry.Name(), "session.json")); os.IsNotExist(err) {
+			continue
+		}
+		s, err := a.readSession(entry.Name())
+		if err != nil {
+			return nil, err
+		}
+		result = append(result, s)
+	}
+	sort.Slice(result, func(i, j int) bool { return strings.ToLower(result[i].Name) < strings.ToLower(result[j].Name) })
+	return result, nil
+}
+
+func (a *app) findSession(ref string) (session, error) {
+	if sessionID.MatchString(ref) {
+		if s, err := a.readSession(ref); err == nil {
+			return s, nil
+		}
+	}
+	all, err := a.sessions()
+	if err != nil {
 		return session{}, err
 	}
-	s := session{ID: hex.EncodeToString(b), Name: name, Accounts: accounts, Repositories: repos}
+	for _, s := range all {
+		if s.Name == ref {
+			return s, nil
+		}
+	}
+	return session{}, fmt.Errorf("no session %q; see commander session list", ref)
+}
+
+// Names are unique regardless of case, so a name always selects one session.
+func (a *app) checkName(name, id string) error {
+	if !validName(name) {
+		return errors.New("use a visible session name of at most 80 characters")
+	}
+	all, err := a.sessions()
+	if err != nil {
+		return err
+	}
+	for _, s := range all {
+		if s.ID != id && strings.EqualFold(s.Name, name) {
+			return fmt.Errorf("session %s already exists", s.Name)
+		}
+	}
+	return nil
+}
+
+func (a *app) newSession(name string, accounts []member, repos []string) (session, error) {
+	unlock, err := a.lock("sessions")
+	if err != nil {
+		return session{}, err
+	}
+	defer unlock()
+	if err = a.checkName(name, ""); err != nil {
+		return session{}, err
+	}
+	id, err := newSessionID()
+	if err != nil {
+		return session{}, err
+	}
+	s := session{ID: id, Name: name, Accounts: accounts, Repositories: repos}
+	if err = s.validate(); err != nil {
+		return session{}, err
+	}
 	return s, a.saveSession(s)
+}
+
+func newSessionID() (string, error) {
+	b := make([]byte, 12)
+	_, err := rand.Read(b)
+	return hex.EncodeToString(b), err
+}
+
+func (a *app) renameSession(s session, name string) error {
+	unlock, err := a.lock("sessions")
+	if err != nil {
+		return err
+	}
+	defer unlock()
+	if err = a.checkName(name, s.ID); err != nil {
+		return err
+	}
+	current, err := a.readSession(s.ID)
+	if err != nil {
+		return err
+	}
+	current.Name = name
+	return a.saveSession(current)
+}
+
+// Deleting waits for no command, keeps unfinished tasks and removes the
+// session's containers before its selection.
+func (a *app) deleteSession(s session) error {
+	p, err := a.sessionPath(s.ID)
+	if err != nil {
+		return err
+	}
+	unlock, err := a.sessionLock(s.ID, false, false)
+	if err != nil {
+		return errors.New("session " + s.Name + " is still in use; exit its shells first")
+	}
+	defer unlock()
+	if entries, _ := os.ReadDir(filepath.Join(p, "tasks")); len(entries) > 0 {
+		return errors.New("finish the tasks of session " + s.Name + " first")
+	}
+	scoped := *a
+	scoped.session = &s
+	if err = scoped.removeSessionContainers(); err != nil {
+		return err
+	}
+	if err = scoped.stopBridge(); err != nil {
+		return err
+	}
+	return os.RemoveAll(p)
 }
 
 func (s session) allows(repository string) bool {
@@ -169,195 +284,124 @@ func (s session) allows(repository string) bool {
 	return false
 }
 
+func (s session) summary() string {
+	parts := []string{}
+	for _, m := range s.Accounts {
+		name, _ := m.display()
+		parts = append(parts, serviceName(m.Service)+" "+name)
+	}
+	if len(parts) == 0 {
+		return "no accounts"
+	}
+	return strings.Join(parts, " · ")
+}
+
+// Selection flags replace a session's accounts or repositories. Without
+// flags, a terminal opens the selection screen.
+func (a *app) selectionFlags(s *session, args []string) error {
+	for i := 0; i < len(args); i += 2 {
+		if i+1 >= len(args) {
+			return errors.New("selection option needs a value")
+		}
+		switch args[i] {
+		case "--accounts":
+			accounts, err := a.parseAccounts(args[i+1])
+			if err != nil {
+				return err
+			}
+			s.Accounts = accounts
+		case "--repos":
+			s.Repositories = parseRepositories(args[i+1])
+		default:
+			return errors.New("use --accounts service=user,... and --repos owner/name,owner/*")
+		}
+	}
+	if len(args) > 0 || !a.terminal() {
+		return nil
+	}
+	accounts, repos, err := a.editSelection(s.Name, s.Accounts, s.Repositories)
+	s.Accounts, s.Repositories = accounts, repos
+	return err
+}
+
 func (a *app) sessionCommand(args []string) error {
 	if len(args) == 0 || args[0] == "list" {
-		entries, err := os.ReadDir(filepath.Join(a.root, ".sessions"))
-		if os.IsNotExist(err) {
-			return nil
-		}
+		all, err := a.sessions()
 		if err != nil {
 			return err
 		}
-		for _, entry := range entries {
-			if !sessionID.MatchString(entry.Name()) {
-				continue
-			}
-			s, err := a.readSession(entry.Name())
-			if err != nil {
-				return err
-			}
-			fmt.Fprintf(a.out, "%s  %s  %d accounts  %s\n", s.ID, s.Name, len(s.Accounts), strings.Join(s.Repositories, ", "))
+		rows := [][]string{}
+		for _, s := range all {
+			rows = append(rows, []string{s.Name, s.summary(), strings.Join(s.Repositories, " ")})
+		}
+		for _, line := range table(rows) {
+			fmt.Fprintln(a.out, line)
 		}
 		return nil
+	}
+	usage := map[string]string{"new": "NAME [--accounts service=user,...] [--repos owner/*,...]", "edit": "NAME [--accounts ...] [--repos ...]", "rename": "NAME NEW", "delete": "NAME", "shell": "NAME"}
+	if usage[args[0]] == "" {
+		return errors.New("session commands: list, new, edit, rename, delete, shell")
+	}
+	fixed := map[string]int{"rename": 3, "delete": 2, "shell": 2}[args[0]]
+	if len(args) < 2 || fixed > 0 && len(args) != fixed {
+		return errors.New("usage: commander session " + args[0] + " " + usage[args[0]])
+	}
+	if args[0] == "new" {
+		s := session{Name: args[1]}
+		if err := a.checkName(s.Name, ""); err != nil {
+			return err
+		}
+		if err := a.selectionFlags(&s, args[2:]); err != nil {
+			return err
+		}
+		s, err := a.newSession(s.Name, s.Accounts, s.Repositories)
+		if err != nil {
+			return err
+		}
+		fmt.Fprintf(a.out, "session %s created · open it with: commander session shell %s\n", s.Name, quote(s.Name))
+		return nil
+	}
+	s, err := a.findSession(args[1])
+	if err != nil {
+		return err
 	}
 	switch args[0] {
-	case "new":
-		if len(args) < 2 {
-			return errors.New("usage: commander session new NAME [PRESET] [--repos owner/name,owner/*]")
-		}
-		name, preset := args[1], ""
-		accountSelection := ""
-		reposSet := false
-		repos := []string{}
-		for i := 2; i < len(args); i++ {
-			if args[i] == "--repos" && i+1 < len(args) {
-				i++
-				repos = parseRepositories(args[i])
-				reposSet = true
-			} else if args[i] == "--accounts" && i+1 < len(args) {
-				i++
-				accountSelection = args[i]
-			} else if strings.HasPrefix(args[i], "-") {
-				return errors.New("unknown session option")
-			} else if preset == "" {
-				preset = args[i]
-			} else {
-				return errors.New("invalid session arguments")
-			}
-		}
-		accounts := []member{}
-		if preset != "" {
-			_, selected, err := a.profile(preset)
-			if err != nil {
-				return err
-			}
-			accounts = selected
-			if !reposSet {
-				book, err := a.readProfiles()
-				if err != nil {
-					return err
-				}
-				repos = book.Scopes[preset]
-			}
-		}
-		if accountSelection != "" {
-			var err error
-			accounts, err = a.parseAccounts(accountSelection)
-			if err != nil {
-				return err
-			}
-		}
-		if a.terminal() {
-			all, err := a.savedMembers()
-			if err != nil {
-				return err
-			}
-			accounts, err = a.selectMembers("session accounts", all, accounts, true)
-			if err != nil {
-				return err
-			}
-			value, err := a.input("repositories (owner/name or owner/*, comma separated; - for none)", repositoryInput(repos))
-			if err != nil {
-				return err
-			}
-			repos = parseRepositories(value)
-		}
-		s, err := a.newSession(name, accounts, repos)
-		if err != nil {
-			return err
-		}
-		fmt.Fprintf(a.out, "session: %s\nstart a shell: %s session shell %s\n", s.ID, quote(filepath.Join(a.root, "commander")), s.ID)
-		return nil
-	case "shell":
-		if len(args) != 2 {
-			return errors.New("usage: commander session shell ID")
-		}
-		s, err := a.readSession(args[1])
-		if err != nil {
-			return err
-		}
-		a.session = &s
-		unlock, err := a.sessionLock(s.ID, true, true)
-		if err != nil {
-			return err
-		}
-		defer unlock()
-		if err = a.sessionWrappers(s); err != nil {
-			return err
-		}
-		shell := os.Getenv("SHELL")
-		if shell == "" {
-			shell = "/bin/bash"
-		}
-		cmd := exec.Command(shell)
-		cmd.Env = a.environment("shell", nil)
-		cmd.Stdin = a.in
-		cmd.Stdout = a.out
-		cmd.Stderr = a.errOut
-		return cmd.Run()
 	case "edit":
-		if len(args) < 2 {
-			return errors.New("usage: commander session edit ID")
-		}
-		s, err := a.readSession(args[1])
-		if err != nil {
+		if err = a.selectionFlags(&s, args[2:]); err != nil {
 			return err
 		}
-		if len(args) > 2 {
-			for i := 2; i < len(args); i += 2 {
-				if i+1 >= len(args) {
-					return errors.New("selection option needs a value")
-				}
-				switch args[i] {
-				case "--accounts":
-					s.Accounts, err = a.parseAccounts(args[i+1])
-					if err != nil {
-						return err
-					}
-				case "--repos":
-					s.Repositories = parseRepositories(args[i+1])
-				default:
-					return errors.New("edit accepts --accounts and --repos")
-				}
-			}
-			return a.saveSession(s)
-		}
-		all, err := a.savedMembers()
-		if err != nil {
-			return err
-		}
-		s.Accounts, err = a.selectMembers("session accounts", all, s.Accounts, true)
-		if err != nil {
-			return err
-		}
-		value, err := a.input("repositories (- for none)", repositoryInput(s.Repositories))
-		if err != nil {
-			return err
-		}
-		s.Repositories = parseRepositories(value)
 		return a.saveSession(s)
-	case "close":
-		if len(args) != 2 {
-			return errors.New("usage: commander session close ID")
-		}
-		p, err := a.sessionPath(args[1])
-		if err != nil {
-			return err
-		}
-		unlock, err := a.sessionLock(args[1], false, false)
-		if err != nil {
-			return errors.New("session still has active commands")
-		}
-		defer unlock()
-		if entries, _ := os.ReadDir(filepath.Join(p, "tasks")); len(entries) > 0 {
-			return errors.New("finish the session tasks before closing it")
-		}
-		s, err := a.readSession(args[1])
-		if err != nil {
-			return err
-		}
-		scoped := *a
-		scoped.session = &s
-		if err = scoped.removeSessionContainers(); err != nil {
-			return err
-		}
-		if err = scoped.stopBridge(); err != nil {
-			return err
-		}
-		return os.RemoveAll(p)
-	default:
-		return errors.New("session commands: new, list, shell, edit, close")
+	case "rename":
+		return a.renameSession(s, args[2])
+	case "delete":
+		return a.deleteSession(s)
 	}
+	return a.sessionShell(s)
+}
+
+func (a *app) sessionShell(s session) error {
+	scoped := *a
+	scoped.session = &s
+	unlock, err := scoped.sessionLock(s.ID, true, true)
+	if err != nil {
+		return err
+	}
+	defer unlock()
+	if err = scoped.sessionWrappers(s); err != nil {
+		return err
+	}
+	shell := os.Getenv("SHELL")
+	if shell == "" {
+		shell = "/bin/bash"
+	}
+	fmt.Fprintf(a.out, "session %s · exit returns\n", clean(s.Name))
+	cmd := exec.Command(shell)
+	cmd.Env = scoped.environment("shell", nil)
+	cmd.Stdin = a.in
+	cmd.Stdout = a.out
+	cmd.Stderr = a.errOut
+	return cmd.Run()
 }
 
 func (a *app) sessionLock(id string, shared, wait bool) (func(), error) {
@@ -395,99 +439,39 @@ func fileLock(path string, shared, wait bool) (func(), error) {
 	return func() { syscall.Flock(int(f.Fd()), syscall.LOCK_UN); f.Close() }, nil
 }
 
-func (a *app) savedMembers() ([]member, error) {
-	admin := *a
-	admin.session = nil
-	if a.session != nil {
-		admin.run = admin.nativeRun
-	}
-	p, err := a.readProfiles()
-	if err != nil {
-		return nil, err
-	}
-	all := map[string]member{}
-	for _, members := range p.Profiles {
-		for _, m := range members {
-			all[m.id()] = m
-		}
-	}
-	// Include connected accounts which have not been added to a preset.
+// Logins lists the connected accounts of used services. A failed service keeps
+// a status, so screens can explain why its accounts are missing.
+func (a *app) logins() ([]account, map[string]string) {
+	admin := a.admin()
+	rows := []account{}
+	failed := map[string]string{}
 	for _, service := range services {
 		if !tokenService(service) && !a.toolUsed(serviceTools[service]) {
 			continue
 		}
-		rows, err := admin.accounts(service)
+		found, err := admin.accounts(service)
 		if err != nil {
+			failed[service] = "Check login"
+			var preparation *toolPreparationError
+			if errors.As(err, &preparation) {
+				failed[service] = "Tool not ready"
+			}
 			continue
 		}
-		for _, r := range rows {
-			all[r.id()] = r.member
-		}
+		rows = append(rows, found...)
 	}
-	result := []member{}
-	for _, m := range all {
-		result = append(result, m)
-	}
-	sort.Slice(result, func(i, j int) bool { return result[i].label() < result[j].label() })
-	return result, nil
+	return rows, failed
 }
 
-func (a *app) selectMembers(title string, all, initial []member, allowEmpty bool) ([]member, error) {
-	selected := map[string]bool{}
-	for _, m := range initial {
-		selected[m.id()] = true
+// Admin views read every connected login with native tools, outside any
+// session selection.
+func (a *app) admin() *app {
+	admin := *a
+	if a.session != nil {
+		admin.session = nil
+		admin.run = admin.nativeRun
 	}
-	filter := ""
-	for {
-		visible := []member{}
-		options := []string{}
-		for _, m := range all {
-			if !strings.Contains(strings.ToLower(m.label()), strings.ToLower(filter)) {
-				continue
-			}
-			visible = append(visible, m)
-			mark := "○ "
-			if selected[m.id()] {
-				mark = "✓ "
-			}
-			options = append(options, mark+m.label())
-		}
-		options = append(options, "continue", "select all shown", "clear all", "search", "cancel")
-		i, err := a.choose(title, "select accounts individually. enter toggles the selected row.", options)
-		if err != nil {
-			return nil, err
-		}
-		if i < len(visible) {
-			m := visible[i]
-			selected[m.id()] = !selected[m.id()]
-			continue
-		}
-		switch i - len(visible) {
-		case 0:
-			result := []member{}
-			for _, m := range all {
-				if selected[m.id()] {
-					result = append(result, m)
-				}
-			}
-			if len(result) > 0 || allowEmpty {
-				return result, nil
-			}
-		case 1:
-			for _, m := range visible {
-				selected[m.id()] = true
-			}
-		case 2:
-			selected = map[string]bool{}
-		case 3:
-			filter, err = a.input("search", filter)
-			if err != nil {
-				return nil, err
-			}
-		default:
-			return nil, errCancelled
-		}
-	}
+	return &admin
 }
 
 func (a *app) sessionWrappers(s session) error {

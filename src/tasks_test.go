@@ -77,7 +77,7 @@ func TestConcurrentTasksIntegrateAndLeaveNoBranchesOrWorktrees(t *testing.T) {
 	if _, err = first.gitAt(one.Path, "push", "origin", one.Branch); err != nil {
 		t.Fatal(err)
 	}
-	if err = first.sessionCommand([]string{"close", first.session.ID}); err == nil {
+	if err = first.sessionCommand([]string{"delete", first.session.Name}); err == nil {
 		t.Fatal("closed session with unfinished task")
 	}
 	var wg sync.WaitGroup

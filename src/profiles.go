@@ -1,14 +1,10 @@
 package main
 
 import (
-	"bytes"
 	"crypto/rand"
 	"encoding/json"
 	"errors"
 	"fmt"
-	"io"
-	"os"
-	"path/filepath"
 	"sort"
 	"strings"
 	"unicode"
@@ -25,13 +21,6 @@ func serviceName(service string) string {
 	return service
 }
 
-func accountCount(n int) string {
-	if n == 1 {
-		return "1 account"
-	}
-	return fmt.Sprintf("%d accounts", n)
-}
-
 type member struct {
 	Service string          `json:"service"`
 	Key     json.RawMessage `json:"key"`
@@ -43,9 +32,12 @@ type account struct {
 	Active bool
 	State  string
 }
+
+// Archives keep sessions in this named selection layout, which earlier
+// releases used for saved selections.
 type profiles struct {
 	Version  int                 `json:"version"`
-	Active   *string             `json:"active"`
+	Active   *string             `json:"active"` // always null; kept for readable archives
 	Profiles map[string][]member `json:"profiles"`
 	Scopes   map[string][]string `json:"repositories,omitempty"`
 }
@@ -64,6 +56,17 @@ func (m member) id() string {
 	var value any
 	json.Unmarshal(m.Key, &value)
 	return m.Service + ":" + string(jsonKey(value))
+}
+
+// Display returns the account name and its context as screens show them.
+func (m member) display() (string, string) {
+	if host, user := m.github(); m.Service == "github" {
+		return user, host
+	}
+	if m.Service == "hetzner" {
+		return m.Account, ""
+	}
+	return m.Account, m.Context
 }
 func (m member) label() string {
 	s := serviceName(m.Service) + " · " + m.Account
@@ -93,15 +96,42 @@ func clean(s string) string {
 	}, s)
 }
 
-func validateProfiles(p profiles) error {
-	invalid := errors.New("invalid profiles.json; restore a valid profile file")
-	if p.Version != 1 || p.Profiles == nil {
+func validateMembers(members []member) error {
+	invalid := errors.New("invalid account selection")
+	if members == nil {
 		return invalid
 	}
-	if p.Active != nil {
-		if _, ok := p.Profiles[*p.Active]; !ok {
+	seen := map[string]bool{}
+	for _, m := range members {
+		if _, ok := serviceTools[m.Service]; !ok {
 			return invalid
 		}
+		if !printable(m.Account, 1024) || !printable(m.Context, 1024) {
+			return invalid
+		}
+		if m.Service == "github" {
+			host, user := m.github()
+			if host == "" || user == "" || !printable(host, 1024) || !printable(user, 1024) {
+				return invalid
+			}
+		} else {
+			key := m.selector()
+			if key == "" || !printable(key, 1024) {
+				return invalid
+			}
+		}
+		if seen[m.id()] {
+			return invalid
+		}
+		seen[m.id()] = true
+	}
+	return nil
+}
+
+func validateProfiles(p profiles) error {
+	invalid := errors.New("invalid archive selection")
+	if p.Version != 1 || p.Profiles == nil {
+		return invalid
 	}
 	for name, repos := range p.Scopes {
 		if _, ok := p.Profiles[name]; !ok {
@@ -114,121 +144,11 @@ func validateProfiles(p profiles) error {
 		}
 	}
 	for name, members := range p.Profiles {
-		if !validName(name) || members == nil {
+		if !validName(name) || validateMembers(members) != nil {
 			return invalid
-		}
-		seen := map[string]bool{}
-		for _, m := range members {
-			if _, ok := serviceTools[m.Service]; !ok {
-				return invalid
-			}
-			if !printable(m.Account, 1024) || !printable(m.Context, 1024) {
-				return invalid
-			}
-			if m.Service == "github" {
-				host, user := m.github()
-				if host == "" || user == "" || !printable(host, 1024) || !printable(user, 1024) {
-					return invalid
-				}
-			} else {
-				key := m.selector()
-				if key == "" || !printable(key, 1024) {
-					return invalid
-				}
-			}
-			if seen[m.id()] {
-				return invalid
-			}
-			seen[m.id()] = true
 		}
 	}
 	return nil
-}
-
-func decodeProfiles(data []byte) (profiles, error) {
-	var p profiles
-	decoder := json.NewDecoder(bytes.NewReader(data))
-	decoder.DisallowUnknownFields()
-	if decoder.Decode(&p) != nil {
-		return p, errors.New("could not read profiles.json")
-	}
-	var extra any
-	if decoder.Decode(&extra) != io.EOF {
-		return p, errors.New("invalid trailing profile data")
-	}
-	return p, validateProfiles(p)
-}
-
-func (a *app) readProfiles() (profiles, error) {
-	path := filepath.Join(a.root, "profiles.json")
-	if err := noSymlinks(a.root, path); err != nil {
-		return profiles{}, err
-	}
-	data, err := os.ReadFile(path)
-	if os.IsNotExist(err) {
-		// The former container stored only profile metadata at this legacy path.
-		path = filepath.Join(a.root, ".secrets", "profiles.json")
-		if err := noSymlinks(a.root, path); err != nil {
-			return profiles{}, err
-		}
-		data, err = os.ReadFile(path)
-	}
-	if os.IsNotExist(err) {
-		return profiles{Version: 1, Profiles: map[string][]member{}}, nil
-	}
-	if err != nil {
-		return profiles{}, err
-	}
-	return decodeProfiles(data)
-}
-
-func (a *app) writeProfiles(p profiles) error {
-	if err := validateProfiles(p); err != nil {
-		return err
-	}
-	path := filepath.Join(a.root, "profiles.json")
-	if err := noSymlinks(a.root, path); err != nil {
-		return err
-	}
-	data, err := json.MarshalIndent(p, "", "  ")
-	if err != nil {
-		return err
-	}
-	return atomicWrite(path, append(data, '\n'), 0600)
-}
-
-func (a *app) editProfiles(change func(*profiles) error) error {
-	unlock, err := a.lock("profiles")
-	if err != nil {
-		return err
-	}
-	defer unlock()
-	p, err := a.readProfiles()
-	if err != nil {
-		return err
-	}
-	if err = change(&p); err != nil {
-		return err
-	}
-	return a.writeProfiles(p)
-}
-
-func (a *app) profile(name string) (string, []member, error) {
-	if name == "" && a.session != nil {
-		return a.session.Name, append([]member(nil), a.session.Accounts...), nil
-	}
-	p, err := a.readProfiles()
-	if err != nil {
-		return "", nil, err
-	}
-	if name == "" && p.Active != nil {
-		name = *p.Active
-	}
-	members, ok := p.Profiles[name]
-	if !ok {
-		return "", nil, errors.New("choose a profile with ./commander, or name it explicitly")
-	}
-	return name, members, nil
 }
 
 func (a *app) accounts(service string) ([]account, error) {
@@ -327,12 +247,17 @@ func (a *app) accounts(service string) ([]account, error) {
 	return rows, nil
 }
 
-func (a *app) resolve(members []member) []account {
-	admin := *a
-	if a.session != nil {
-		admin.session = nil
-		admin.run = admin.nativeRun
+// A failed account query marks every account of its service.
+func serviceFailure(err error) string {
+	var preparation *toolPreparationError
+	if errors.As(err, &preparation) {
+		return "Tool not ready"
 	}
+	return "Check login"
+}
+
+func (a *app) resolve(members []member) []account {
+	admin := a.admin()
 	found := map[string]account{}
 	queried := map[string]bool{}
 	failed := map[string]string{}
@@ -343,11 +268,7 @@ func (a *app) resolve(members []member) []account {
 		queried[m.Service] = true
 		rows, err := admin.accounts(m.Service)
 		if err != nil {
-			failed[m.Service] = "Check login"
-			var preparation *toolPreparationError
-			if errors.As(err, &preparation) {
-				failed[m.Service] = "Tool not ready"
-			}
+			failed[m.Service] = serviceFailure(err)
 			continue
 		}
 		for _, r := range rows {
@@ -371,10 +292,7 @@ func (a *app) resolve(members []member) []account {
 					state = "Check login"
 				}
 			}
-			if r.Account != m.Account {
-				state = "Check identity"
-			}
-			if tokenService(m.Service) && r.Context != m.Context {
+			if r.Account != m.Account || tokenService(m.Service) && r.Context != m.Context {
 				state = "Check identity"
 			}
 		}
@@ -383,37 +301,49 @@ func (a *app) resolve(members []member) []account {
 	return result
 }
 
+func ready(state string) bool { return state == "Active" || state == "Saved" }
+
 func quote(s string) string { return "'" + strings.ReplaceAll(s, "'", "'\"'\"'") + "'" }
+
+// Describe prints a session's accounts: overview checks their status, context
+// adds selectors for agents and fails when an account needs attention.
+// Overview without a session checks every connected login.
 func (a *app) describe(name string, context bool) error {
-	name, members, err := a.profile(name)
-	if err != nil {
-		return err
+	s := a.session
+	if name != "" {
+		found, err := a.findSession(name)
+		if err != nil {
+			return err
+		}
+		s = &found
 	}
-	if len(members) == 0 && context {
-		return fmt.Errorf("profile %q has no accounts; open ./commander and add a login", name)
+	if s == nil {
+		if context {
+			return errors.New("open a session first: commander session shell NAME")
+		}
+		rows, failed := a.logins()
+		for _, service := range services {
+			if failed[service] != "" {
+				rows = append(rows, account{member: member{Service: service}, State: failed[service]})
+			}
+		}
+		a.printAccounts(rows)
+		return attention(rows)
 	}
-	rows := a.resolve(members)
-	invalid := []string{}
-	for _, r := range rows {
-		if r.State != "Active" && r.State != "Saved" {
-			invalid = append(invalid, r.Service+": "+r.State)
+	if len(s.Accounts) == 0 && context {
+		return fmt.Errorf("session %q has no accounts; select them with commander session edit %s", s.Name, quote(s.Name))
+	}
+	rows := a.resolve(s.Accounts)
+	if context {
+		if err := attention(rows); err != nil {
+			return err
 		}
 	}
-	if context && len(invalid) > 0 {
-		return errors.New("profile needs attention: " + strings.Join(invalid, "; ") + "; run ./commander overview")
-	}
-	if a.session != nil {
-		fmt.Fprintln(a.out, "commander session:", a.session.ID, "(", name, ")")
-		fmt.Fprintln(a.out, "repositories:", strings.Join(a.session.Repositories, ", "))
-	} else {
-		fmt.Fprintln(a.out, "commander preset:", name)
-	}
+	fmt.Fprintln(a.out, "session:", s.Name)
+	fmt.Fprintln(a.out, "repositories:", strings.Join(s.Repositories, ", "))
 	if !context {
 		a.printAccounts(rows)
-		if len(invalid) > 0 {
-			return errors.New("some profile accounts need attention")
-		}
-		return nil
+		return attention(rows)
 	}
 	fmt.Fprintln(a.out, "\nScope: selected accounts and repositories only. Verify identity before actions.\nUse commander exec --account SELECTOR -- TOOL ARGS when a service has several accounts.\nEach command gets isolated login state. Never switch a global active account.\nSelections grant no permission to change resources or send messages.")
 	for _, r := range rows {
@@ -429,7 +359,19 @@ func (a *app) describe(name string, context bool) error {
 			fmt.Fprintf(a.out, "verify: ./commander exec -- %s whoami --account %s\n", r.Service, quote(selector))
 		}
 	}
+	return nil
+}
 
+func attention(rows []account) error {
+	invalid := []string{}
+	for _, r := range rows {
+		if !ready(r.State) {
+			invalid = append(invalid, serviceName(r.Service)+": "+strings.ToLower(r.State))
+		}
+	}
+	if len(invalid) > 0 {
+		return errors.New("accounts need attention: " + strings.Join(invalid, "; ") + "; sign in again with ./commander")
+	}
 	return nil
 }
 
@@ -437,25 +379,16 @@ func (a *app) printAccounts(rows []account) {
 	width := 0
 	if a.terminal() {
 		width, _ = a.dimensions()
-		width = max(1, min(108, width-4))
+		width = max(1, width-2)
 	}
 	fmt.Fprintln(a.out)
-	for _, line := range accountLines(rows, true, width) {
+	for _, line := range accountLines(rows, width) {
 		if width > 0 {
-			fmt.Fprintln(a.out, "  "+a.renderLine(line, width))
+			fmt.Fprintln(a.out, a.renderLine(line, width))
 		} else {
 			fmt.Fprintln(a.out, line.plain())
 		}
 	}
-}
-
-func accountTable(rows []account, status bool, width int) string {
-	lines := accountLines(rows, status, width)
-	text := make([]string, len(lines))
-	for i, line := range lines {
-		text[i] = line.plain()
-	}
-	return strings.Join(text, "\n")
 }
 
 const githubScopes = "repo,workflow,admin:org,admin:org_hook,admin:public_key,admin:repo_hook,admin:gpg_key,admin:ssh_signing_key,admin:enterprise,gist,notifications,user,delete_repo,write:packages,delete:packages,project,codespace,read:audit_log"
@@ -526,7 +459,7 @@ func (a *app) login(service string) error {
 		if len(token) != 64 || strings.IndexFunc(token, func(r rune) bool { return !(r >= 'a' && r <= 'z' || r >= 'A' && r <= 'Z' || r >= '0' && r <= '9') }) >= 0 {
 			return errors.New("a Hetzner token contains 64 letters or digits")
 		}
-		name, err := a.input("project name", "")
+		name, err := a.prompt("project name", "")
 		if err != nil {
 			return err
 		}

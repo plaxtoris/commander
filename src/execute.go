@@ -110,7 +110,7 @@ func (a *app) checkGitHub(args []string, m member) error {
 		if len(args) > 1 && args[1] == "status" {
 			return nil
 		}
-		return errors.New("manage logins in Commander Accounts, outside a session")
+		return errors.New("manage logins in the commander menu, outside a session")
 	}
 	repo := argument(args, "--repo", "-R")
 	if owner := argument(args, "--org", "--owner"); owner != "" {
@@ -195,7 +195,7 @@ func (a *app) execute(tool string, args []string) error {
 	service := serviceFor(tool)
 	if a.session == nil {
 		if service != "" && !(tool == "gh" && len(args) > 0 && args[0] == "auth") {
-			return errors.New("start a Commander session before service work: commander session new NAME PRESET --repos owner/*")
+			return errors.New("open a session before service work: commander session shell NAME")
 		}
 		if service != "" {
 			unlock, err := a.lock("native")
