@@ -16,5 +16,7 @@
         "golang.Go"
       ]
     }
-  }
+  },
+  "remoteUser": "dev",
+  "updateRemoteUserUID": true
 }

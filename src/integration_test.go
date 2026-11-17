@@ -14,6 +14,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"syscall"
 	"testing"
 )
 
@@ -87,8 +88,8 @@ func TestIntegrationNativeFixtures(t *testing.T) {
 func TestIntegrationProjectContainer(t *testing.T) {
 	a := integrationApp(t)
 	project := filepath.Join(a.root, "workspaces", "container fixture")
-	mustWrite(t, filepath.Join(project, ".devcontainer", "devcontainer.json"), []byte(`{"name":"Commander fixture","build":{"dockerfile":"Dockerfile"},"workspaceMount":"source=${localWorkspaceFolder},target=/project,type=bind","workspaceFolder":"/project"}`))
-	mustWrite(t, filepath.Join(project, ".devcontainer", "Dockerfile"), []byte("FROM alpine:3.22\nRUN apk add --no-cache git && printf built > /image-built\n"))
+	mustWrite(t, filepath.Join(project, ".devcontainer", "devcontainer.json"), []byte(`{"name":"Commander fixture","build":{"dockerfile":"Dockerfile"},"workspaceMount":"source=${localWorkspaceFolder},target=/project,type=bind","workspaceFolder":"/project","remoteUser":"fixture","updateRemoteUserUID":true}`))
+	mustWrite(t, filepath.Join(project, ".devcontainer", "Dockerfile"), []byte("FROM alpine:3.22\nRUN apk add --no-cache git && adduser -D -u 1000 fixture && printf built > /image-built\n"))
 	mustWrite(t, filepath.Join(project, "message.txt"), []byte("initial"))
 	for _, args := range [][]string{{"init", "--initial-branch=main"}, {"config", "user.name", "Fixture"}, {"config", "user.email", "fixture@example.invalid"}, {"remote", "add", "origin", "https://github.com/company/fixture.git"}} {
 		if _, err := a.gitAt(project, args...); err != nil {
@@ -125,6 +126,16 @@ func TestIntegrationProjectContainer(t *testing.T) {
 	mustWrite(t, filepath.Join(project, "message.txt"), []byte("edited"))
 	if err := command("sh", "-c", "test \"$(cat message.txt)\" = edited"); err != nil {
 		t.Fatal(err)
+	}
+	if err := command("sh", "-ec", "git add message.txt && git commit -m fixture"); err != nil {
+		t.Fatal(err)
+	}
+	index, err := os.Stat(filepath.Join(project, ".git", "index"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if owner := index.Sys().(*syscall.Stat_t).Uid; owner != uint32(os.Getuid()) {
+		t.Fatalf("container Git created index for UID %d, host UID is %d", owner, os.Getuid())
 	}
 	err = command("sh", "-c", "exit 37")
 	var status *exec.ExitError
