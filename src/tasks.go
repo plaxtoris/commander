@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -27,7 +28,7 @@ func (a *app) gitAt(dir string, args ...string) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	cmd := exec.Command(path, append([]string{"-C", dir}, args...)...)
+	cmd := gitCommand(context.Background(), path, append([]string{"-C", dir}, args...)...)
 	cmd.Env = a.environment("git", nil)
 	b, err := cmd.Output()
 	if err != nil {

@@ -525,6 +525,9 @@ func (a *app) nativeRunContext(ctx context.Context, tool string, args []string, 
 		return nil, err
 	}
 	cmd := exec.CommandContext(ctx, path, args...)
+	if tool == "git" {
+		cmd = gitCommand(ctx, path, args...)
+	}
 	cmd.Env = a.environment(tool, extra)
 	cmd.Stdin = a.in
 	if capture {
@@ -541,4 +544,10 @@ func (a *app) nativeRunContext(ctx context.Context, tool string, args []string, 
 	cmd.Stdout = a.out
 	cmd.Stderr = a.errOut
 	return nil, cmd.Run()
+}
+
+// Git checkouts need normal source permissions for isolated container workers.
+// Change only the child mask; account operations keep Commander's private mask.
+func gitCommand(ctx context.Context, path string, args ...string) *exec.Cmd {
+	return exec.CommandContext(ctx, "/bin/sh", append([]string{"-c", `umask 022; exec "$@"`, "git", path}, args...)...)
 }
