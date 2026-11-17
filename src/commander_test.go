@@ -183,7 +183,7 @@ func TestContextScopeAndIdentity(t *testing.T) {
 		t.Fatal(err)
 	}
 	output := a.out.(*bytes.Buffer).String()
-	if calls != 1 || strings.Contains(output, "other") || strings.Contains(output, "do-not-print") || !strings.Contains(output, "--user 'allowed'") {
+	if calls != 1 || strings.Contains(output, "other") || strings.Contains(output, "do-not-print") || !strings.Contains(output, "selector: 'allowed'") {
 		t.Fatal(output)
 	}
 	a.out = &bytes.Buffer{}
@@ -322,15 +322,13 @@ func TestLocksAndProjectBoundary(t *testing.T) {
 	}
 	path := filepath.Join(a.root, "workspaces", "project with spaces")
 	os.MkdirAll(path, 0700)
-	a.run = func(tool string, args []string, capture bool, extra map[string]string) ([]byte, error) {
-		if tool != "devcontainer" || args[2] != path {
-			t.Fatal(tool, args)
-		}
-		return nil, nil
+	if resolved, err := a.projectPath("project with spaces"); err != nil || resolved != path {
+		t.Fatal(resolved, err)
 	}
-	if err := a.up("project with spaces"); err != nil {
-		t.Fatal(err)
+	if _, err := a.projectPath("outside"); err == nil {
+		t.Fatal("accepted outside project")
 	}
+
 }
 
 func tarBytes(t *testing.T, entries []*tar.Header, contents []string) []byte {
@@ -486,6 +484,9 @@ func TestUIHelper(t *testing.T) {
 				return nil, errors.New("incorrect hidden token")
 			}
 			created = args[len(args)-1]
+			marker := filepath.Join(a.root, "tools", ".requested", "hcloud")
+			os.MkdirAll(filepath.Dir(marker), 0700)
+			os.WriteFile(marker, nil, 0600)
 			return nil, nil
 		}
 		return nil, errors.New("unexpected native fixture operation")
@@ -577,11 +578,7 @@ func (s *terminalSession) send(t *testing.T, value string) {
 func TestInteractiveFirstProfileAndHiddenLogin(t *testing.T) {
 	root := t.TempDir()
 	session := openUI(t, root)
-	session.wait(t, "welcome. create a profile")
-	session.send(t, "\r")
-	session.wait(t, "profile name")
-	session.send(t, "work\n")
-	session.wait(t, "no accounts yet")
+	session.wait(t, "esc quit")
 	session.send(t, "\r")
 	session.wait(t, "add account")
 	session.send(t, "\r")
@@ -606,14 +603,10 @@ func TestInteractiveFirstProfileAndHiddenLogin(t *testing.T) {
 	if strings.Contains(session.output, strings.Repeat("a", 64)) {
 		t.Fatal("token was echoed")
 	}
-	data, err := os.ReadFile(filepath.Join(root, "profiles.json"))
-	if err != nil {
-		t.Fatal(err)
+	if !strings.Contains(session.output, "newproject") {
+		t.Fatal("connected account is missing")
 	}
-	p, err := decodeProfiles(data)
-	if err != nil || p.Active == nil || *p.Active != "work" || len(p.Profiles["work"]) != 1 || p.Profiles["work"][0].selector() != "newproject" {
-		t.Fatal(p, err)
-	}
+
 }
 
 func TestInteractiveProfileCancellation(t *testing.T) {

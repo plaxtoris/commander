@@ -57,10 +57,12 @@ func contains(values []string, s string) bool {
 }
 
 type profileArchive struct {
-	Format  string            `json:"format"`
-	Version int               `json:"version"`
-	Profile profiles          `json:"profile"`
-	Logins  map[string]object `json:"logins"`
+	Format   string            `json:"format"`
+	Version  int               `json:"version"`
+	Profile  profiles          `json:"profile"`
+	Logins   map[string]object `json:"logins"`
+	Accounts []member          `json:"accounts,omitempty"`
+	Memory   *string           `json:"memory,omitempty"`
 }
 type storage struct {
 	root      string
@@ -654,7 +656,7 @@ func (s *storage) publish(files map[string][]byte) error {
 	}
 	sort.Strings(paths)
 	for _, name := range paths {
-		if name != "profiles.json" && !nativeFiles[strings.TrimPrefix(filepath.ToSlash(name), ".secrets/")] {
+		if name != "profiles.json" && name != "MEMORY.md" && !nativeFiles[strings.TrimPrefix(filepath.ToSlash(name), ".secrets/")] {
 			return errFormat
 		}
 		if err := noSymlinks(s.root, filepath.Join(s.root, name)); err != nil {
@@ -705,31 +707,6 @@ func (s *storage) publish(files map[string][]byte) error {
 		changed = append(changed, name)
 	}
 	return nil
-}
-
-func (a *app) exportPayload(name string, members []member) (profileArchive, error) {
-	payload := profileArchive{Format: "commander-profile", Version: 1, Profile: profiles{Version: 1, Active: &name, Profiles: map[string][]member{name: members}}, Logins: map[string]object{}}
-	store := newStorage(a.root)
-	for _, service := range services {
-		selected := []member{}
-		for _, m := range members {
-			if m.Service == service {
-				selected = append(selected, m)
-			}
-		}
-		if len(selected) == 0 {
-			continue
-		}
-		state, err := store.state(service)
-		if err == nil {
-			state, err = selectLogins(service, state, selected)
-		}
-		if err != nil {
-			return payload, fmt.Errorf("%s: %w", service, err)
-		}
-		payload.Logins[service] = state
-	}
-	return payload, nil
 }
 
 func writeArchive(path string, payload profileArchive, password string) error {
@@ -821,163 +798,4 @@ func readArchive(path, password string) (profileArchive, error) {
 		return payload, invalid
 	}
 	return payload, nil
-}
-
-func (a *app) importPayload(payload profileArchive, rename string) (string, error) {
-	if payload.Format != "commander-profile" || payload.Version != 1 || len(payload.Profile.Profiles) != 1 || payload.Profile.Active == nil {
-		return "", errFormat
-	}
-	if err := validateProfiles(payload.Profile); err != nil {
-		return "", err
-	}
-	name := *payload.Profile.Active
-	members := payload.Profile.Profiles[name]
-	if rename != "" {
-		name = rename
-	}
-	if !validName(name) {
-		return "", errFormat
-	}
-	book, err := a.readProfiles()
-	if err != nil {
-		return "", err
-	}
-	if _, ok := book.Profiles[name]; ok {
-		return "", errors.New("profile already exists; supply a new profile name")
-	}
-	grouped := map[string][]member{}
-	for _, m := range members {
-		grouped[m.Service] = append(grouped[m.Service], m)
-	}
-	if len(grouped) != len(payload.Logins) {
-		return "", errFormat
-	}
-	store := newStorage(a.root)
-	files := map[string][]byte{}
-	for service, state := range payload.Logins {
-		selected, err := selectLogins(service, state, grouped[service])
-		if err != nil {
-			return "", err
-		}
-		if !reflect.DeepEqual(selected, state) {
-			return "", errors.New("archive contains logins outside its profile")
-		}
-		native, err := store.install(service, selected)
-		if err != nil {
-			return "", err
-		}
-		for path, data := range native {
-			files[filepath.Join(".secrets", path)] = data
-		}
-	}
-	profilePath := filepath.Join(a.root, "profiles.json")
-	if err := noSymlinks(a.root, profilePath); err != nil {
-		return "", err
-	}
-	before, err := os.ReadFile(profilePath)
-	if err != nil && !os.IsNotExist(err) {
-		return "", err
-	}
-	store.originals["profiles.json"] = before
-	book.Profiles[name] = members
-	if book.Active == nil {
-		book.Active = &name
-	}
-	files["profiles.json"] = encode(book)
-	if err = store.publish(files); err != nil {
-		return "", err
-	}
-	return name, nil
-}
-
-func (a *app) transfer(args []string) error {
-	if !a.terminal() {
-		return errors.New("open an interactive terminal to transfer profiles and enter the password")
-	}
-	if len(args) > 3 || (args[0] == "import" && len(args) < 2) {
-		return errors.New("usage: commander export [FILE.zip] [PROFILE] or commander import FILE.zip [NEWNAME]")
-	}
-	if err := a.ensure(); err != nil {
-		return err
-	}
-	unlock, err := a.lock("native")
-	if err != nil {
-		return err
-	}
-	defer unlock()
-	profileUnlock, err := a.lock("profiles")
-	if err != nil {
-		return err
-	}
-	defer profileUnlock()
-	name := ""
-	if len(args) == 3 {
-		name = args[2]
-	}
-	path := ""
-	if len(args) > 1 {
-		path = args[1]
-	}
-	if args[0] == "export" {
-		var members []member
-		name, members, err = a.profile(name)
-		if err != nil {
-			return err
-		}
-		members, err = a.selectExport(members)
-		if err != nil {
-			return err
-		}
-		if path == "" {
-			path, err = a.input("archive path", profileFilename(name))
-			if err != nil {
-				return err
-			}
-		}
-		path, err = archivePath(path)
-		if err != nil {
-			return err
-		}
-		if filepath.Ext(path) != ".zip" {
-			return errors.New("use a .zip archive")
-		}
-		if _, err := os.Lstat(path); !os.IsNotExist(err) {
-			return errors.New("archive already exists; choose another filename")
-		}
-		payload, err := a.exportPayload(name, members)
-		if err != nil {
-			return err
-		}
-		password, err := a.password("archive password", true)
-		if err != nil {
-			return err
-		}
-		if err = writeArchive(path, payload, password); err != nil {
-			return err
-		}
-		fmt.Fprintln(a.out, "exported:", path)
-	} else {
-		path, err = archivePath(path)
-		if err != nil {
-			return err
-		}
-		if filepath.Ext(path) != ".zip" {
-			return errors.New("use a Commander profile .zip archive")
-		}
-		password, err := a.password("archive password", false)
-		if err != nil {
-			return err
-		}
-		payload, err := readArchive(path, password)
-		if err != nil {
-			return err
-		}
-		name, err = a.importPayload(payload, name)
-		if err != nil {
-			return err
-		}
-		fmt.Fprintln(a.out, "imported profile:", name)
-		return a.prepareProfile(name)
-	}
-	return nil
 }

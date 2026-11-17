@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"database/sql"
 	"encoding/json"
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -287,4 +288,60 @@ func TestRefreshableGitHubLogin(t *testing.T) {
 	if err != nil || !reflect.DeepEqual(payload, again) {
 		t.Fatal("lost refreshable GitHub fields", err)
 	}
+}
+
+// Legacy fixture generation exercises compatibility without shipping a retired UI.
+func (a *app) exportPayload(name string, members []member) (profileArchive, error) {
+	payload := profileArchive{Format: "commander-profile", Version: 1, Profile: profiles{Version: 1, Active: &name, Profiles: map[string][]member{name: members}}, Logins: map[string]object{}}
+	store := newStorage(a.root)
+	for _, service := range services {
+		selected := []member{}
+		for _, m := range members {
+			if m.Service == service {
+				selected = append(selected, m)
+			}
+		}
+		if len(selected) == 0 {
+			continue
+		}
+		state, err := store.state(service)
+		if err == nil {
+			state, err = selectLogins(service, state, selected)
+		}
+		if err != nil {
+			return payload, fmt.Errorf("%s: %w", service, err)
+		}
+		payload.Logins[service] = state
+	}
+	return payload, nil
+}
+
+func (a *app) importPayload(payload profileArchive, rename string) (string, error) {
+	p, err := normalizeArchive(payload)
+	if err != nil {
+		return "", err
+	}
+	if len(p.Profile.Profiles) != 1 {
+		return "", errFormat
+	}
+	name := ""
+	for n := range p.Profile.Profiles {
+		name = n
+	}
+	if rename != "" {
+		members := p.Profile.Profiles[name]
+		delete(p.Profile.Profiles, name)
+		p.Profile.Profiles[rename] = members
+		name = rename
+	}
+	if err = a.importSelected(p, importSelection{Accounts: p.Accounts, Presets: []string{name}}); err != nil {
+		return "", err
+	}
+	err = a.editProfiles(func(book *profiles) error {
+		if book.Active == nil {
+			book.Active = &name
+		}
+		return nil
+	})
+	return name, err
 }

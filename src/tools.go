@@ -488,13 +488,22 @@ func (a *app) prepareTool(tool string, force bool) error {
 	if !managed {
 		return nil
 	}
+	if !force {
+		ready := true
+		for _, name := range deps {
+			ready = ready && a.dependencyReady(name)
+		}
+		if ready {
+			return nil
+		}
+	}
 	if runtime.GOOS != "linux" || runtime.GOARCH != "amd64" {
 		return errors.New("Commander supports Linux and WSL on x86_64")
 	}
 	if err := a.ensure(); err != nil {
 		return err
 	}
-	unlock, err := a.lock("setup")
+	unlock, err := fileLock(filepath.Join(a.root, ".secrets", ".setup.lock"), false, true)
 	if err != nil {
 		return err
 	}

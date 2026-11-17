@@ -475,7 +475,12 @@ func (a *app) dockerConfig(selector string) (string, func(), error) {
 		return "", empty, err
 	}
 	hasAccount := false
-	if p.Active != nil {
+	if a.session != nil {
+		for _, m := range a.session.Accounts {
+			hasAccount = hasAccount || m.Service == "dockerhub"
+		}
+	}
+	if p.Active != nil && a.session == nil {
 		for _, m := range p.Profiles[*p.Active] {
 			hasAccount = hasAccount || m.Service == "dockerhub"
 		}

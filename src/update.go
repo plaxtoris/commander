@@ -76,6 +76,9 @@ func fileChecksum(path string) (string, error) {
 // Private releases may use only the currently active GitHub identity if it is
 // selected in the current profile. No credentials are read or accounts switched.
 func (a *app) verifyReleaseAccount(ctx context.Context) error {
+	if a.session == nil || !a.session.allows("plaxtoris/commander") {
+		return errors.New("private updates require a session selecting plaxtoris/commander")
+	}
 	_, members, err := a.profile("")
 	if err != nil {
 		return errors.New("private updates need a GitHub account in the current profile")
@@ -126,9 +129,9 @@ func (a *app) update() (bool, error) {
 		if ctx.Err() != nil {
 			return false, errors.New("update check timed out")
 		}
-		// Hold the native lock through the authenticated download so another
-		// Commander command cannot switch the verified account in between.
-		release, err := a.lock("native")
+		// Shared access prevents account removal during an authenticated download
+		// while other sessions continue with their own selected credentials.
+		release, err := fileLock(filepath.Join(a.root, ".secrets", ".native.lock"), true, true)
 		if err != nil {
 			return false, err
 		}

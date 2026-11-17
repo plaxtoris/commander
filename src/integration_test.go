@@ -88,10 +88,21 @@ func TestIntegrationProjectContainer(t *testing.T) {
 	a := integrationApp(t)
 	project := filepath.Join(a.root, "workspaces", "container fixture")
 	mustWrite(t, filepath.Join(project, ".devcontainer", "devcontainer.json"), []byte(`{"name":"Commander fixture","build":{"dockerfile":"Dockerfile"},"workspaceMount":"source=${localWorkspaceFolder},target=/project,type=bind","workspaceFolder":"/project"}`))
-	mustWrite(t, filepath.Join(project, ".devcontainer", "Dockerfile"), []byte("FROM alpine:3.22\nRUN printf built > /image-built\n"))
+	mustWrite(t, filepath.Join(project, ".devcontainer", "Dockerfile"), []byte("FROM alpine:3.22\nRUN apk add --no-cache git && printf built > /image-built\n"))
 	mustWrite(t, filepath.Join(project, "message.txt"), []byte("initial"))
+	for _, args := range [][]string{{"init", "--initial-branch=main"}, {"config", "user.name", "Fixture"}, {"config", "user.email", "fixture@example.invalid"}, {"remote", "add", "origin", "https://github.com/company/fixture.git"}} {
+		if _, err := a.gitAt(project, args...); err != nil {
+			t.Fatal(err)
+		}
+	}
+	s, err := a.newSession("container fixture", nil, []string{"company/fixture"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	a.session = &s
+	t.Cleanup(func() { a.sessionCommand([]string{"close", s.ID}) })
 	t.Cleanup(func() {
-		data, err := a.run("docker", []string{"ps", "-aq", "--filter", "label=devcontainer.local_folder=" + project}, true, nil)
+		data, err := a.run("docker", []string{"ps", "-aq", "--filter", "label=commander.session=" + a.session.ID}, true, nil)
 		if err == nil {
 			for _, id := range strings.Fields(string(data)) {
 				if len(id) >= 12 {
@@ -105,7 +116,7 @@ func TestIntegrationProjectContainer(t *testing.T) {
 		t.Fatal(err)
 	}
 	command := func(args ...string) error {
-		_, err := a.run("devcontainer", append([]string{"exec", "--workspace-folder", project}, args...), false, nil)
+		_, err := a.run("devcontainer", append([]string{"exec", "--workspace-folder", project, "--id-label", "commander.session=" + a.session.ID}, args...), false, nil)
 		return err
 	}
 	if err := command("sh", "-c", "test \"$(cat /image-built)\" = built && test \"$(cat message.txt)\" = initial"); err != nil {
@@ -115,7 +126,7 @@ func TestIntegrationProjectContainer(t *testing.T) {
 	if err := command("sh", "-c", "test \"$(cat message.txt)\" = edited"); err != nil {
 		t.Fatal(err)
 	}
-	err := command("sh", "-c", "exit 37")
+	err = command("sh", "-c", "exit 37")
 	var status *exec.ExitError
 	if !errors.As(err, &status) || status.ExitCode() != 37 {
 		t.Fatal("project exit status lost", err)
