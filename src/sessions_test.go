@@ -155,3 +155,45 @@ func TestGitNetworkCommandsRespectRepositoryScope(t *testing.T) {
 		}
 	}
 }
+
+func TestGitChecksPushURLsAndDefaultRemote(t *testing.T) {
+	a := testApp(t)
+	s, err := a.newSession("work", nil, []string{"company/app"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	a.session = &s
+	dir := t.TempDir()
+	for _, args := range [][]string{{"init", "--initial-branch=main"}, {"remote", "add", "origin", "git@github.com:company/app.git"}, {"remote", "add", "private", "https://github.com/private/app.git"}} {
+		if _, err := a.gitAt(dir, args...); err != nil {
+			t.Fatal(err)
+		}
+	}
+	url, err := a.gitAt(dir, "remote", "get-url", "origin")
+	if err != nil || url != "https://github.com/company/app.git" {
+		t.Fatal("SSH remote did not select scoped HTTPS", url, err)
+	}
+	if err := a.checkGit([]string{"-C", dir, "push", "origin", "main"}); err != nil {
+		t.Fatal(err)
+	}
+	for _, args := range [][]string{{"-C", dir, "fetch", "--multiple", "origin", "private"}, {"-C", dir, "push", "--repo=private", "main"}} {
+		if a.checkGit(args) == nil {
+			t.Fatal("unselected secondary remote accepted", args)
+		}
+	}
+	for _, key := range []string{"remote.pushDefault", "branch.main.remote", "branch.main.pushRemote"} {
+		if _, err := a.gitAt(dir, "config", key, "private"); err != nil {
+			t.Fatal(err)
+		}
+		if a.checkGit([]string{"-C", dir, "push"}) == nil {
+			t.Fatal("unselected default remote accepted", key)
+		}
+		a.gitAt(dir, "config", "--unset", key)
+	}
+	if _, err := a.gitAt(dir, "config", "remote.origin.pushurl", "https://github.com/private/app.git"); err != nil {
+		t.Fatal(err)
+	}
+	if a.checkGit([]string{"-C", dir, "push", "origin", "main"}) == nil {
+		t.Fatal("unselected push URL accepted")
+	}
+}

@@ -46,11 +46,19 @@ func (a *app) checkGit(args []string) error {
 	}
 	remote := ""
 	all := false
+	multiple := false
+	positions := []string{}
 	for len(args) > 0 {
 		value := args[0]
 		args = args[1:]
 		if value == "--all" {
 			all = true
+		}
+		if value == "--multiple" {
+			multiple = true
+		}
+		if strings.HasPrefix(value, "--repo=") {
+			remote = strings.TrimPrefix(value, "--repo=")
 		}
 		if contains([]string{"--depth", "--filter", "--branch", "-b", "--reference", "--reference-if-able", "--shallow-since", "--shallow-exclude", "--upload-pack", "--receive-pack", "--repo"}, value) {
 			if len(args) == 0 {
@@ -63,9 +71,11 @@ func (a *app) checkGit(args []string) error {
 			continue
 		}
 		if !strings.HasPrefix(value, "-") {
-			remote = value
-			break
+			positions = append(positions, value)
 		}
+	}
+	if remote == "" && len(positions) > 0 {
+		remote = positions[0]
 	}
 	remotes := []string{}
 	if command == "clone" || command == "ls-remote" && remote != "" {
@@ -76,26 +86,47 @@ func (a *app) checkGit(args []string) error {
 			return err
 		}
 		remotes = strings.Fields(list)
+	} else if multiple && command == "fetch" {
+		remotes = positions
 	} else {
 		if remote == "" {
-			remote = "origin"
+			branch, _ := a.gitAt(dir, "branch", "--show-current")
+			keys := []string{"branch." + branch + ".remote"}
+			if command == "push" {
+				keys = append([]string{"branch." + branch + ".pushRemote", "remote.pushDefault"}, keys...)
+			}
+			for _, key := range keys {
+				if value, e := a.gitAt(dir, "config", key); e == nil && value != "" {
+					remote = value
+					break
+				}
+			}
+			if remote == "" {
+				remote = "origin"
+			}
 		}
 		remotes = append(remotes, remote)
 	}
 	for _, remote := range remotes {
-		address := remote
-		if value, e := a.gitAt(dir, "config", "remote."+remote+".url"); e == nil {
-			address = value
+		addresses := []string{remote}
+		options := []string{"remote", "get-url", "--all"}
+		if command == "push" {
+			options = append(options, "--push")
 		}
-		repository := repositoryName(address)
-		if repository == "" {
-			if strings.HasPrefix(address, "/") || strings.HasPrefix(address, "./") || strings.HasPrefix(address, "../") || strings.HasPrefix(address, "file://") {
-				continue
+		if value, e := a.gitAt(dir, append(options, remote)...); e == nil {
+			addresses = strings.Split(value, "\n")
+		}
+		for _, address := range addresses {
+			repository := repositoryName(address)
+			if repository == "" {
+				if strings.HasPrefix(address, "/") || strings.HasPrefix(address, "./") || strings.HasPrefix(address, "../") || strings.HasPrefix(address, "file://") {
+					continue
+				}
+				return errors.New("Git remote is outside the session repository selection")
 			}
-			return errors.New("Git remote is outside the session repository selection")
-		}
-		if a.session == nil || !a.session.allows(repository) {
-			return errors.New("Git repository is outside the session selection; start or edit a Commander session")
+			if a.session == nil || !a.session.allows(repository) {
+				return errors.New("Git repository is outside the session selection; start or edit a Commander session")
+			}
 		}
 	}
 	return nil

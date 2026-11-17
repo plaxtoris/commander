@@ -126,6 +126,11 @@ func (a *app) up(project string) error {
 	// Lifecycle commands receive Git credentials from the first start, too.
 	helper := "!/run/commander/commander bridge-client git " + id
 	gitConfig := map[string]string{"GIT_CONFIG_COUNT": "4", "GIT_CONFIG_KEY_0": "credential.https://github.com.helper", "GIT_CONFIG_VALUE_0": "", "GIT_CONFIG_KEY_1": "credential.https://github.com.helper", "GIT_CONFIG_VALUE_1": helper, "GIT_CONFIG_KEY_2": "credential.useHttpPath", "GIT_CONFIG_VALUE_2": "true", "GIT_CONFIG_KEY_3": "safe.directory", "GIT_CONFIG_VALUE_3": "*"}
+	gitConfig["GIT_CONFIG_COUNT"] = "6"
+	gitConfig["GIT_CONFIG_KEY_4"] = "url.https://github.com/.insteadOf"
+	gitConfig["GIT_CONFIG_VALUE_4"] = "git@github.com:"
+	gitConfig["GIT_CONFIG_KEY_5"] = "url.https://github.com/.insteadOf"
+	gitConfig["GIT_CONFIG_VALUE_5"] = "ssh://git@github.com/"
 	for key, value := range gitConfig {
 		args = append(args, "--remote-env", key+"="+value)
 	}
@@ -147,6 +152,8 @@ func (a *app) up(project string) error {
 git config --system --replace-all credential.https://github.com.helper ''
 git config --system --add credential.https://github.com.helper ` + quote(helper) + `
 git config --system credential.useHttpPath true
+git config --system --replace-all url.https://github.com/.insteadOf 'git@github.com:'
+git config --system --add url.https://github.com/.insteadOf 'ssh://git@github.com/'
 git config --system --add safe.directory ` + quote(result.Workspace) + "\n"
 	for _, key := range []string{"user.name", "user.email"} {
 		value, err := a.gitAt(project, "config", key)

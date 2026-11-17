@@ -403,7 +403,15 @@ func (a *app) environment(tool string, extra map[string]string) []string {
 		env["GIT_CONFIG_VALUE_"+strconv.Itoa(count-1)] = "!" + quote(filepath.Join(a.root, "commander")) + " --session " + quote(a.session.ID) + selector + " git-credential"
 		env["GIT_CONFIG_KEY_"+strconv.Itoa(count)] = "credential.useHttpPath"
 		env["GIT_CONFIG_VALUE_"+strconv.Itoa(count)] = "true"
-		env["GIT_CONFIG_COUNT"] = strconv.Itoa(count + 1)
+		count++
+		// Existing SSH remotes use the same selected HTTPS account, without
+		// borrowing an unrelated SSH agent or changing the repository config.
+		for _, prefix := range []string{"git@github.com:", "ssh://git@github.com/"} {
+			env["GIT_CONFIG_KEY_"+strconv.Itoa(count)] = "url.https://github.com/.insteadOf"
+			env["GIT_CONFIG_VALUE_"+strconv.Itoa(count)] = prefix
+			count++
+		}
+		env["GIT_CONFIG_COUNT"] = strconv.Itoa(count)
 	}
 	if python, err := a.python(); err == nil {
 		env["CLOUDSDK_PYTHON"] = python

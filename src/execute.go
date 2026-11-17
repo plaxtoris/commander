@@ -113,8 +113,14 @@ func (a *app) checkGitHub(args []string, m member) error {
 		return errors.New("manage logins in Commander Accounts, outside a session")
 	}
 	repo := argument(args, "--repo", "-R")
-	if owner := argument(args, "--org", "--owner"); owner != "" && !contains(a.session.Repositories, owner+"/*") {
-		return errors.New("owner is outside the session selection")
+	if owner := argument(args, "--org", "--owner"); owner != "" {
+		allowed := false
+		for _, scope := range a.session.Repositories {
+			allowed = allowed || strings.EqualFold(scope, owner+"/*")
+		}
+		if !allowed {
+			return errors.New("owner is outside the session selection")
+		}
 	}
 	if !contains([]string{"api", "repo", "pr", "issue", "run", "workflow", "release", "secret", "variable", "label", "cache", "ruleset"}, args[0]) {
 		return errors.New("use a repository command or explicit repository REST endpoint within this session")
