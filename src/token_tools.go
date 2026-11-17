@@ -286,7 +286,7 @@ func (a *app) tokenAccounts(service string) ([]account, error) {
 	sort.Strings(keys)
 	rows := make([]account, 0, len(keys))
 	for _, key := range keys {
-		rows = append(rows, account{member: records[key].member(service), State: "Saved"})
+		rows = append(rows, account{member: records[key].member(service), State: "Ready"})
 	}
 	return rows, nil
 }

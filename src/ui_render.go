@@ -106,10 +106,8 @@ func table(rows [][]string) []string {
 
 func statusLabel(state string) (string, string) {
 	switch state {
-	case "Active":
-		return "● active", "32"
-	case "Saved":
-		return "○ saved", "32"
+	case "Ready":
+		return "✓ ready", "32"
 	case "":
 		return "—", "2"
 	default:

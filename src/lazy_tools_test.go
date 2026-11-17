@@ -229,7 +229,7 @@ func TestImportedSessionPreparationAndRecovery(t *testing.T) {
 		}
 	}
 	out := a.out.(*bytes.Buffer).String()
-	if !strings.Contains(out, "alice") || !strings.Contains(out, "● active") || strings.Contains(out, "private daemon diagnostics") {
+	if !strings.Contains(out, "alice") || !strings.Contains(out, "✓ ready") || strings.Contains(out, "private daemon diagnostics") {
 		t.Fatal("incorrect final status", out)
 	}
 }

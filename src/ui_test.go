@@ -29,7 +29,7 @@ func TestOverviewShowsOnlySelectedAccounts(t *testing.T) {
 		t.Fatal(err)
 	}
 	out := a.out.(*bytes.Buffer).String()
-	for _, want := range []string{"session: work", "github\n    selected  github.com  ○ saved"} {
+	for _, want := range []string{"session: work", "github\n    selected  github.com  ✓ ready"} {
 		if !strings.Contains(out, want) {
 			t.Fatalf("missing %q: %s", want, out)
 		}

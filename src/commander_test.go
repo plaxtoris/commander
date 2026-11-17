@@ -213,7 +213,7 @@ func TestAccountsEveryProviderAndNoSecretOutput(t *testing.T) {
 			continue
 		} // Built-in providers have HTTP fixture tests.
 		rows, err := a.accounts(service)
-		if err != nil || len(rows) != 1 || rows[0].State != "Active" {
+		if err != nil || len(rows) != 1 || rows[0].State != "Ready" {
 			t.Fatal(service, rows, err)
 		}
 		if strings.Contains(string(encode(rows)), "hidden") {

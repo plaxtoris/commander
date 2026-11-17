@@ -195,7 +195,7 @@ func (a *app) accounts(service string) ([]account, error) {
 	for _, r := range records {
 		get := func(key string) string { s, _ := r[key].(string); return clean(s) }
 		flag := func(key string) bool { b, _ := r[key].(bool); return b }
-		row := account{member: member{Service: service}, State: "Saved"}
+		row := account{member: member{Service: service}, State: "Ready"}
 		switch service {
 		case "github":
 			if get("login") == "" {
@@ -231,9 +231,6 @@ func (a *app) accounts(service string) ([]account, error) {
 			row.Key = jsonKey(get("account"))
 			row.Account = get("account")
 			row.Active = get("status") == "ACTIVE"
-		}
-		if row.Active && row.State == "Saved" {
-			row.State = "Active"
 		}
 		if idx, ok := indices[row.id()]; ok {
 			if row.Active {
@@ -301,7 +298,7 @@ func (a *app) resolve(members []member) []account {
 	return result
 }
 
-func ready(state string) bool { return state == "Active" || state == "Saved" }
+func ready(state string) bool { return state == "Ready" }
 
 func quote(s string) string { return "'" + strings.ReplaceAll(s, "'", "'\"'\"'") + "'" }
 

@@ -94,7 +94,12 @@ jobs:
           if gh api "repos/$GH_REPO/git/ref/tags/latest" >/dev/null 2>&1; then
             gh api --method DELETE "repos/$GH_REPO/git/refs/tags/latest"
           fi
-          gh release create latest commander SHA256SUMS --target "$GITHUB_SHA" --title latest --latest --notes-file "$RUNNER_TEMP/release-notes"
+          # Deleted tags can take a moment to disappear on GitHub.
+          for attempt in 1 2 3 4 5; do
+            gh release create latest commander SHA256SUMS --target "$GITHUB_SHA" --title latest --latest --notes-file "$RUNNER_TEMP/release-notes" && break
+            test "$attempt" -lt 5
+            sleep 5
+          done
           test "$(gh release list --json tagName --jq 'length')" = 1
           test "$(gh api "repos/$GH_REPO/git/ref/tags/latest" --jq .object.sha)" = "$GITHUB_SHA"
           test "$(gh release view latest --json assets --jq '[.assets[].name] | sort | join(",")')" = SHA256SUMS,commander
