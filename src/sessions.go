@@ -12,7 +12,6 @@ import (
 	"regexp"
 	"sort"
 	"strings"
-	"syscall"
 )
 
 // Sessions are named account and repository selections without credentials.
@@ -202,7 +201,7 @@ func (a *app) checkName(name, id string) error {
 }
 
 func (a *app) newSession(name string, accounts []member, repos []string) (session, error) {
-	unlock, err := a.lock("sessions")
+	unlock, err := a.waitLock("sessions")
 	if err != nil {
 		return session{}, err
 	}
@@ -227,21 +226,29 @@ func newSessionID() (string, error) {
 	return hex.EncodeToString(b), err
 }
 
-func (a *app) renameSession(s session, name string) error {
-	unlock, err := a.lock("sessions")
+// UpdateSession changes the current state of a session under the sessions
+// lock, so concurrent renames and edits never overwrite each other.
+func (a *app) updateSession(id string, change func(*session) error) error {
+	unlock, err := a.waitLock("sessions")
 	if err != nil {
 		return err
 	}
 	defer unlock()
-	if err = a.checkName(name, s.ID); err != nil {
-		return err
-	}
-	current, err := a.readSession(s.ID)
+	s, err := a.readSession(id)
 	if err != nil {
 		return err
 	}
-	current.Name = name
-	return a.saveSession(current)
+	if err = change(&s); err != nil {
+		return err
+	}
+	return a.saveSession(s)
+}
+
+func (a *app) renameSession(s session, name string) error {
+	return a.updateSession(s.ID, func(s *session) error {
+		s.Name = name
+		return a.checkName(name, s.ID)
+	})
 }
 
 // Deleting waits for no command, keeps unfinished tasks and removes the
@@ -371,7 +378,10 @@ func (a *app) sessionCommand(args []string) error {
 		if err = a.selectionFlags(&s, args[2:]); err != nil {
 			return err
 		}
-		return a.saveSession(s)
+		return a.updateSession(s.ID, func(current *session) error {
+			current.Accounts, current.Repositories = s.Accounts, s.Repositories
+			return nil
+		})
 	case "rename":
 		return a.renameSession(s, args[2])
 	case "delete":
@@ -418,25 +428,6 @@ func (a *app) sessionLock(id string, shared, wait bool) (func(), error) {
 		return nil, err
 	}
 	return unlock, nil
-}
-
-func fileLock(path string, shared, wait bool) (func(), error) {
-	f, err := os.OpenFile(path, os.O_CREATE|os.O_RDWR, 0600)
-	if err != nil {
-		return nil, err
-	}
-	mode := syscall.LOCK_EX
-	if shared {
-		mode = syscall.LOCK_SH
-	}
-	if !wait {
-		mode |= syscall.LOCK_NB
-	}
-	if err = syscall.Flock(int(f.Fd()), mode); err != nil {
-		f.Close()
-		return nil, err
-	}
-	return func() { syscall.Flock(int(f.Fd()), syscall.LOCK_UN); f.Close() }, nil
 }
 
 // Logins lists the connected accounts of used services. A failed service keeps

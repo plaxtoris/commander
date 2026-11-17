@@ -400,6 +400,9 @@ type choice struct {
 }
 
 func (a *app) checklist(title string, items []choice) ([]choice, error) {
+	if len(items) == 0 {
+		return nil, errors.New("nothing to choose")
+	}
 	items = append([]choice(nil), items...)
 	labels := 0
 	for _, item := range items {

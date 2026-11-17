@@ -113,13 +113,10 @@ func (a *app) editSession(s session) error {
 	if err != nil {
 		return err
 	}
-	// Another command may have renamed the session meanwhile.
-	current, err := a.readSession(s.ID)
-	if err != nil {
-		return err
-	}
-	current.Accounts, current.Repositories = accounts, repos
-	return a.saveSession(current)
+	return a.updateSession(s.ID, func(current *session) error {
+		current.Accounts, current.Repositories = accounts, repos
+		return nil
+	})
 }
 
 func (a *app) loading(title string) {
@@ -425,11 +422,12 @@ func (a *app) removeLogin(r account) error {
 		return err
 	}
 	for _, s := range all {
-		if next := without(s.Accounts, match); len(next) != len(s.Accounts) {
-			s.Accounts = next
-			if err = a.saveSession(s); err != nil {
-				return err
-			}
+		err = a.updateSession(s.ID, func(current *session) error {
+			current.Accounts = without(current.Accounts, match)
+			return nil
+		})
+		if err != nil {
+			return err
 		}
 	}
 	return nil

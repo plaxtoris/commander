@@ -30,11 +30,12 @@ func (a *app) memory(args []string) error {
 		if err = validateMemory(next); err != nil {
 			return err
 		}
+		next = normalizeMemory(next)
 	}
 	if err := a.ensure(); err != nil {
 		return err
 	}
-	unlock, err := a.lock("memory")
+	unlock, err := a.waitLock("memory")
 	if err != nil {
 		return err
 	}
@@ -91,4 +92,22 @@ func validateMemory(data []byte) error {
 		}
 	}
 	return nil
+}
+
+// Saved memory has one "* " bullet per line without blank lines or exact
+// duplicates, whatever layout the writer used.
+func normalizeMemory(data []byte) []byte {
+	seen := map[string]bool{}
+	var out strings.Builder
+	for _, line := range strings.Split(strings.ReplaceAll(string(data), "\r\n", "\n"), "\n") {
+		line = strings.TrimSpace(line)
+		if strings.HasPrefix(line, "- ") {
+			line = "* " + line[2:]
+		}
+		if line != "" && !seen[line] {
+			seen[line] = true
+			out.WriteString(line + "\n")
+		}
+	}
+	return []byte(out.String())
 }

@@ -330,18 +330,38 @@ func atomicWrite(path string, data []byte, mode os.FileMode) error {
 	return os.Rename(f.Name(), path)
 }
 
-func (a *app) lock(name string) (func(), error) {
+// Installation locks live in .secrets. Long operations fail fast while another
+// one runs; short state changes such as sessions and memory wait their turn.
+func (a *app) lock(name string) (func(), error)     { return a.lockFile(name, false) }
+func (a *app) waitLock(name string) (func(), error) { return a.lockFile(name, true) }
+
+func (a *app) lockFile(name string, wait bool) (func(), error) {
 	path := filepath.Join(a.root, ".secrets", "."+name+".lock")
 	if err := noSymlinks(a.root, path); err != nil {
 		return nil, err
 	}
+	unlock, err := fileLock(path, false, wait)
+	if err != nil {
+		return nil, errors.New("another Commander operation is using this installation; finish it and retry")
+	}
+	return unlock, nil
+}
+
+func fileLock(path string, shared, wait bool) (func(), error) {
 	f, err := os.OpenFile(path, os.O_CREATE|os.O_RDWR, 0600)
 	if err != nil {
 		return nil, err
 	}
-	if err = syscall.Flock(int(f.Fd()), syscall.LOCK_EX|syscall.LOCK_NB); err != nil {
+	mode := syscall.LOCK_EX
+	if shared {
+		mode = syscall.LOCK_SH
+	}
+	if !wait {
+		mode |= syscall.LOCK_NB
+	}
+	if err = syscall.Flock(int(f.Fd()), mode); err != nil {
 		f.Close()
-		return nil, errors.New("another Commander operation is using this installation; finish it and retry")
+		return nil, err
 	}
 	return func() { syscall.Flock(int(f.Fd()), syscall.LOCK_UN); f.Close() }, nil
 }

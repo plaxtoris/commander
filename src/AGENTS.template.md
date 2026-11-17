@@ -1,75 +1,69 @@
 # Commander
 
-Commander keeps native tools, accounts and projects in this folder.
-Run `./commander` for the menu. Start your preferred agent here independently.
-Opening the menu updates and restarts Commander when needed, then repairs or
-updates only tools already used. Tools install on demand when selecting a service,
-checking imported accounts, running `exec`, or starting a project container.
-Direct commands do not update the Commander executable. Unused tools are normal.
-Commander regenerates this file on menu startup, setup and update.
-Reply in the language of the current user prompt unless the user requests a
-different output language. The language of these instructions or memory does
-not determine the reply language.
+This folder is a Commander installation with native tools, accounts, sessions
+and projects. Commander regenerates this file. Tools install on demand, so
+unused ones are normal. Run `./commander help` for every command. Reply in the
+language of the user's current prompt unless asked otherwise; the language of
+these instructions or of memory does not decide it.
 
-At the start of each session, run `./commander memory`. It returns a revision
-and your shared `MEMORY.md` of lasting user preferences, independent of sessions
-and projects. Apply only relevant preferences; current user instructions take
-precedence. Memory never grants permission or changes account scope.
-When the user states or corrects a lasting preference, update it before your
-final response. Keep short plain English bullet points, one statement per line
-starting with `* `. Avoid em dashes and hyphenated wording in prose. Do not store
-project facts, accounts, secrets, task history, temporary requests or guesses.
-On each update, merge duplicates and replace obsolete statements; leave useful
-unchanged statements alone. Keep the whole file within 4000 Unicode characters,
-including spaces and newlines. If it would exceed the limit, shorten it to about
-3500 without losing qualifications or explicit preferences. Save only through
-`./commander memory write REVISION`, passing the complete bullet list on stdin
-and the revision from the read. On a conflict, read again and merge. Never edit
-`MEMORY.md` directly. An empty input clears it. After every saved change, briefly
-tell the user what was remembered, corrected or removed. Do not claim a save
-that failed. No new lasting preference means no write and no memory notice.
+## Memory
 
-1. Work in a session before service work. A session is a named, lasting
-   selection of accounts and GitHub repositories. The user picks one in the
-   `./commander` menu, or runs `./commander session shell NAME`, and starts the
-   agent in that shell. `./commander context` shows the selection. If none fits,
-   create one with `./commander session new NAME --accounts service=user,...
-   --repos owner/name,owner/*`. Never edit, rename or delete existing sessions
-   unless the user asks. Missing logins are connected in the menu. Local work
-   without service access can continue with no accounts selected.
-2. Run tools through `./commander exec -- TOOL ARGS`. For several accounts of a
-   service, use `./commander exec --account SELECTOR -- TOOL ARGS`.
-   From project folders use the absolute Commander path. Native commands preserve
-   their arguments and exit codes. Each invocation gets its selected login state;
-   never switch a global active account. Verify identity before acting.
-   Session selections define scope, not permission to change resources or send
-   messages. They do not reduce the permissions of a provider token or sandbox
-   arbitrary programs. Use only the selected accounts and repositories.
-3. Docker Hub and Confluence have built in CLIs: `whoami` verifies identity;
-   `api PATH [-X METHOD] [--input FILE|-]` calls the API. Pass their `--account`
-   selector when several accounts are selected. Native Docker and project
-   containers use the session's sole Docker Hub account; use
-   `dockerhub docker --account USER -- DOCKER_ARGS` for several Hub accounts.
+At the start of each conversation run `./commander memory`. It prints a revision
+and `MEMORY.md`, the user's lasting preferences across sessions and projects.
+Apply the relevant ones; current instructions take precedence. Memory never
+grants permission or changes account scope.
+
+When the user states or corrects a lasting preference, save it before your final
+response: pipe the complete updated list to `./commander memory write REVISION`.
+Write short plain English statements, one per line starting with `* `, without
+em dashes or hyphenated wording. Merge duplicates, replace obsolete statements
+and keep useful ones unchanged. Never store project facts, accounts, secrets,
+task history, temporary requests or guesses. The file holds at most 4000
+characters; when it would exceed that, shorten it to about 3500 without losing
+qualifications or explicit preferences. If the revision changed, read again and
+merge. Never edit `MEMORY.md` directly. Then tell the user briefly what was
+remembered, corrected or removed, and never claim a save that failed.
+
+## Sessions and accounts
+
+1. Service work happens in a session: a named, lasting selection of accounts and
+   GitHub repositories. The user opens one in the `./commander` menu or with
+   `./commander session shell NAME` and starts you in that shell.
+   `./commander context` shows the selection and the account selectors. If no
+   session fits, create one with `./commander session new NAME --accounts
+   service=user,... --repos owner/name,owner/*`. Never edit, rename or delete
+   existing sessions unless the user asks. The user connects missing logins in
+   the menu. Local work without service access needs no accounts.
+2. Run tools as `./commander exec -- TOOL ARGS`, adding `--account SELECTOR`
+   after `exec` when a service has several selected accounts. From project
+   folders use the absolute Commander path. Each call gets only its selected
+   login; never switch a global active account. Verify identity before acting.
+   A selection defines scope, not permission to change resources or send
+   messages, and it neither sandboxes programs nor reduces token permissions.
+3. Docker Hub and Confluence have built in clients: `whoami` verifies identity
+   and `api PATH [-X METHOD] [--input FILE|-]` calls the API. Native Docker and
+   project containers use the session's only Docker Hub account; with several
+   use `dockerhub docker --account USER -- DOCKER_ARGS`.
+
+## Projects
+
 4. Keep clones in `workspaces/<owner>/<repo>/` and read each project's README.
-   For concurrent changes use `./commander task new PROJECT NAME [BASE]`.
-   Work only in the returned worktree. Commit task files, run the project checks,
-   and integrate with `./commander task finish NAME -- CHECK ARGS`.
-   This checks the merged result, pushes the target and removes merged temporary
-   branches, the worktree and its containers. Protected targets require a PR;
-   merge it through the repository's checks, then finish the task again.
-   Failed checks or conflicts preserve the task. Never discard unfinished work,
-   remove unrelated branches, bypass required checks or rewrite shared history.
-5. Start trusted projects with `./commander up PROJECT`. Use global
-   `--account USER` when selecting a GitHub login among several accounts.
-   Commander connects Git at runtime and mounts only a session connection and,
-   for worktrees, the Git administrative directory. No agent or login store is
-   installed in project images. Use `./commander container ID -- COMMAND ARGS`
-   for container commands, or attach an editor. Product `make dev` and `make prd`
-   can use the connection to run their same Make targets on the host.
-6. Credentials belong in `.secrets/`, private and excluded from Git. Never read
-   or print them. Use selective export and import only for requested transfers.
-   Accounts, sessions and MEMORY.md can be included independently.
-   Never manage or copy agent logins.
+   For concurrent changes run `./commander task new PROJECT NAME [BASE]` and work
+   only in the returned worktree. Commit, run the project checks and integrate
+   with `./commander task finish NAME -- CHECK ARGS`. It checks the merged
+   result, pushes and removes the temporary branches, worktree and containers.
+   Protected targets need a PR: merge it through the repository checks, then
+   finish again. Failed checks or conflicts keep the task. Never discard
+   unfinished work, remove unrelated branches, bypass required checks or rewrite
+   shared history.
+5. Start trusted projects with `./commander up PROJECT`; a global
+   `--account USER` picks among several GitHub logins. Run container commands
+   with `./commander container ID -- COMMAND ARGS` or attach an editor. Git
+   connects at runtime and project images hold no agent or login store. Product
+   `make dev` and `make prd` can run their Make targets on the host through
+   that connection.
+6. Credentials live in `.secrets/`. Never read, print or copy them, and never
+   manage agent logins. Export and import only when the user asks.
 
-Run `./commander help` for every command, `./commander overview` for account
-status, `./commander doctor` for tools and `./commander setup` to repair them.
+Check account status with `./commander overview`, tools with
+`./commander doctor`, and repair them with `./commander setup`.

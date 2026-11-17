@@ -97,6 +97,13 @@ func TestMemoryLifecycle(t *testing.T) {
 	}
 }
 
+func TestMemoryNormalization(t *testing.T) {
+	got := string(normalizeMemory([]byte("* One.\r\n\r\n- Two.\r\n  * One.  \n")))
+	if got != "* One.\n* Two.\n" {
+		t.Fatalf("normalized memory: %q", got)
+	}
+}
+
 func TestMemoryValidationPreservesPreviousContent(t *testing.T) {
 	for _, tc := range []struct {
 		name  string
@@ -107,6 +114,7 @@ func TestMemoryValidationPreservesPreviousContent(t *testing.T) {
 		{"exact ASCII limit", []byte("* " + strings.Repeat("a", 3997) + "\n"), true},
 		{"exact Unicode limit", []byte("* " + strings.Repeat("😀", 3997) + "\n"), true},
 		{"CRLF bullets", []byte("* One.\r\n\r\n- Two.\r\n"), true},
+		{"duplicates", []byte("* One.\n* One. \n- One.\n"), true},
 		{"one character over", []byte("* " + strings.Repeat("é", 3998) + "\n"), false},
 		{"oversized input", []byte("* " + strings.Repeat("a", 100000)), false},
 		{"invalid UTF8", []byte{'*', ' ', 0xff}, false},
@@ -129,7 +137,7 @@ func TestMemoryValidationPreservesPreviousContent(t *testing.T) {
 			}
 			want := before
 			if tc.valid {
-				want = tc.data
+				want = normalizeMemory(tc.data)
 			}
 			after, err := os.ReadFile(path)
 			if err != nil || !bytes.Equal(after, want) {
@@ -137,7 +145,7 @@ func TestMemoryValidationPreservesPreviousContent(t *testing.T) {
 			}
 			if tc.valid {
 				out, err := memoryCommand(t, a, nil)
-				if err != nil || !strings.Contains(out, fmt.Sprintf("characters: %d/4000", utf8.RuneCount(tc.data))) {
+				if err != nil || !strings.Contains(out, fmt.Sprintf("characters: %d/4000", utf8.RuneCount(want))) {
 					t.Fatal("incorrect Unicode count", out, err)
 				}
 			}

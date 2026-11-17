@@ -120,25 +120,8 @@ func (a *app) selectedArchive(accounts []member, sessions []session, memory bool
 }
 
 func mergeMemory(current, incoming string) (string, error) {
-	seen := map[string]bool{}
-	lines := []string{}
-	for _, text := range []string{current, incoming} {
-		for _, line := range strings.Split(text, "\n") {
-			if strings.TrimSpace(line) == "" {
-				continue
-			}
-			key := strings.TrimSpace(line)
-			if !seen[key] {
-				seen[key] = true
-				lines = append(lines, line)
-			}
-		}
-	}
-	out := strings.Join(lines, "\n")
-	if out != "" {
-		out += "\n"
-	}
-	return out, validateMemory([]byte(out))
+	merged := normalizeMemory([]byte(current + "\n" + incoming))
+	return string(merged), validateMemory(merged)
 }
 
 func (a *app) importSelected(payload profileArchive, selection importSelection) error {
@@ -451,12 +434,17 @@ func (a *app) importArchive(path string) (string, error) {
 	if len(selection.Accounts) == 0 && len(selection.Sessions) == 0 && selection.Memory == "keep" {
 		return "", errors.New("nothing selected")
 	}
-	for _, name := range []string{"native", "sessions", "memory"} {
-		unlock, err := a.lock(name)
+	unlock, err := a.lock("native")
+	if err != nil {
+		return "", err
+	}
+	defer unlock()
+	for _, name := range []string{"sessions", "memory"} {
+		release, err := a.waitLock(name)
 		if err != nil {
 			return "", err
 		}
-		defer unlock()
+		defer release()
 	}
 	if err = a.importSelected(p, selection); err != nil {
 		return "", err

@@ -62,8 +62,11 @@ func (a *app) selectedMember(service string, args []string) (member, error) {
 			selected = append(selected, m)
 		}
 	}
+	if len(selected) == 0 && selector == "" {
+		return member{}, fmt.Errorf("session %s has no %s account; add one with commander session edit %s", a.session.Name, serviceName(service), quote(a.session.Name))
+	}
 	if len(selected) != 1 {
-		return member{}, fmt.Errorf("select exactly one %s account with exec --account; use commander context", service)
+		return member{}, fmt.Errorf("select exactly one %s account with exec --account; use commander context", serviceName(service))
 	}
 	return selected[0], nil
 }

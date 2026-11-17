@@ -2,10 +2,12 @@ package main
 
 import (
 	"bytes"
+	"fmt"
 	"os"
 	"path/filepath"
 	"reflect"
 	"strings"
+	"sync"
 	"testing"
 )
 
@@ -260,5 +262,37 @@ func TestInteractiveRepositoriesFromOrganizations(t *testing.T) {
 	}
 	if s, err = a.readSession(s.ID); err != nil || !reflect.DeepEqual(s.Repositories, []string{"acme/*"}) {
 		t.Fatal("repositories not saved", s.Repositories, err)
+	}
+}
+
+func TestConcurrentSessionChangesStayConsistent(t *testing.T) {
+	a := testApp(t)
+	s := addSession(t, a, "shared")
+	var wg sync.WaitGroup
+	created := make(chan error, 8)
+	for i := 0; i < 8; i++ {
+		wg.Add(2)
+		go func() { defer wg.Done(); _, err := a.newSession("same", nil, nil); created <- err }()
+		go func(i int) {
+			defer wg.Done()
+			a.updateSession(s.ID, func(s *session) error {
+				s.Repositories = append(s.Repositories, fmt.Sprintf("owner%d/*", i))
+				return nil
+			})
+		}(i)
+	}
+	wg.Wait()
+	close(created)
+	successes := 0
+	for err := range created {
+		if err == nil {
+			successes++
+		}
+	}
+	if successes != 1 {
+		t.Fatal("created duplicate or no sessions", successes)
+	}
+	if s, err := a.readSession(s.ID); err != nil || len(s.Repositories) != 8 {
+		t.Fatal("lost concurrent updates", s.Repositories, err)
 	}
 }
