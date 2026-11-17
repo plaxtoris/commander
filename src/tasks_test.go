@@ -142,3 +142,65 @@ func TestTaskFailurePreservesWork(t *testing.T) {
 		t.Fatal("lost unfinished work", err)
 	}
 }
+
+func TestInterruptedTaskCreationCanResume(t *testing.T) {
+	a, project := taskFixture(t)
+	a = taskSession(t, a, "work")
+	task, err := a.newTask(project, "change", "main")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err = a.gitAt(project, "worktree", "remove", task.Path); err != nil {
+		t.Fatal(err)
+	}
+	resumed, err := a.newTask(project, "change", "main")
+	if err != nil || resumed != task {
+		t.Fatal(resumed, err)
+	}
+	if err = a.finishTask("change", []string{"true"}); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestInterruptedIntegratedCleanupCanResume(t *testing.T) {
+	for _, removeBranch := range []bool{false, true} {
+		t.Run(map[bool]string{false: "worktree removed", true: "branch removed"}[removeBranch], func(t *testing.T) {
+			a, project := taskFixture(t)
+			a = taskSession(t, a, "work")
+			task, err := a.newTask(project, "change", "main")
+			if err != nil {
+				t.Fatal(err)
+			}
+			taskCommit(t, a, task, "change.txt")
+			if _, err = a.gitAt(task.Path, "push", "origin", "HEAD:main"); err != nil {
+				t.Fatal(err)
+			}
+			task.Integrated, err = a.gitAt(task.Path, "rev-parse", "HEAD")
+			if err != nil {
+				t.Fatal(err)
+			}
+			path, _ := a.taskFile(task.Name)
+			if err = atomicWrite(path, encode(task), 0600); err != nil {
+				t.Fatal(err)
+			}
+			if _, err = a.gitAt(project, "worktree", "remove", task.Path); err != nil {
+				t.Fatal(err)
+			}
+			if removeBranch {
+				if _, err = a.gitAt(project, "branch", "-D", task.Branch); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if err = a.finishTask(task.Name, []string{"true"}); err != nil {
+				t.Fatal(err)
+			}
+			if _, err = os.Stat(path); !os.IsNotExist(err) {
+				t.Fatal("metadata remains", err)
+			}
+			branches, err := a.gitAt(project, "branch", "--list", "commander/*")
+			if err != nil || branches != "" {
+				t.Fatal("branch remains", branches, err)
+			}
+		})
+	}
+}

@@ -57,13 +57,15 @@ serialized per repository. `finish` validates the merged result before pushing,
 then verifies the remote target contains the task and removes its temporary
 branches, worktree and containers. Failed checks and conflicts preserve the
 work. Protected branches need a PR: merge through the repository's checks and
-run `finish` again. Never bypass required reviews or discard unrelated changes.
+run `finish` again. Prefer a merge commit so Git can prove integration directly.
+Interrupted creation or cleanup can be resumed by repeating the same command.
+Never bypass required reviews or discard unrelated changes.
 
 ## Project containers
 
 ```bash
 ./commander up zalazium/anox-pro
-./commander container CONTAINER_ID -- make test
+./commander container PROJECT_ID -- make test
 ```
 
 Build Git into the project image. Commander connects Git on first startup,

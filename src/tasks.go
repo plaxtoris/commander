@@ -12,11 +12,12 @@ import (
 )
 
 type task struct {
-	Name    string `json:"name"`
-	Project string `json:"project"`
-	Path    string `json:"path"`
-	Branch  string `json:"branch"`
-	Base    string `json:"base"`
+	Name       string `json:"name"`
+	Project    string `json:"project"`
+	Path       string `json:"path"`
+	Branch     string `json:"branch"`
+	Base       string `json:"base"`
+	Integrated string `json:"integrated,omitempty"`
 }
 
 var taskName = regexp.MustCompile(`^[a-zA-Z0-9][a-zA-Z0-9._-]{0,63}$`)
@@ -158,8 +159,9 @@ func (a *app) newTask(project, name, base string) (task, error) {
 	if err != nil {
 		return t, err
 	}
-	if _, err = os.Lstat(path); !os.IsNotExist(err) {
-		return t, errors.New("task already exists")
+	_, metadataErr := os.Lstat(path)
+	if metadataErr != nil && !os.IsNotExist(metadataErr) {
+		return t, metadataErr
 	}
 	project, err = a.projectPath(project)
 	if err != nil {
@@ -184,21 +186,34 @@ func (a *app) newTask(project, name, base string) (task, error) {
 		return t, err
 	}
 	t = task{Name: name, Project: project, Path: filepath.Join(a.root, "workspaces", ".tasks", a.session.ID, name), Branch: "commander/" + a.session.ID + "/" + name, Base: base}
+	if metadataErr == nil {
+		previous, err := a.readTask(name)
+		if err != nil || previous != t {
+			return task{}, errors.New("task name already belongs to another operation")
+		}
+		if _, err = os.Stat(t.Path); err == nil {
+			return t, nil
+		}
+	}
 	if err = noSymlinks(a.root, t.Path); err != nil {
 		return task{}, err
 	}
 	if err = os.MkdirAll(filepath.Dir(t.Path), 0700); err != nil {
 		return task{}, err
 	}
-	if _, err = a.gitAt(project, "worktree", "add", "-b", t.Branch, t.Path, "refs/remotes/origin/"+base); err != nil {
-		return task{}, err
-	}
 	if err = os.MkdirAll(filepath.Dir(path), 0700); err == nil {
 		err = atomicWrite(path, encode(t), 0600)
 	}
 	if err != nil {
-		a.gitAt(project, "worktree", "remove", t.Path)
-		a.gitAt(project, "branch", "-D", t.Branch)
+		return task{}, err
+	}
+	args := []string{"worktree", "add", "-b", t.Branch, t.Path, "refs/remotes/origin/" + base}
+	if metadataErr == nil {
+		if _, e := a.gitAt(project, "show-ref", "--verify", "--quiet", "refs/heads/"+t.Branch); e == nil {
+			args = []string{"worktree", "add", t.Path, t.Branch}
+		}
+	}
+	if _, err = a.gitAt(project, args...); err != nil {
 		return task{}, err
 	}
 	return t, nil
@@ -221,6 +236,18 @@ func (a *app) finishTask(name string, check []string) error {
 		return err
 	}
 	defer unlock()
+	if t.Integrated != "" {
+		if !regexp.MustCompile(`^[0-9a-f]{40,64}$`).MatchString(t.Integrated) {
+			return errors.New("invalid integrated task revision")
+		}
+		if _, err = a.gitAt(t.Project, "fetch", "origin", t.Base); err != nil {
+			return err
+		}
+		if _, err = a.gitAt(t.Project, "merge-base", "--is-ancestor", t.Integrated, "refs/remotes/origin/"+t.Base); err != nil {
+			return errors.New("remote target no longer contains the integrated task; nothing was removed")
+		}
+		return a.cleanupTask(t)
+	}
 	dirty, err := a.gitAt(t.Path, "status", "--porcelain")
 	if err != nil {
 		return err
@@ -243,11 +270,20 @@ func (a *app) finishTask(name string, check []string) error {
 	if _, already := a.gitAt(t.Project, "merge-base", "--is-ancestor", tip, target); already != nil {
 		// Integration uses a disposable detached worktree. Other sessions keep their
 		// working files and indexes untouched, even while checks run.
-		mergePath, err := os.MkdirTemp(filepath.Dir(t.Path), ".merge-")
-		if err != nil {
+		mergePath := filepath.Join(filepath.Dir(t.Path), ".merge-"+t.Name)
+		if err = noSymlinks(a.root, mergePath); err != nil {
 			return err
 		}
-		os.Remove(mergePath)
+		// Only this task owns this disposable integration checkout. A retry also
+		// clears a checkout left when its previous validation was interrupted.
+		if _, err = os.Stat(mergePath); err == nil {
+			if branch, e := a.gitAt(mergePath, "branch", "--show-current"); e != nil || branch != "" {
+				return errors.New("integration checkout was repurposed; nothing was removed")
+			}
+			if _, err = a.gitAt(t.Project, "worktree", "remove", "--force", mergePath); err != nil {
+				return err
+			}
+		}
 		if _, err = a.gitAt(t.Project, "worktree", "add", "--detach", mergePath, target); err != nil {
 			return err
 		}
@@ -302,7 +338,7 @@ func (a *app) finishTask(name string, check []string) error {
 				return errors.New("remote task branch contains additional work; nothing was deleted")
 			}
 		}
-		if _, err = a.gitAt(t.Project, "push", "origin", "--delete", t.Branch); err != nil {
+		if _, err = a.gitAt(t.Project, "push", "--force-with-lease=refs/heads/"+t.Branch+":"+strings.Fields(remote)[0], "origin", ":refs/heads/"+t.Branch); err != nil {
 			return err
 		}
 	}
@@ -317,16 +353,62 @@ func (a *app) finishTask(name string, check []string) error {
 	if currentTip != tip || dirty != "" {
 		return errors.New("task changed during integration; new work was preserved")
 	}
-	if err = a.removeTaskContainers(t); err != nil {
-		return err
-	}
-	if _, err = a.gitAt(t.Project, "worktree", "remove", "--force", t.Path); err != nil {
-		return err
-	}
-	if _, err = a.gitAt(t.Project, "branch", "-D", t.Branch); err != nil {
-		return err
-	}
+	// Record verified integration before destructive local cleanup. Repeating
+	// finish after an interruption can complete cleanup without the worktree.
+	t.Integrated = tip
 	path, _ := a.taskFile(name)
+	if err = atomicWrite(path, encode(t), 0600); err != nil {
+		return err
+	}
+	return a.cleanupTask(t)
+}
+
+func (a *app) cleanupTask(t task) error {
+	mergePath := filepath.Join(filepath.Dir(t.Path), ".merge-"+t.Name)
+	if err := noSymlinks(a.root, mergePath); err != nil {
+		return err
+	}
+	if _, err := os.Stat(mergePath); err == nil {
+		if branch, e := a.gitAt(mergePath, "branch", "--show-current"); e != nil || branch != "" {
+			return errors.New("integration checkout was repurposed; nothing was removed")
+		}
+		if _, err = a.gitAt(t.Project, "worktree", "remove", "--force", mergePath); err != nil {
+			return err
+		}
+	}
+	if _, err := os.Stat(t.Path); err == nil {
+		tip, e := a.gitAt(t.Path, "rev-parse", "HEAD")
+		dirty, d := a.gitAt(t.Path, "status", "--porcelain")
+		if e != nil || d != nil || tip != t.Integrated || dirty != "" {
+			return errors.New("task changed after integration; new work was preserved")
+		}
+	}
+	if err := a.removeTaskContainers(t); err != nil {
+		return err
+	}
+	worktrees, err := a.gitAt(t.Project, "worktree", "list", "--porcelain")
+	if err != nil {
+		return err
+	}
+	if strings.Contains("\n"+worktrees+"\n", "\nworktree "+t.Path+"\n") {
+		if _, err = a.gitAt(t.Project, "worktree", "remove", "--force", t.Path); err != nil {
+			return err
+		}
+	}
+	branches, err := a.gitAt(t.Project, "branch", "--list", t.Branch)
+	if err != nil {
+		return err
+	}
+	if branches != "" {
+		tip, err := a.gitAt(t.Project, "rev-parse", "refs/heads/"+t.Branch)
+		if err != nil || tip != t.Integrated {
+			return errors.New("task branch changed after integration; branch was preserved")
+		}
+		if _, err = a.gitAt(t.Project, "branch", "-D", t.Branch); err != nil {
+			return err
+		}
+	}
+	path, _ := a.taskFile(t.Name)
 	if err = os.Remove(path); err != nil {
 		return err
 	}
@@ -336,12 +418,12 @@ func (a *app) finishTask(name string, check []string) error {
 	// Keep a clean checkout on its target current, without touching user changes.
 	if current, e := a.gitAt(t.Project, "branch", "--show-current"); e == nil && current == t.Base {
 		if status, e := a.gitAt(t.Project, "status", "--porcelain"); e == nil && status == "" {
-			if _, e = a.gitAt(t.Project, "merge", "--ff-only", target); e != nil {
+			if _, e = a.gitAt(t.Project, "merge", "--ff-only", "refs/remotes/origin/"+t.Base); e != nil {
 				fmt.Fprintln(a.errOut, "remote integration complete; source checkout needs a manual update")
 			}
 		}
 	}
-	fmt.Fprintln(a.out, "integrated and removed task, temporary branches, worktree and containers:", name)
+	fmt.Fprintln(a.out, "integrated and removed task, temporary branches, worktree and containers:", t.Name)
 	return nil
 }
 
