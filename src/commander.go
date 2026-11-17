@@ -117,7 +117,8 @@ Work
   commander task finish NAME -- CHECK      checks, integrates and cleans up
   commander up PROJECT                     builds and connects a trusted devcontainer
   commander container ID -- COMMAND        runs a command in that container
-  dockerhub, confluence                    built in API clients: whoami, api PATH
+  commander exec -- dockerhub whoami       verifies a built in client login
+  commander exec -- confluence api PATH    calls a built in client API
 
 Installation
   commander export [FILE.zip]              exports chosen accounts, sessions, memory
@@ -128,8 +129,10 @@ Installation
   commander doctor                         checks the installation
   commander version                        shows the installed build
 
-Use --session NAME before a command outside its session shell and --account
-SELECTOR before up or task when a session has several GitHub logins.
+PROJECT is OWNER/REPO under workspaces. Outside a session shell put
+--session NAME right after commander; put --account SELECTOR there too for up
+or task when the session has several GitHub logins. Services are github,
+azure, office, hetzner, gcloud, dockerhub and confluence.
 Selections limit what trusted tools use. They grant no permission to act.
 `
 
@@ -182,7 +185,7 @@ func (a *app) command(args []string) error {
 		if len(args) != 1 {
 			return errors.New("usage: commander setup")
 		}
-		return a.setup(false)
+		return a.setup()
 	case "context":
 		if len(args) != 1 {
 			return errors.New("usage: commander context")
@@ -226,7 +229,7 @@ func (a *app) command(args []string) error {
 		if updated {
 			return a.restartCommander([]string{"setup"})
 		}
-		return a.setup(false)
+		return a.setup()
 	case "export", "import":
 		return a.transfer(args)
 	default:
@@ -510,7 +513,7 @@ func (a *app) nativeRun(tool string, args []string, capture bool, extra map[stri
 	if tool == "dockerhub" || tool == "confluence" {
 		return a.tokenRun(tool, args, capture)
 	}
-	if err := a.prepareTool(tool, false); err != nil {
+	if err := a.prepareTool(tool); err != nil {
 		return nil, &toolPreparationError{err}
 	}
 	if tool == "docker" || tool == "docker-compose" || tool == "devcontainer" {

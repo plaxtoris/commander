@@ -54,23 +54,42 @@ func (a *app) parseAccounts(value string) ([]member, error) {
 	if value == "-" || value == "none" {
 		return selected, nil
 	}
-	all, _ := a.logins()
+	parts, names := [][2]string{}, []string{}
 	for _, part := range strings.Split(value, ",") {
 		service, selector, ok := strings.Cut(strings.TrimSpace(part), "=")
 		if !ok {
 			return nil, errors.New("accounts use service=selector, separated by commas; - selects none")
 		}
-		matches := []member{}
+		if !contains(services, service) {
+			return nil, fmt.Errorf("unknown service %s; use %s", quote(service), strings.Join(services, ", "))
+		}
+		parts, names = append(parts, [2]string{service, selector}), append(names, service)
+	}
+	all, failed := a.logins(names...)
+	for _, part := range parts {
+		service, selector := part[0], part[1]
+		matches, refs := []member{}, []string{}
 		for _, m := range all {
-			_, user := m.github()
-			if m.Service == service && (m.selector() == selector || m.Account == selector || user == selector) {
+			if m.Service == service && (m.selector() == selector || m.Account == selector || m.ref() == selector) {
 				matches = append(matches, m.member)
+				ref := quote(m.ref())
+				if m.Context != "" {
+					ref += " (" + m.Context + ")"
+				}
+				refs = append(refs, ref)
 			}
 		}
-		if len(matches) != 1 {
-			return nil, errors.New("account selector is missing or ambiguous: " + part)
+		switch len(matches) {
+		case 0:
+			if failed[service] != "" {
+				return nil, fmt.Errorf("%s logins are unavailable (%s); see commander overview", serviceName(service), strings.ToLower(failed[service]))
+			}
+			return nil, fmt.Errorf("no %s login matches %s; see commander overview", serviceName(service), quote(selector))
+		case 1:
+			selected = append(selected, matches[0])
+		default:
+			return nil, fmt.Errorf("%s=%s matches several logins; use one of %s", service, selector, strings.Join(refs, ", "))
 		}
-		selected = append(selected, matches[0])
 	}
 	return selected, nil
 }
@@ -133,6 +152,8 @@ func (a *app) saveSession(s session) error {
 	}
 	return atomicWrite(filepath.Join(p, "session.json"), encode(s), 0600)
 }
+
+var errNoSession = errors.New("open a session first: commander session shell NAME, or put --session NAME before the command")
 
 // Sessions are listed by name. Unreadable ones, such as an interrupted
 // creation, are skipped so they never block the others.
@@ -265,7 +286,7 @@ func (a *app) deleteSession(s session) error {
 	}
 	unlock, err := a.sessionLock(s.ID, false, false)
 	if err != nil {
-		return errors.New("session " + s.Name + " is still in use; exit its shells first")
+		return errors.New("session " + s.Name + " is still in use; close its shells and running commands first")
 	}
 	defer unlock()
 	if entries, _ := os.ReadDir(filepath.Join(p, "tasks")); len(entries) > 0 {
@@ -442,12 +463,13 @@ func (a *app) sessionLock(id string, shared, wait bool) (func(), error) {
 
 // Logins lists the connected accounts of used services. A failed service keeps
 // a status, so screens can explain why its accounts are missing.
-func (a *app) logins() ([]account, map[string]string) {
+// logins lists connected accounts of the given services, or of all services.
+func (a *app) logins(only ...string) ([]account, map[string]string) {
 	admin := a.admin()
 	rows := []account{}
 	failed := map[string]string{}
 	for _, service := range services {
-		if !tokenService(service) && !a.toolUsed(serviceTools[service]) {
+		if len(only) > 0 && !contains(only, service) || !tokenService(service) && !a.toolUsed(serviceTools[service]) {
 			continue
 		}
 		found, err := admin.accounts(service)

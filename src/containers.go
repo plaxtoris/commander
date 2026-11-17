@@ -13,6 +13,7 @@ import (
 
 var containerID = regexp.MustCompile(`^[a-f0-9]{24}$`)
 var dockerID = regexp.MustCompile(`^[a-f0-9]{12,64}$`)
+var errContainerID = errors.New("unknown container; use the ID that commander up printed in this session")
 
 type containerProject struct {
 	ID        string `json:"id"`
@@ -23,8 +24,11 @@ type containerProject struct {
 }
 
 func (a *app) containerFile(id string) (string, error) {
-	if a.session == nil || !containerID.MatchString(id) {
-		return "", errors.New("invalid container selection")
+	if a.session == nil {
+		return "", errNoSession
+	}
+	if !containerID.MatchString(id) {
+		return "", errContainerID
 	}
 	path := filepath.Join(a.root, ".sessions", a.session.ID, "containers", id+".json")
 	return path, noSymlinks(a.root, path)
@@ -37,6 +41,9 @@ func (a *app) readContainerProject(id string) (containerProject, error) {
 		return project, err
 	}
 	data, err := os.ReadFile(path)
+	if os.IsNotExist(err) {
+		return project, errContainerID
+	}
 	if err != nil {
 		return project, err
 	}
@@ -52,7 +59,7 @@ func (a *app) readContainerProject(id string) (containerProject, error) {
 
 func (a *app) up(project string) error {
 	if a.session == nil {
-		return errors.New("start a session before opening a project: commander session new NAME")
+		return errNoSession
 	}
 	project, err := a.projectPath(project)
 	if err != nil {

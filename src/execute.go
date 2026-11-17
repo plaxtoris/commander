@@ -52,23 +52,33 @@ func (a *app) selectedMember(service string, args []string) (member, error) {
 			selector = argument(args, "--account")
 		}
 	}
+	return a.sessionAccount(service, selector)
+}
+
+// sessionAccount returns the one session account of service that matches
+// selector, or explains how to pick one.
+func (a *app) sessionAccount(service, selector string) (member, error) {
+	if a.session == nil {
+		return member{}, errNoSession
+	}
 	selected := []member{}
 	for _, m := range a.session.Accounts {
 		if m.Service != service {
 			continue
 		}
-		_, user := m.github()
-		if selector == "" || m.selector() == selector || m.Account == selector || user == selector {
+		if selector == "" || m.selector() == selector || m.Account == selector || m.ref() == selector {
 			selected = append(selected, m)
 		}
 	}
-	if len(selected) == 0 && selector == "" {
-		return member{}, fmt.Errorf("session %s has no %s account; add one with commander session edit %s", a.session.Name, serviceName(service), quote(a.session.Name))
+	switch {
+	case len(selected) == 1:
+		return selected[0], nil
+	case len(selected) > 1:
+		return member{}, fmt.Errorf("session %s has several %s accounts; choose one with --account SELECTOR from commander context", a.session.Name, serviceName(service))
+	case selector != "":
+		return member{}, fmt.Errorf("%s account %s is not in session %s; see commander context", serviceName(service), quote(selector), a.session.Name)
 	}
-	if len(selected) != 1 {
-		return member{}, fmt.Errorf("select exactly one %s account with exec --account; use commander context", serviceName(service))
-	}
-	return selected[0], nil
+	return member{}, fmt.Errorf("session %s has no %s account; add one with commander session edit %s", a.session.Name, serviceName(service), quote(a.session.Name))
 }
 
 func repositoryName(value string) string {
@@ -183,8 +193,11 @@ func (a *app) checkGitHub(args []string, m member) error {
 	if repo == "" {
 		repo = a.workingRepository()
 	}
-	if repo == "" || !a.session.allows(repositoryName(repo)) {
-		return errors.New("repository is outside the session selection; set --repo explicitly")
+	if repo == "" {
+		return errors.New("name the repository with --repo OWNER/NAME")
+	}
+	if !a.session.allows(repositoryName(repo)) {
+		return fmt.Errorf("repository %s is outside session %s", quote(repo), a.session.Name)
 	}
 	return nil
 }
@@ -198,7 +211,7 @@ func (a *app) execute(tool string, args []string) error {
 	service := serviceFor(tool)
 	if a.session == nil {
 		if service != "" && !(tool == "gh" && len(args) > 0 && args[0] == "auth") {
-			return errors.New("open a session before service work: commander session shell NAME")
+			return errNoSession
 		}
 		if service != "" {
 			unlock, err := a.lock("native")
@@ -236,7 +249,7 @@ func (a *app) execute(tool string, args []string) error {
 			return err
 		}
 	}
-	if err = a.prepareTool(tool, false); err != nil {
+	if err = a.prepareTool(tool); err != nil {
 		return err
 	}
 	if service == "github" {
@@ -448,7 +461,7 @@ func mergeCredentialState(service string, current, updated object) object {
 }
 
 func (a *app) githubToken(m member) (string, error) {
-	if err := a.prepareTool("gh", false); err != nil {
+	if err := a.prepareTool("gh"); err != nil {
 		return "", err
 	}
 	root, extra, finish, err := a.accountRuntime(m)
@@ -483,7 +496,7 @@ func (a *app) gitCredential(args []string) error {
 
 func (a *app) writeGitCredential(input io.Reader, output io.Writer) error {
 	if a.session == nil {
-		return errors.New("Git credentials require a session")
+		return errNoSession
 	}
 	unlock, err := a.sessionLock(a.session.ID, true, true)
 	if err != nil {

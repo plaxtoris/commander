@@ -118,7 +118,7 @@ func bridgeClient(args []string) int {
 
 func (a *app) bridgeDirectory() (string, error) {
 	if a.session == nil {
-		return "", errors.New("start a session before connecting a container")
+		return "", errNoSession
 	}
 	path := filepath.Join(a.root, ".sessions", a.session.ID, "bridge")
 	return path, noSymlinks(a.root, path)

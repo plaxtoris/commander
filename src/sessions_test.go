@@ -118,6 +118,25 @@ func TestGitHubScopeRejectsOtherRepositories(t *testing.T) {
 	}
 }
 
+func TestAccountSelectionExplainsTheFix(t *testing.T) {
+	a := testApp(t)
+	if _, err := a.sessionAccount("github", ""); err != errNoSession {
+		t.Fatal("missing session not explained", err)
+	}
+	useSession(t, a, "work", ghMember("alice"), ghMember("bob"))
+	if m, err := a.sessionAccount("github", "bob"); err != nil || m.id() != ghMember("bob").id() {
+		t.Fatal("selector did not pick the account", m, err)
+	}
+	for selector, want := range map[string]string{"": "several github accounts", "carol": "'carol' is not in session work"} {
+		if _, err := a.sessionAccount("github", selector); err == nil || !strings.Contains(err.Error(), want) {
+			t.Fatal(selector, err)
+		}
+	}
+	if _, err := a.sessionAccount("hetzner", ""); err == nil || !strings.Contains(err.Error(), "has no hetzner account") {
+		t.Fatal(err)
+	}
+}
+
 func TestRefreshedCredentialDoesNotChangeAnotherAccount(t *testing.T) {
 	current := object{"github.com": object{"user": "other", "oauth_token": "other-token", "users": object{"other": object{"oauth_token": "other-token"}, "selected": object{"oauth_token": "old"}}}}
 	updated := object{"github.com": object{"user": "selected", "oauth_token": "new", "users": object{"selected": object{"oauth_token": "new"}}}}
@@ -197,6 +216,11 @@ func TestSessionNamesRenameAndDelete(t *testing.T) {
 	}
 	if err := a.sessionCommand([]string{"new", "other", "--repos", "acme/*,acme/tool"}); err != nil {
 		t.Fatal(err)
+	}
+	for value, want := range map[string]string{"microsoft 365=me": "unknown service 'microsoft 365'; use github, azure, office", "github=nobody": "no github login matches 'nobody'", "hetzner": "service=selector"} {
+		if err := a.sessionCommand([]string{"new", "third", "--accounts", value}); err == nil || !strings.Contains(err.Error(), want) {
+			t.Fatal(value, err)
+		}
 	}
 	if err := a.sessionCommand([]string{"rename", "Work", "other"}); err == nil {
 		t.Fatal("renamed onto an existing name")

@@ -113,7 +113,7 @@ fi`, quote(log), quote(gate), quote(filepath.Join(bin, "git")), quote(chmod), qu
 				t.Fatal("installer polluted command stdout", a.out)
 			}
 			before, _ := os.ReadFile(log)
-			if err := a.setup(true); err != nil {
+			if err := a.setup(); err != nil {
 				t.Fatal(err)
 			}
 			after, _ := os.ReadFile(log)
@@ -281,7 +281,7 @@ printf 'noisy installer diagnostics\n' >&2
 func TestMicrosoft365DoesNotInstallContainers(t *testing.T) {
 	a := testApp(t)
 	fakeNode(t, a)
-	if err := a.prepareTool("m365", false); err != nil {
+	if err := a.prepareTool("m365"); err != nil {
 		t.Fatal(err)
 	}
 	if !a.packageReady("m365") {
@@ -296,7 +296,7 @@ func TestMicrosoft365DoesNotInstallContainers(t *testing.T) {
 		t.Fatal("installer output leaked")
 	}
 	a.errOut = &bytes.Buffer{}
-	if err := a.setup(false); err != nil || a.errOut.(*bytes.Buffer).Len() != 0 {
+	if err := a.setup(); err != nil || a.errOut.(*bytes.Buffer).Len() != 0 {
 		t.Fatal("ready installation was not quiet", err)
 	}
 }

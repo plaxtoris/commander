@@ -58,7 +58,7 @@ func (a *app) projectPath(project string) (string, error) {
 
 func (a *app) taskFile(name string) (string, error) {
 	if a.session == nil {
-		return "", errors.New("start a session before creating a task")
+		return "", errNoSession
 	}
 	if !taskName.MatchString(name) {
 		return "", errors.New("task names use letters, digits, dots, dashes and underscores")
@@ -92,7 +92,7 @@ func (a *app) readTask(name string) (task, error) {
 
 func (a *app) taskCommand(args []string) error {
 	if a.session == nil {
-		return errors.New("start a session before task work")
+		return errNoSession
 	}
 	if len(args) == 0 {
 		return errors.New("task commands: new PROJECT NAME [BASE], list, finish NAME -- CHECK [ARGS...]")

@@ -145,16 +145,21 @@ func TestSetupOnlyUsedToolsAndResumes(t *testing.T) {
 	}))
 	defer server.Close()
 	a.catalog.Archives["hcloud"] = download{Version: "fixture", URL: server.URL, SHA256: fmt.Sprintf("%x", sha256.Sum256(payload))}
-	if err := a.setup(false); err != nil || requests.Load() != 0 {
+	if err := a.setup(); err != nil || requests.Load() != 0 {
 		t.Fatal("fresh setup downloaded tools", err)
 	}
-	if err := a.prepareTool("hcloud", false); err == nil {
+	if err := a.prepareTool("hcloud"); err == nil {
 		t.Fatal("ignored failed installation")
 	}
-	if err := a.setup(false); err != nil {
-		t.Fatal("did not resume requested tool", err)
+	running, err := fileLock(filepath.Join(a.root, ".secrets", ".native.lock"), true, true)
+	if err != nil {
+		t.Fatal(err)
 	}
-	if err := a.setup(false); err != nil || requests.Load() != 2 {
+	defer running()
+	if err := a.setup(); err != nil {
+		t.Fatal("did not resume requested tool while a session command runs", err)
+	}
+	if err := a.setup(); err != nil || requests.Load() != 2 {
 		t.Fatal("downloaded ready tool", err, requests.Load())
 	}
 	data, err := os.ReadFile(filepath.Join(a.root, "tools", "hcloud", "hcloud"))

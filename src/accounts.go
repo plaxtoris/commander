@@ -52,6 +52,14 @@ func (m member) github() (string, string) {
 	}
 	return key[0], key[1]
 }
+
+// ref is the selector people type for a login: the GitHub user or the key.
+func (m member) ref() string {
+	if _, user := m.github(); user != "" {
+		return user
+	}
+	return m.selector()
+}
 func (m member) id() string {
 	var value any
 	json.Unmarshal(m.Key, &value)
@@ -316,7 +324,7 @@ func (a *app) describe(name string, context bool) error {
 	}
 	if s == nil {
 		if context {
-			return errors.New("open a session first: commander session shell NAME")
+			return errNoSession
 		}
 		rows, failed := a.logins()
 		for _, service := range services {
@@ -344,10 +352,7 @@ func (a *app) describe(name string, context bool) error {
 	}
 	fmt.Fprintln(a.out, "\nScope: selected accounts and repositories only. Verify identity before actions.\nUse commander exec --account SELECTOR -- TOOL ARGS when a service has several accounts.\nEach command gets isolated login state. Never switch a global active account.\nSelections grant no permission to change resources or send messages.")
 	for _, r := range rows {
-		selector := r.selector()
-		if r.Service == "github" {
-			_, selector = r.github()
-		}
+		selector := r.ref()
 		fmt.Fprintf(a.out, "\n%s: %s\nselector: %s\n", r.Service, jsonKey(r.Account), quote(selector))
 		if r.Context != "" {
 			fmt.Fprintf(a.out, "context: %s\n", jsonKey(r.Context))

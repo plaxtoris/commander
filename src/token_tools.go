@@ -292,27 +292,16 @@ func (a *app) tokenAccounts(service string) ([]account, error) {
 }
 
 func (a *app) selectedToken(service, selector string) (tokenLogin, error) {
-	if a.session == nil {
-		return tokenLogin{}, errors.New("open a session first: commander session shell NAME")
-	}
-	candidates := []member{}
-	for _, m := range a.session.Accounts {
-		if m.Service == service && (selector == "" || selector == m.selector()) {
-			candidates = append(candidates, m)
-		}
-	}
-	if len(candidates) == 0 {
-		return tokenLogin{}, errors.New("select this account in the session first")
-	}
-	if len(candidates) > 1 {
-		return tokenLogin{}, errors.New("choose an account with --account; see commander context")
+	m, err := a.sessionAccount(service, selector)
+	if err != nil {
+		return tokenLogin{}, err
 	}
 	records, err := a.tokenLogins(service)
 	if err != nil {
 		return tokenLogin{}, err
 	}
-	c, ok := records[candidates[0].selector()]
-	if !ok || c.member(service).Account != candidates[0].Account || c.member(service).Context != candidates[0].Context {
+	c, ok := records[m.selector()]
+	if !ok || c.member(service).Account != m.Account || c.member(service).Context != m.Context {
 		return tokenLogin{}, errors.New("saved account changed; reconnect it")
 	}
 	return c, nil
@@ -360,7 +349,7 @@ func (a *app) tokenRun(service string, args []string, capture bool) ([]byte, err
 			return nil, err
 		}
 		defer cleanup()
-		if err = a.prepareTool("docker", false); err != nil {
+		if err = a.prepareTool("docker"); err != nil {
 			return nil, err
 		}
 		return a.nativeRunContext(context.Background(), "docker", args[1:], capture, map[string]string{"DOCKER_CONFIG": config})

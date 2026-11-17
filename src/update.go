@@ -35,7 +35,7 @@ func (a *app) start() error {
 	if err := a.ensure(); err != nil {
 		return err
 	}
-	if err := a.setup(false); err != nil {
+	if err := a.setup(); err != nil {
 		fmt.Fprintln(a.errOut, "tools need attention; retry when needed:", err)
 	}
 	return a.menu()

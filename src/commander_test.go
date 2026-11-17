@@ -124,7 +124,7 @@ func TestSymlinkRejection(t *testing.T) {
 			}
 			err := a.ensure()
 			if name == "AGENTS.md" {
-				err = a.setup(false)
+				err = a.setup()
 			}
 			if err == nil {
 				t.Fatal("accepted symlink")
@@ -354,14 +354,14 @@ func TestToolDownloadAndAtomicInstall(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { requests++; w.Write(payload) }))
 	defer server.Close()
 	spec := download{Version: "test", URL: server.URL, SHA256: hex.EncodeToString(sum[:]), Strip: 1}
-	if err := a.installArchive("fixture", spec, false); err != nil {
+	if err := a.installArchive("fixture", spec); err != nil {
 		t.Fatal(err)
 	}
-	if err := a.installArchive("fixture", spec, false); err != nil || requests != 1 {
+	if err := a.installArchive("fixture", spec); err != nil || requests != 1 {
 		t.Fatal("setup was not idempotent", err, requests)
 	}
 	spec.SHA256 = strings.Repeat("0", 64)
-	if err := a.installArchive("fixture", spec, false); err == nil {
+	if err := a.installArchive("fixture", spec); err == nil {
 		t.Fatal("accepted corrupt download")
 	}
 	data, _ := os.ReadFile(filepath.Join(a.root, "tools", "fixture", "bin", "tool"))

@@ -248,13 +248,13 @@ func replaceDirectory(staged, destination string) error {
 	return nil
 }
 
-func (a *app) installArchive(name string, spec download, force bool) error {
+func (a *app) installArchive(name string, spec download) error {
 	destination := filepath.Join(a.root, "tools", name)
 	if err := noSymlinks(a.root, destination); err != nil {
 		return err
 	}
 	stamp, err := os.ReadFile(filepath.Join(destination, ".commander-version"))
-	if !force && err == nil && string(stamp) == spec.SHA256 {
+	if err == nil && string(stamp) == spec.SHA256 {
 		entry := archiveEntries[name]
 		if entry == "" {
 			return nil
@@ -351,8 +351,8 @@ func (a *app) packageReady(name string) bool {
 	return string(stamp) == a.catalog.Packages[name] && err == nil && info.Mode().IsRegular()
 }
 
-func (a *app) installPackage(name string, force bool) error {
-	if !force && a.packageReady(name) {
+func (a *app) installPackage(name string) error {
+	if a.packageReady(name) {
 		return nil
 	}
 	dir := filepath.Join(a.root, "tools")
@@ -448,19 +448,17 @@ func (a *app) toolUsed(tool string) bool {
 	return err == nil
 }
 
-func (a *app) prepareTool(tool string, force bool) error {
+func (a *app) prepareTool(tool string) error {
 	deps, managed := toolDependencies[tool]
 	if !managed {
 		return nil
 	}
-	if !force {
-		ready := true
-		for _, name := range deps {
-			ready = ready && a.dependencyReady(name)
-		}
-		if ready {
-			return nil
-		}
+	ready := true
+	for _, name := range deps {
+		ready = ready && a.dependencyReady(name)
+	}
+	if ready {
+		return nil
 	}
 	if runtime.GOOS != "linux" || runtime.GOARCH != "amd64" {
 		return errors.New("Commander supports Linux and WSL on x86_64")
@@ -485,7 +483,7 @@ func (a *app) prepareTool(tool string, force bool) error {
 	}
 	announced := false
 	for _, name := range deps {
-		if !force && a.dependencyReady(name) {
+		if a.dependencyReady(name) {
 			continue
 		}
 		if !announced {
@@ -498,9 +496,9 @@ func (a *app) prepareTool(tool string, force bool) error {
 		case name == "python":
 			err = a.installPython()
 		case packageEntries[name] != "":
-			err = a.installPackage(name, force)
+			err = a.installPackage(name)
 		default:
-			err = a.installArchive(name, a.catalog.Archives[name], force)
+			err = a.installArchive(name, a.catalog.Archives[name])
 		}
 		if err != nil {
 			return fmt.Errorf("%s is not ready; retry the action: %w", tool, err)
@@ -577,23 +575,19 @@ func (a *app) installGit() error {
 
 // Setup refreshes agent instructions and repairs only used tools, including
 // interrupted installations. After an update, the restarted binary supplies
-// its own embedded instructions.
-func (a *app) setup(force bool) error {
+// its own embedded instructions. Installs serialize on their own lock and
+// replace tool folders atomically, so running sessions never block setup.
+func (a *app) setup() error {
 	if err := a.ensure(); err != nil {
 		return err
 	}
 	if err := a.refreshAgentInstructions(); err != nil {
 		return err
 	}
-	unlock, err := a.lock("native")
-	if err != nil {
-		return err
-	}
-	defer unlock()
 	var failures []error
 	for _, tool := range managedTools {
 		if a.toolUsed(tool) {
-			if err := a.prepareTool(tool, force); err != nil {
+			if err := a.prepareTool(tool); err != nil {
 				failures = append(failures, err)
 			}
 		}
