@@ -17,6 +17,6 @@
       ]
     }
   },
-  "remoteUser": "dev",
-  "updateRemoteUserUID": true
+  "remoteUser": "root",
+  "containerUser": "root"
 }
