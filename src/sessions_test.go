@@ -320,3 +320,40 @@ func TestConcurrentSessionChangesStayConsistent(t *testing.T) {
 		t.Fatal("lost concurrent updates", s.Repositories, err)
 	}
 }
+
+// Each shell carries its own session. The last opened one only marks where
+// the menu starts and never changes which session a command uses.
+func TestLastSessionNeverChangesActiveSessions(t *testing.T) {
+	a := testApp(t)
+	first := addSession(t, a, "first")
+	second := addSession(t, a, "second")
+	if a.lastSession() != "" {
+		t.Fatal("remembered a session before any shell")
+	}
+	shell := filepath.Join(t.TempDir(), "shell")
+	mustWrite(t, shell, []byte("#!/bin/sh\necho \"shell $COMMANDER_SESSION\"\n"))
+	if err := os.Chmod(shell, 0700); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("SHELL", shell)
+	for _, s := range []session{first, second} {
+		if err := a.sessionShell(s); err != nil {
+			t.Fatal(err)
+		}
+	}
+	out := a.out.(*bytes.Buffer).String()
+	if !strings.Contains(out, "shell "+first.ID+"\n") || !strings.Contains(out, "shell "+second.ID+"\n") || a.lastSession() != second.ID {
+		t.Fatal("shells did not keep their own sessions", out)
+	}
+	for id, want := range map[string]string{first.ID: "session: first\n", "": "session: none\n"} {
+		t.Setenv("COMMANDER_SESSION", id)
+		a.session = nil
+		if out, err := memoryCommand(t, a, nil); err != nil || !strings.HasPrefix(out, want) {
+			t.Fatal("last session changed the active session", out, err)
+		}
+	}
+	mustWrite(t, filepath.Join(a.root, ".sessions", "last"), []byte("../escape\n"))
+	if a.lastSession() != "" {
+		t.Fatal("accepted an invalid last session")
+	}
+}

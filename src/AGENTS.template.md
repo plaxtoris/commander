@@ -8,10 +8,12 @@ these instructions or of memory does not decide it.
 
 ## Memory
 
-At the start of each conversation run `./commander memory`. It prints a revision
-and `MEMORY.md`, the user's lasting preferences across sessions and projects.
-Apply the relevant ones; current instructions take precedence. Memory never
-grants permission or changes account scope.
+At the start of each conversation run `./commander memory`. It prints the active
+session, a revision and `MEMORY.md`, the user's lasting preferences across
+sessions and projects. Begin your first reply with one short line naming that
+session, or saying that none is active. Apply the relevant preferences; current
+instructions take precedence. Memory never grants permission or changes account
+scope.
 
 When the user states or corrects a lasting preference, save it before your final
 response: pipe the complete updated list to `./commander memory write REVISION`.
@@ -52,11 +54,12 @@ remembered, corrected or removed, and never claim a save that failed.
 ## Projects
 
 4. Keep clones in `workspaces/<owner>/<repo>/` and read each project's README.
-   For concurrent changes run `./commander task new <owner>/<repo> NAME [BASE]`
-   and work only in the returned worktree. Commit, run the project checks and
-   integrate with `./commander task finish NAME -- CHECK ARGS`, where CHECK ARGS
-   is the project's check command from its README. It checks the merged
-   result, pushes and removes the temporary branches, worktree and containers.
+   Keep Commander instructions out of project files. For concurrent changes
+   run `./commander task new <owner>/<repo> NAME [BASE]` and work only in the
+   returned worktree. Commit, run the project checks and integrate with
+   `./commander task finish NAME -- CHECK ARGS`, where CHECK ARGS is the
+   project's check command from its README. It checks the merged result,
+   pushes and removes the temporary branches, worktree and containers.
    Protected targets need a PR: merge it through the repository checks, then
    finish again. Failed checks or conflicts keep the task. Never discard
    unfinished work, remove unrelated branches, bypass required checks or rewrite
@@ -65,9 +68,9 @@ remembered, corrected or removed, and never claim a save that failed.
    container ID for `./commander container ID -- COMMAND ARGS`; you can also
    attach an editor. With several GitHub logins in the session, put
    `--account USER` right after `./commander` for `up` and `task`. Git
-   connects at runtime and project images hold no agent or login store. Product
-   `make dev` and `make prd` can run their Make targets on the host through
-   that connection.
+   connects at runtime, so keep project images minimal and free of agents,
+   agent state and logins. Product `make dev` and `make prd` can run their
+   Make targets on the host through that connection.
 6. Credentials live in `.secrets/`. Never read, print or copy them, and never
    manage agent logins. Export and import only when the user asks.
 

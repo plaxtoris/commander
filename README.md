@@ -29,8 +29,9 @@ chmod +x commander && ./commander
 - **Many accounts, no switching.** Every command gets only its session's logins.
   No global active account ever changes.
 - **Parallel work.** Sessions, task worktrees and project containers run side by side.
-- **Portable.** Tools install on demand inside the folder. Move it, or export
-  accounts and sessions to an encrypted archive.
+  Each terminal keeps its own session; the menu starts at the one you opened last.
+- **Portable.** Tools install on demand inside the folder. Move it, or export a
+  session with its logins to an encrypted `SESSION.zip`.
 - **Agent ready.** Commander writes `AGENTS.md` into its folder. Agents learn the
   rest from `./commander help`.
 
@@ -41,6 +42,8 @@ Linux and WSL on x86_64. Project containers need Docker Engine or Docker Desktop
 Open this repository in its development container and run `make test` and
 `make build`. The source lives in `src/`: the generated agent guidance in
 `src/AGENTS.template.md`, the command reference in `src/commander.go` and tool
-pins in `src/tools.go`. Use synthetic login fixtures, never real credentials.
+pins in `src/tools.go`. Agents learn Commander only from that guidance and
+`help`, so keep this README short and inviting for people. Use synthetic login
+fixtures, never real credentials.
 CI also tests races and real containers, then publishes a fresh `latest`
 release for every build of `main`.

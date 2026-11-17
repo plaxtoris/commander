@@ -39,9 +39,9 @@ func memoryRevision(t *testing.T, a *app) string {
 	if err != nil {
 		t.Fatal(err)
 	}
-	line, _, _ := strings.Cut(out, "\n")
-	revision, ok := strings.CutPrefix(line, "revision: ")
-	if !ok || len(revision) != 64 {
+	_, rest, _ := strings.Cut(out, "\nrevision: ")
+	revision, _, _ := strings.Cut(rest, "\n")
+	if len(revision) != 64 {
 		t.Fatal("missing revision", out)
 	}
 	return revision

@@ -108,6 +108,8 @@ Sessions
   commander session rename NAME NEW        keeps open shells, tasks and containers
   commander session delete NAME            removes it and its containers
   commander session shell NAME             opens a shell with its selection
+  commander export SESSION                 saves it with its logins as SESSION.zip
+  commander import FILE.zip                adds the sessions and logins it holds
   commander context                        shows the session scope and selectors
   commander overview [SESSION]             checks account status
 
@@ -121,8 +123,6 @@ Work
   commander exec -- confluence api PATH    calls a built in client API
 
 Installation
-  commander export [FILE.zip]              exports chosen accounts, sessions, memory
-  commander import FILE.zip                imports chosen archive contents
   commander memory [write REVISION]        reads or updates shared preferences
   commander setup                          repairs used tools
   commander update                         updates Commander and used tools

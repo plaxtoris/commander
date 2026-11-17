@@ -398,7 +398,7 @@ func TestCatalogAndGeneratedInstructions(t *testing.T) {
 		}
 	}
 	data := []byte(agentInstructions)
-	for _, wanted := range []string{"./commander context", "./commander exec --", "workspaces/", ".secrets/"} {
+	for _, wanted := range []string{"./commander context", "./commander exec --", "workspaces/", ".secrets/", "one short line naming that", "Commander instructions out of project files"} {
 		if !bytes.Contains(data, []byte(wanted)) {
 			t.Fatal("missing instructions:", wanted)
 		}
@@ -439,6 +439,13 @@ func TestUIHelper(t *testing.T) {
 	}
 	if err = a.ensure(); err != nil {
 		panic(err)
+	}
+	if id := os.Getenv("COMMANDER_UI_SESSION"); id != "" {
+		s, err := a.findSession(id)
+		if err != nil {
+			panic(err)
+		}
+		a.session = &s
 	}
 	if os.Getenv("COMMANDER_RESTARTED") == a.root {
 		if instructions := os.Getenv("COMMANDER_UI_UPDATED_INSTRUCTIONS"); instructions != "" {
@@ -518,6 +525,7 @@ func openUI(t *testing.T, root string, size ...*pty.Winsize) *terminalSession {
 	t.Helper()
 	exe, _ := os.Executable()
 	cmd := exec.Command(exe, "-test.run=TestUIHelper")
+	cmd.Dir = root
 	cmd.Env = append(os.Environ(), "COMMANDER_UI_FIXTURE="+root)
 	winsize := &pty.Winsize{Rows: 32, Cols: 100}
 	if len(size) > 0 {

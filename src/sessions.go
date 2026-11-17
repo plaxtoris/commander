@@ -432,6 +432,7 @@ func (a *app) sessionShell(s session) error {
 	if err = scoped.sessionWrappers(s); err != nil {
 		return err
 	}
+	a.rememberSession(s.ID)
 	shell := os.Getenv("SHELL")
 	if shell == "" {
 		shell = "/bin/bash"
@@ -443,6 +444,23 @@ func (a *app) sessionShell(s session) error {
 	cmd.Stdout = a.out
 	cmd.Stderr = a.errOut
 	return cmd.Run()
+}
+
+// The last opened session is only where the menu starts. Every shell keeps
+// its own session, so other terminals and their agents never change.
+func (a *app) lastSession() string {
+	b, _ := os.ReadFile(filepath.Join(a.root, ".sessions", "last"))
+	if id := strings.TrimSpace(string(b)); sessionID.MatchString(id) {
+		return id
+	}
+	return ""
+}
+
+func (a *app) rememberSession(id string) {
+	path := filepath.Join(a.root, ".sessions", "last")
+	if noSymlinks(a.root, path) == nil {
+		atomicWrite(path, []byte(id+"\n"), 0600)
+	}
 }
 
 func (a *app) sessionLock(id string, shared, wait bool) (func(), error) {

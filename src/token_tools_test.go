@@ -205,7 +205,7 @@ func TestTokenArchiveRelocationAndDeletion(t *testing.T) {
 		t.Fatal("export included unselected credentials")
 	}
 	archive := filepath.Join(t.TempDir(), "profile.zip")
-	if err = writeArchive(archive, payload, "fixture-password"); err != nil {
+	if err = writeArchive(archive, payload, "fixture-password", false); err != nil {
 		t.Fatal(err)
 	}
 	payload, err = readArchive(archive, "fixture-password")

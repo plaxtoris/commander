@@ -110,7 +110,7 @@ func TestInteractiveImport(t *testing.T) {
 		t.Fatal(err)
 	}
 	archive := filepath.Join(t.TempDir(), "commander.zip")
-	if err := writeArchive(archive, payload, "fixture password"); err != nil {
+	if err := writeArchive(archive, payload, "fixture password", false); err != nil {
 		t.Fatal(err)
 	}
 	a := testApp(t)
@@ -121,9 +121,7 @@ func TestInteractiveImport(t *testing.T) {
 	s.send(t, archive+"\r")
 	s.wait(t, "archive password:")
 	s.send(t, "fixture password\r")
-	s.wait(t, "[x] imported")
-	s.send(t, "\r")
-	s.wait(t, "imported 1 account, 1 session")
+	s.wait(t, "imported 1 session, 1 account")
 	if strings.Contains(s.output, "fixture-secret") {
 		t.Fatal("import exposed login data")
 	}
@@ -133,6 +131,51 @@ func TestInteractiveImport(t *testing.T) {
 	}
 	if imported, err := a.findSession("imported"); err != nil || len(imported.Accounts) != 1 {
 		t.Fatal(imported, err)
+	}
+}
+
+func TestInteractiveExportStartsAtLastSession(t *testing.T) {
+	a := testApp(t)
+	mustWrite(t, filepath.Join(a.root, ".secrets", ".config", "hcloud", "cli.toml"), []byte("active_context = 'existing'\n[[contexts]]\nname = 'existing'\ntoken = 'fixture-secret'\n"))
+	mustWrite(t, filepath.Join(a.root, "MEMORY.md"), []byte("* Keep replies concise.\n"))
+	alpha := addSession(t, a, "alpha")
+	work := addSession(t, a, "work", hMember("existing"))
+	a.rememberSession(work.ID)
+	t.Setenv("COMMANDER_UI_SESSION", alpha.ID)
+	s := openUI(t, a.root)
+	s.wait(t, "commander · session alpha")
+	s.send(t, "x")
+	s.wait(t, "archive password:")
+	s.send(t, "abc\r")
+	s.wait(t, "use at least 4 characters")
+	s.send(t, "x")
+	s.wait(t, "archive password:")
+	s.send(t, "1234\r")
+	s.wait(t, "repeat archive password:")
+	s.send(t, "1234\r")
+	s.wait(t, "exported work with 1 account")
+	s.send(t, "x")
+	s.wait(t, "replace work.zip?")
+	s.send(t, "n")
+	s.wait(t, "[q]uit")
+	s.send(t, "x")
+	s.wait(t, "replace work.zip?")
+	s.send(t, "y")
+	s.wait(t, "archive password:")
+	s.send(t, "5678\r")
+	s.wait(t, "repeat archive password:")
+	s.send(t, "5678\r")
+	s.wait(t, "exported work with 1 account")
+	s.send(t, "q")
+	if err := s.command.Wait(); err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(s.output, "fixture-secret") {
+		t.Fatal("export exposed login data")
+	}
+	p, err := readArchive(filepath.Join(a.root, "work.zip"), "5678")
+	if err != nil || p.Memory != nil || len(p.Profile.Profiles) != 1 || len(p.Profile.Profiles["work"]) != 1 || len(p.Logins) != 1 {
+		t.Fatal("archive does not hold exactly the last session", err)
 	}
 }
 

@@ -393,65 +393,6 @@ func (a *app) readHidden() ([]byte, error) {
 	}
 }
 
-// A choice is one checklist row. Choices of one radio group exclude each other.
-type choice struct {
-	group, label, detail, radio string
-	on                          bool
-}
-
-func (a *app) checklist(title string, items []choice) ([]choice, error) {
-	if len(items) == 0 {
-		return nil, errors.New("nothing to choose")
-	}
-	items = append([]choice(nil), items...)
-	labels := 0
-	for _, item := range items {
-		labels = max(labels, min(40, textWidth(item.label)))
-	}
-	at := 0
-	for {
-		rows, owner := []row{}, []int{}
-		for i, item := range items {
-			if i == 0 || items[i-1].group != item.group {
-				rows, owner = append(rows, row{line: uiLine{{item.group, "1"}}}), append(owner, -1)
-			}
-			rows = append(rows, row{indent: 2, pick: true, line: uiLine{mark(item.on), {" " + pad(item.label, labels) + "  ", ""}, {item.detail, "2"}}})
-			owner = append(owner, i)
-		}
-		key, i, err := a.list(view{title: title, keys: "[space] select  [a]ll  [enter] continue  [esc] cancel", rows: rows}, at)
-		if err != nil {
-			return nil, err
-		}
-		at = i
-		switch key {
-		case "space":
-			if n := owner[i]; n >= 0 {
-				on := !items[n].on
-				for j := range items {
-					if on && items[n].radio != "" && items[j].radio == items[n].radio {
-						items[j].on = false
-					}
-				}
-				items[n].on = on
-			}
-		case "a":
-			all := true
-			for _, item := range items {
-				all = all && (item.on || item.radio != "")
-			}
-			for j := range items {
-				if items[j].radio == "" {
-					items[j].on = !all
-				}
-			}
-		case "enter":
-			return items, nil
-		case "esc", "q":
-			return nil, errCancelled
-		}
-	}
-}
-
 // Keep absolute paths readable in the menu and relative paths relative to cwd.
 func archivePath(path string) (string, error) {
 	if strings.HasPrefix(path, "~/") {

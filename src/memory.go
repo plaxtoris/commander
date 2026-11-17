@@ -50,7 +50,11 @@ func (a *app) memory(args []string) error {
 	}
 	revision := fmt.Sprintf("%x", sha256.Sum256(current))
 	if len(args) == 0 {
-		_, err = fmt.Fprintf(a.out, "revision: %s\ncharacters: %d/%d\n\n%s", revision, utf8.RuneCount(current), memoryLimit, current)
+		active := "none"
+		if a.session != nil {
+			active = a.session.Name
+		}
+		_, err = fmt.Fprintf(a.out, "session: %s\nrevision: %s\ncharacters: %d/%d\n\n%s", active, revision, utf8.RuneCount(current), memoryLimit, current)
 		return err
 	}
 	if args[1] != revision {

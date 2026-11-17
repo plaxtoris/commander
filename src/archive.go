@@ -63,7 +63,8 @@ type profileArchive struct {
 	Profile  selections        `json:"profile"`
 	Logins   map[string]object `json:"logins"`
 	Accounts []member          `json:"accounts,omitempty"`
-	Memory   *string           `json:"memory,omitempty"`
+	// Older archives may carry memory. Imports ignore it.
+	Memory *string `json:"memory,omitempty"`
 }
 
 var sessionFile = regexp.MustCompile(`^\.sessions/[a-f0-9]{24}/session\.json$`)
@@ -660,7 +661,7 @@ func (s *storage) publish(files map[string][]byte) error {
 	}
 	sort.Strings(paths)
 	for _, name := range paths {
-		if name != "MEMORY.md" && !sessionFile.MatchString(filepath.ToSlash(name)) && !nativeFiles[strings.TrimPrefix(filepath.ToSlash(name), ".secrets/")] {
+		if !sessionFile.MatchString(filepath.ToSlash(name)) && !nativeFiles[strings.TrimPrefix(filepath.ToSlash(name), ".secrets/")] {
 			return errFormat
 		}
 		if err := noSymlinks(s.root, filepath.Join(s.root, name)); err != nil {
@@ -713,8 +714,10 @@ func (s *storage) publish(files map[string][]byte) error {
 	return nil
 }
 
-func writeArchive(path string, payload profileArchive, password string) error {
-	if _, err := os.Lstat(path); !os.IsNotExist(err) {
+// WriteArchive never overwrites an existing file unless replace is set; then
+// the old archive stays intact until the new one is complete.
+func writeArchive(path string, payload profileArchive, password string, replace bool) error {
+	if _, err := os.Lstat(path); !replace && !os.IsNotExist(err) {
 		return errors.New("archive already exists; choose another filename")
 	}
 	data := encode(payload)
@@ -743,6 +746,9 @@ func writeArchive(path string, payload profileArchive, password string) error {
 	}
 	if closeErr != nil {
 		return closeErr
+	}
+	if replace {
+		return os.Rename(f.Name(), path)
 	}
 	return os.Link(f.Name(), path)
 }

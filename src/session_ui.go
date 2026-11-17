@@ -13,8 +13,12 @@ const editKeys = "[space] select  [a]dd account  [x] delete login  [enter] save 
 // The menu lists sessions. Every action is one key; names and confirmations
 // replace the key hints instead of opening another screen.
 func (a *app) menu() error {
+	title := ""
+	if a.session != nil {
+		title = "session " + a.session.Name
+	}
 	admin := a.admin()
-	notice, tone, focus, at := "", "", "", 0
+	notice, tone, focus, at := "", "", admin.lastSession(), 0
 	for {
 		all, err := admin.sessions()
 		if err != nil {
@@ -39,7 +43,7 @@ func (a *app) menu() error {
 			rows = append(rows, row{line: uiLine{{"no sessions yet", "2"}}})
 		}
 		rows = append(rows, row{pick: true, line: uiLine{{"+ new session", "36"}}})
-		key, i, err := admin.list(view{info: count(len(all), "session"), keys: homeKeys, notice: notice, tone: tone, rows: rows}, at)
+		key, i, err := admin.list(view{title: title, info: count(len(all), "session"), keys: homeKeys, notice: notice, tone: tone, rows: rows}, at)
 		if err != nil {
 			return err
 		}
@@ -55,12 +59,12 @@ func (a *app) menu() error {
 			return nil
 		case key == "i":
 			notice, err = admin.importArchive("")
-		case key == "x":
-			notice, err = admin.exportArchive("")
 		case key == "n" || key == "enter" && !picked:
 			s, err = admin.createSession()
 			notice, focus = s.Name+" created", s.ID
 		case !picked:
+		case key == "x":
+			notice, err = admin.exportArchive(s)
 		case key == "enter":
 			admin.clear()
 			err = admin.sessionShell(s)

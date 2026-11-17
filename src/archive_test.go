@@ -66,7 +66,7 @@ func TestProfileArchiveRoundTripAllServices(t *testing.T) {
 		t.Fatal("export included unselected login")
 	}
 	path := filepath.Join(t.TempDir(), "profile.zip")
-	if err = writeArchive(path, payload, "fixture password"); err != nil {
+	if err = writeArchive(path, payload, "fixture password", false); err != nil {
 		t.Fatal(err)
 	}
 	encrypted, _ := os.ReadFile(path)
@@ -92,7 +92,7 @@ func TestProfileArchiveRoundTripAllServices(t *testing.T) {
 	if !reflect.DeepEqual(payload, again) {
 		t.Fatal("round trip changed selected native records")
 	}
-	if err = writeArchive(path, payload, "fixture password"); err == nil {
+	if err = writeArchive(path, payload, "fixture password", false); err == nil {
 		t.Fatal("overwrote archive")
 	}
 	info, _ := os.Stat(path)
@@ -220,7 +220,7 @@ func TestArchiveIntegrityAndEncryption(t *testing.T) {
 		}
 	}
 	path := filepath.Join(t.TempDir(), "corrupt.zip")
-	if err = writeArchive(path, payload, "password"); err != nil {
+	if err = writeArchive(path, payload, "password", false); err != nil {
 		t.Fatal(err)
 	}
 	data, _ := os.ReadFile(path)
@@ -256,7 +256,7 @@ func TestZIPCompatibilityWith7Zip(t *testing.T) {
 		t.Fatal("cannot import legacy ZIP", err)
 	}
 	path = filepath.Join(dir, "new.zip")
-	if err = writeArchive(path, payload, "fixture-password"); err != nil {
+	if err = writeArchive(path, payload, "fixture-password", false); err != nil {
 		t.Fatal(err)
 	}
 	cmd = exec.Command(seven, "x", "-so", path, archiveEntry)
@@ -288,7 +288,7 @@ func TestRefreshableGitHubLogin(t *testing.T) {
 
 // Fixture archives hold the given accounts and one session using them all.
 func (a *app) exportPayload(name string, members []member) (profileArchive, error) {
-	return a.selectedArchive(members, []session{{Name: name, Accounts: members, Repositories: []string{}}}, false)
+	return a.sessionArchive(session{Name: name, Accounts: members, Repositories: []string{}})
 }
 
 func (a *app) importPayload(payload profileArchive, rename string) (string, error) {
