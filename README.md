@@ -1,41 +1,46 @@
 # Commander
 
-A portable workspace for native tools, accounts, agents and repositories.
-Start your preferred agent independently. Tools install when needed.
+One folder for your accounts, tools and repositories, ready for any coding agent.
+
+Sign in once to GitHub, Azure, Microsoft 365, Google Cloud, Hetzner, Docker Hub
+and Confluence. Then give each piece of work a **session**: a named selection of
+accounts and repositories. Open its shell, start your agent, and it works with
+exactly that selection.
 
 ```sh
 mkdir -p ~/commander && cd ~/commander
 curl -fLO https://github.com/plaxtoris/commander/releases/download/latest/commander
-chmod +x commander
-./commander
+chmod +x commander && ./commander
 ```
 
-Connect accounts, create a session, select its accounts and repositories, then
-open its shell. Existing profiles are optional saved selections. A GitHub login
-and its allowed owners or repositories are selected separately.
+```
+  commander                                                      2 sessions
+  ──────────────────────────────────────────────────────────────────────────
 
-| Command | Purpose |
-| --- | --- |
-| `./commander session new NAME` | Select accounts and repositories |
-| `./commander session shell ID` | Open an independent session shell |
-| `./commander context` | Show the current selection |
-| `./commander exec -- TOOL ARGS` | Use selected credentials |
-| `./commander up PROJECT` | Build and start a trusted project container |
-| `./commander container ID -- COMMAND` | Run inside that container |
-| `./commander task new PROJECT NAME main` | Create an isolated worktree |
-| `./commander task finish NAME -- make test` | Check, integrate and clean up |
-| `./commander export` / `./commander import FILE.zip` | Select accounts, presets and optional memory |
-| `./commander memory` | Read shared preferences |
-| `./commander session close ID` | Remove that session and its finished containers |
+  › client      github alice · confluence alice
+                acme/*
+    personal    github alice · hetzner home · dockerhub alice
+                alice/*
+    + new session
 
-Keep projects in `workspaces/<owner>/<repo>/`. Read their README. Concurrent tasks
-use separate worktrees; completion checks the integrated result before removing
-temporary branches. Failed work remains available. Selections guide trusted tools;
-they do not reduce provider token permissions or authorize actions.
+  [enter] open  [n]ew  [e]dit  [r]ename  [d]elete  [i]mport  e[x]port  [q]uit
+```
 
-[Usage, account isolation, container Git and memory](docs/usage.md).
+- **Many accounts, no switching.** Every command gets only its session's logins.
+  No global active account ever changes.
+- **Parallel work.** Sessions, task worktrees and project containers run side by side.
+- **Portable.** Tools install on demand inside the folder. Move it, or export
+  accounts and sessions to an encrypted archive.
+- **Agent ready.** Commander writes `AGENTS.md` into its folder. Agents learn the
+  rest from `./commander help`.
 
-The development container runs as root in `/workspace`. Use `make test` and
-`make build`. Source lives in `src/`. CI also tests races and real containers,
-then publishes one rolling `latest` release. Never run destructive reset helpers
-for ordinary development.
+Linux and WSL on x86_64. Project containers need Docker Engine or Docker Desktop.
+
+## Development
+
+Open this repository in its development container and run `make test` and
+`make build`. The source lives in `src/`: the generated agent guidance in
+`src/AGENTS.template.md`, the command reference in `src/commander.go` and tool
+pins in `src/tools.go`. Use synthetic login fixtures, never real credentials.
+CI also tests races and real containers, then publishes a fresh `latest`
+release for every build of `main`.

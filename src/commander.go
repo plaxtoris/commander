@@ -98,32 +98,39 @@ func newApp(root string, in *os.File, out, errOut io.Writer) (*app, error) {
 	return a, nil
 }
 
-const help = `commander
+const help = `commander · accounts, tools and repositories for agents
 
-  commander                                open sessions
+Sessions
+  commander                                open the session menu
   commander session [list]                 list sessions
   commander session new NAME [--accounts service=user,...] [--repos owner/*,...]
   commander session edit NAME [--accounts ...] [--repos ...]
-  commander session rename NAME NEW
-  commander session delete NAME
-  commander session shell NAME             open a shell with this selection
-  commander context                        show the session scope
-  commander exec [--account ID] -- TOOL    run with isolated selected credentials
-  commander task new PROJECT NAME [BASE]   create an isolated worktree
-  commander task finish NAME -- CHECK      validate, integrate and clean up
-  commander up PROJECT                     build and connect a trusted devcontainer
-  commander container ID -- COMMAND        run a command in that container
-  commander export [FILE.zip]              choose accounts, sessions and memory
-  commander import FILE.zip                choose archive contents
-  commander memory [write REVISION]        read or update shared preferences
-  commander overview [SESSION]             check account status
-  commander setup                          repair used tools
-  commander update                         update Commander and used tools
-  commander doctor                         check the installation
-  commander version                        show the installed build
+  commander session rename NAME NEW        keeps open shells, tasks and containers
+  commander session delete NAME            removes it and its containers
+  commander session shell NAME             opens a shell with its selection
+  commander context                        shows the session scope and selectors
+  commander overview [SESSION]             checks account status
 
-Use --session NAME before a command outside its session shell.
-Use --account SELECTOR before up or task for several GitHub accounts.
+Work
+  commander exec [--account ID] -- TOOL    runs a tool with the selected login
+  commander task new PROJECT NAME [BASE]   creates an isolated worktree
+  commander task finish NAME -- CHECK      checks, integrates and cleans up
+  commander up PROJECT                     builds and connects a trusted devcontainer
+  commander container ID -- COMMAND        runs a command in that container
+  dockerhub, confluence                    built in API clients: whoami, api PATH
+
+Installation
+  commander export [FILE.zip]              exports chosen accounts, sessions, memory
+  commander import FILE.zip                imports chosen archive contents
+  commander memory [write REVISION]        reads or updates shared preferences
+  commander setup                          repairs used tools
+  commander update                         updates Commander and used tools
+  commander doctor                         checks the installation
+  commander version                        shows the installed build
+
+Use --session NAME before a command outside its session shell and --account
+SELECTOR before up or task when a session has several GitHub logins.
+Selections limit what trusted tools use. They grant no permission to act.
 `
 
 func (a *app) command(args []string) error {
@@ -266,23 +273,6 @@ func (a *app) ensure() error {
 		}
 		if closeErr != nil {
 			return closeErr
-		}
-	}
-	ignore := filepath.Join(a.root, ".gitignore")
-	if err := noSymlinks(a.root, ignore); err != nil {
-		return err
-	}
-	data, err := os.ReadFile(ignore)
-	if err != nil {
-		return err
-	}
-	if !strings.Contains("\n"+string(data), "\n/.sessions/\n") {
-		if len(data) > 0 && !strings.HasSuffix(string(data), "\n") {
-			data = append(data, '\n')
-		}
-		data = append(data, []byte("/.sessions/\n")...)
-		if err = atomicWrite(ignore, data, 0644); err != nil {
-			return err
 		}
 	}
 	return nil

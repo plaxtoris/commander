@@ -29,14 +29,14 @@ and the revision from the read. On a conflict, read again and merge. Never edit
 tell the user what was remembered, corrected or removed. Do not claim a save
 that failed. No new lasting preference means no write and no memory notice.
 
-1. Start a session before service work. Use the Sessions menu, or
-   `./commander session new NAME PRESET --repos owner/name,owner/*`.
-   Run `./commander session shell ID` and start your agent in that shell.
-   `./commander context` shows that session's account and repository selection.
-   Existing profiles are optional saved selections. Changing one does not change
-   running sessions. A GitHub login and its allowed owners or repositories are
-   separate choices. Missing accounts can be connected in Commander Accounts.
-   Local work without service access can continue with no accounts selected.
+1. Work in a session before service work. A session is a named, lasting
+   selection of accounts and GitHub repositories. The user picks one in the
+   `./commander` menu, or runs `./commander session shell NAME`, and starts the
+   agent in that shell. `./commander context` shows the selection. If none fits,
+   create one with `./commander session new NAME --accounts service=user,...
+   --repos owner/name,owner/*`. Never edit, rename or delete existing sessions
+   unless the user asks. Missing logins are connected in the menu. Local work
+   without service access can continue with no accounts selected.
 2. Run tools through `./commander exec -- TOOL ARGS`. For several accounts of a
    service, use `./commander exec --account SELECTOR -- TOOL ARGS`.
    From project folders use the absolute Commander path. Native commands preserve
@@ -66,11 +66,10 @@ that failed. No new lasting preference means no write and no memory notice.
    installed in project images. Use `./commander container ID -- COMMAND ARGS`
    for container commands, or attach an editor. Product `make dev` and `make prd`
    can use the connection to run their same Make targets on the host.
-   Close completed sessions with `./commander session close ID`.
 6. Credentials belong in `.secrets/`, private and excluded from Git. Never read
    or print them. Use selective export and import only for requested transfers.
-   Accounts, saved selections and MEMORY.md can be included independently.
+   Accounts, sessions and MEMORY.md can be included independently.
    Never manage or copy agent logins.
 
-Use `./commander overview` for account status, `./commander doctor` for tools,
-`./commander setup` to repair used tools and `./commander help` for commands.
+Run `./commander help` for every command, `./commander overview` for account
+status, `./commander doctor` for tools and `./commander setup` to repair them.

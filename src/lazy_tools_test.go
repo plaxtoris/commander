@@ -301,30 +301,6 @@ func TestMicrosoft365DoesNotInstallContainers(t *testing.T) {
 	}
 }
 
-func TestIndependentUpdatesReuseLegacyPackages(t *testing.T) {
-	a := testApp(t)
-	preparedTools(t, a)
-	fakeNode(t, a)
-	if a.packageDir("m365") != a.packageDir("devcontainer") {
-		t.Fatal("did not reuse legacy packages")
-	}
-	packages := map[string]string{}
-	for name, version := range a.catalog.Packages {
-		packages[name] = version
-	}
-	packages["m365"] = "fixture-new-version"
-	a.catalog.Packages = packages
-	if err := a.setup(false); err != nil {
-		t.Fatal(err)
-	}
-	if filepath.Base(a.packageDir("m365")) != "m365" || filepath.Base(a.packageDir("devcontainer")) != "npm" {
-		t.Fatal("coupled unrelated package updates")
-	}
-	if !a.packageReady("m365") || !a.packageReady("devcontainer") {
-		t.Fatal("package update damaged existing tools")
-	}
-}
-
 func TestFreshDoctorDoesNotInstallTools(t *testing.T) {
 	a := testApp(t)
 	if err := a.doctor(); err != nil {

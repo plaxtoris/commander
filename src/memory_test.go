@@ -146,49 +146,30 @@ func TestMemoryValidationPreservesPreviousContent(t *testing.T) {
 }
 
 func TestMemoryRejectsSymlinks(t *testing.T) {
-	for _, name := range []string{"MEMORY.md", ".gitignore"} {
-		t.Run(name, func(t *testing.T) {
-			a := testApp(t)
-			revision := memoryRevision(t, a)
-			target := filepath.Join(t.TempDir(), "outside")
-			mustWrite(t, target, []byte("outside content"))
-			path := filepath.Join(a.root, name)
-			if err := os.Remove(path); err != nil && !os.IsNotExist(err) {
-				t.Fatal(err)
-			}
-			if err := os.Symlink(target, path); err != nil {
-				t.Fatal(err)
-			}
-			if name == "MEMORY.md" {
-				if _, err := memoryCommand(t, a, nil); err == nil {
-					t.Fatal("read followed a symlink")
-				}
-			}
-			if _, err := memoryCommand(t, a, []byte("* New preference.\n"), "write", revision); err == nil {
-				t.Fatal("write accepted a symlink")
-			}
-			data, err := os.ReadFile(target)
-			if err != nil || string(data) != "outside content" {
-				t.Fatal("changed external file", err)
-			}
-		})
+	a := testApp(t)
+	revision := memoryRevision(t, a)
+	target := filepath.Join(t.TempDir(), "outside")
+	mustWrite(t, target, []byte("outside content"))
+	if err := os.Symlink(target, filepath.Join(a.root, "MEMORY.md")); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := memoryCommand(t, a, nil); err == nil {
+		t.Fatal("read followed a symlink")
+	}
+	if _, err := memoryCommand(t, a, []byte("* New preference.\n"), "write", revision); err == nil {
+		t.Fatal("write accepted a symlink")
+	}
+	data, err := os.ReadFile(target)
+	if err != nil || string(data) != "outside content" {
+		t.Fatal("changed external file", err)
 	}
 }
 
-func TestMemoryIgnoreUpgradeAndRelocation(t *testing.T) {
+func TestMemoryIgnoredAndRelocated(t *testing.T) {
 	a := testApp(t)
-	ignore := filepath.Join(a.root, ".gitignore")
-	mustWrite(t, ignore, []byte("# User rules\n/local-data"))
 	input := []byte("* Explain maintenance costs.\n")
 	if _, err := memoryCommand(t, a, input, "write", memoryRevision(t, a)); err != nil {
 		t.Fatal(err)
-	}
-	if _, err := memoryCommand(t, a, input, "write", memoryRevision(t, a)); err != nil {
-		t.Fatal(err)
-	}
-	data, err := os.ReadFile(ignore)
-	if err != nil || string(data) != "# User rules\n/local-data\n/.sessions/\n/MEMORY.md\n" {
-		t.Fatal("ignore upgrade lost user rules or added duplicates", err)
 	}
 	if out, err := exec.Command("git", "init", "--quiet", a.root).CombinedOutput(); err != nil {
 		t.Fatal(string(out), err)
@@ -200,7 +181,7 @@ func TestMemoryIgnoreUpgradeAndRelocation(t *testing.T) {
 	if err := a.command([]string{"setup"}); err != nil {
 		t.Fatal(err)
 	}
-	addSession(t, a, "another profile")
+	addSession(t, a, "another session")
 	before := memoryRevision(t, a)
 	moved := filepath.Join(t.TempDir(), "Commander moved")
 	if err := os.Rename(a.root, moved); err != nil {
@@ -212,6 +193,6 @@ func TestMemoryIgnoreUpgradeAndRelocation(t *testing.T) {
 	}
 	out, err := memoryCommand(t, b, nil)
 	if err != nil || !strings.HasSuffix(out, string(input)) || memoryRevision(t, b) != before {
-		t.Fatal("memory did not survive setup, profile switch or relocation", err)
+		t.Fatal("memory did not survive setup, sessions or relocation", err)
 	}
 }

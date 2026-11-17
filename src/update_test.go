@@ -36,11 +36,12 @@ func preparedTools(t *testing.T, a *app) {
 		t.Fatal(err)
 	}
 	for path, data := range map[string]string{
-		"npm/.commander-version":                               a.catalog.Packages["m365"] + "/" + a.catalog.Packages["devcontainer"],
-		"npm/node_modules/@pnp/cli-microsoft365/dist/index.js": "fixture",
-		"npm/node_modules/@devcontainers/cli/devcontainer.js":  "fixture",
-		"azure/.commander-version":                             a.catalog.Packages["azure"],
-		"azure/azure/cli/__main__.py":                          "fixture",
+		"m365/.commander-version":                                      a.catalog.Packages["m365"],
+		"m365/node_modules/@pnp/cli-microsoft365/dist/index.js":        "fixture",
+		"devcontainer/.commander-version":                              a.catalog.Packages["devcontainer"],
+		"devcontainer/node_modules/@devcontainers/cli/devcontainer.js": "fixture",
+		"azure/.commander-version":                                     a.catalog.Packages["azure"],
+		"azure/azure/cli/__main__.py":                                  "fixture",
 	} {
 		mustWrite(t, filepath.Join(a.root, "tools", path), []byte(data))
 	}
@@ -199,11 +200,7 @@ func TestSetupAndManualUpdateRefreshAgentInstructions(t *testing.T) {
 			}
 			for _, path := range preserved {
 				data, err := os.ReadFile(filepath.Join(a.root, path))
-				want := "local instructions\n"
-				if path == ".gitignore" {
-					want += "/.sessions/\n"
-				}
-				if err != nil || string(data) != want {
+				if err != nil || string(data) != "local instructions\n" {
 					t.Fatal("changed unmanaged file", path, err)
 				}
 			}

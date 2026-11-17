@@ -161,15 +161,6 @@ func accountLines(rows []account, limit int) []uiLine {
 	return lines
 }
 
-func accountTable(rows []account, limit int) string {
-	lines := accountLines(rows, limit)
-	text := make([]string, len(lines))
-	for i, line := range lines {
-		text[i] = strings.TrimRight(line.plain(), " ")
-	}
-	return strings.Join(text, "\n")
-}
-
 // Key hints render "[k]ey" with the bracketed part highlighted and wrap
 // between hints when the terminal is narrow.
 func hints(keys string, limit int) []uiLine {

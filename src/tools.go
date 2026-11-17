@@ -335,46 +335,18 @@ func (a *app) installPython() error {
 	return a.installCommand(filepath.Join(a.root, "tools", "uv", "uv"), []string{"--quiet", "python", "install", a.catalog.Packages["python"], "--no-bin"}, map[string]string{"UV_PYTHON_INSTALL_DIR": filepath.Join(a.root, "tools", "python"), "UV_CACHE_DIR": filepath.Join(a.root, "tools", ".cache", "uv")})
 }
 
-// Keep packages independent. Reuse the former shared npm directory until
-// a package needs updating.
+// Each package lives in its own folder, so updates stay independent.
 var packageEntries = map[string]string{
 	"m365":         "node_modules/@pnp/cli-microsoft365/dist/index.js",
 	"devcontainer": "node_modules/@devcontainers/cli/devcontainer.js",
 	"azure":        "azure/cli/__main__.py",
 }
 
-func (a *app) packageDir(name string) string {
-	dir := filepath.Join(a.root, "tools", name)
-	if _, err := os.Stat(dir); !os.IsNotExist(err) || name == "azure" {
-		return dir
-	}
-	legacy := filepath.Join(a.root, "tools", "npm")
-	stamp, _ := os.ReadFile(filepath.Join(legacy, ".commander-version"))
-	versions := strings.Split(string(stamp), "/")
-	index := 0
-	if name == "devcontainer" {
-		index = 1
-	}
-	if len(versions) == 2 && versions[index] == a.catalog.Packages[name] {
-		return legacy
-	}
-	return dir
-}
+func (a *app) packageDir(name string) string { return filepath.Join(a.root, "tools", name) }
 
 func (a *app) packageReady(name string) bool {
 	dir := a.packageDir(name)
 	stamp, _ := os.ReadFile(filepath.Join(dir, ".commander-version"))
-	if filepath.Base(dir) == "npm" {
-		versions := strings.Split(string(stamp), "/")
-		index := 0
-		if name == "devcontainer" {
-			index = 1
-		}
-		if len(versions) != 2 {
-			return false
-		}
-		stamp = []byte(versions[index])
-	}
 	info, err := os.Stat(filepath.Join(dir, packageEntries[name]))
 	return string(stamp) == a.catalog.Packages[name] && err == nil && info.Mode().IsRegular()
 }
@@ -472,15 +444,8 @@ func (a *app) toolUsed(tool string) bool {
 	if len(deps) == 0 {
 		return false
 	}
-	name := deps[len(deps)-1]
-	if _, err := os.Stat(filepath.Join(a.root, "tools", name)); err == nil {
-		return true
-	}
-	if name == "m365" || name == "devcontainer" {
-		_, err := os.Stat(filepath.Join(a.root, "tools", "npm", packageEntries[name]))
-		return err == nil
-	}
-	return false
+	_, err := os.Stat(filepath.Join(a.root, "tools", deps[len(deps)-1]))
+	return err == nil
 }
 
 func (a *app) prepareTool(tool string, force bool) error {

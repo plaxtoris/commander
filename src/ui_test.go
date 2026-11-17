@@ -349,3 +349,12 @@ func TestAccountPresentationPreservesDataAndRejectsEscapes(t *testing.T) {
 		t.Fatal("redirected output or account data emitted color escapes")
 	}
 }
+
+func accountTable(rows []account, limit int) string {
+	lines := accountLines(rows, limit)
+	text := make([]string, len(lines))
+	for i, line := range lines {
+		text[i] = strings.TrimRight(line.plain(), " ")
+	}
+	return strings.Join(text, "\n")
+}
