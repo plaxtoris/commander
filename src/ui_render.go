@@ -82,28 +82,6 @@ func count(n int, noun string) string {
 	return fmt.Sprintf("%d %ss", n, noun)
 }
 
-// Table aligns plain text columns for command output.
-func table(rows [][]string) []string {
-	widths := []int{}
-	for _, row := range rows {
-		for i, cell := range row {
-			if i == len(widths) {
-				widths = append(widths, 0)
-			}
-			widths[i] = max(widths[i], textWidth(cell))
-		}
-	}
-	lines := make([]string, len(rows))
-	for r, row := range rows {
-		cells := make([]string, len(row))
-		for i, cell := range row {
-			cells[i] = pad(cell, widths[i])
-		}
-		lines[r] = strings.TrimRight(strings.Join(cells, "  "), " ")
-	}
-	return lines
-}
-
 func statusLabel(state string) (string, string) {
 	switch state {
 	case "Ready":
@@ -155,6 +133,32 @@ func accountLines(rows []account, limit int) []uiLine {
 			}
 			lines = append(lines, uiLine{{"      " + c[2], tone}}.wrap(limit)...)
 		}
+	}
+	return lines
+}
+
+// GroupLines wraps between items, never inside one; a width of zero never
+// wraps. Labels share one column, so every session aligns alike.
+func groupLines(groups []group, width int) []uiLine {
+	labels := textWidth("repositories")
+	for _, service := range services {
+		labels = max(labels, textWidth(serviceName(service)))
+	}
+	labels += 2
+	lines := []uiLine{}
+	for _, g := range groups {
+		line, used := uiLine{{pad(g.label, labels), "2"}}, labels
+		for i, item := range g.items {
+			size := textWidth(item.plain())
+			if i > 0 && width > 0 && used+3+size > width {
+				lines = append(lines, line)
+				line, used = uiLine{{strings.Repeat(" ", labels), ""}}, labels
+			} else if i > 0 {
+				line, used = append(line, uiSpan{" · ", "2"}), used+3
+			}
+			line, used = append(line, item...), used+size
+		}
+		lines = append(lines, line)
 	}
 	return lines
 }

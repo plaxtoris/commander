@@ -322,16 +322,51 @@ func (s session) allows(repository string) bool {
 	return false
 }
 
-func (s session) summary() string {
-	parts := []string{}
-	for _, m := range s.Accounts {
-		name, _ := m.display()
-		parts = append(parts, serviceName(m.Service)+" "+name)
+// Group is one service of a session, or its repositories, as screens show it.
+type group struct {
+	label string
+	items []uiLine
+}
+
+// Groups lists the session's accounts by service, then its repositories.
+func (s session) groups() []group {
+	groups := []group{}
+	for _, service := range services {
+		g := group{label: serviceName(service)}
+		for _, m := range s.Accounts {
+			if m.Service == service {
+				g.items = append(g.items, m.item())
+			}
+		}
+		if len(g.items) > 0 {
+			groups = append(groups, g)
+		}
 	}
-	if len(parts) == 0 {
-		return "no accounts"
+	if len(groups) == 0 {
+		groups = append(groups, group{"accounts", []uiLine{{{"none", "2"}}}})
 	}
-	return strings.Join(parts, " · ")
+	if len(s.Repositories) > 0 {
+		g := group{label: "repositories"}
+		for _, r := range s.Repositories {
+			g.items = append(g.items, uiLine{{r, ""}})
+		}
+		groups = append(groups, g)
+	}
+	return groups
+}
+
+// ServiceNames lists the services the session uses, in menu order.
+func (s session) serviceNames() []string {
+	names := []string{}
+	for _, service := range services {
+		for _, m := range s.Accounts {
+			if m.Service == service {
+				names = append(names, serviceName(service))
+				break
+			}
+		}
+	}
+	return names
 }
 
 // Selection flags replace a session's accounts or repositories. Without
@@ -368,12 +403,14 @@ func (a *app) sessionCommand(args []string) error {
 		if err != nil {
 			return err
 		}
-		rows := [][]string{}
-		for _, s := range all {
-			rows = append(rows, []string{s.Name, s.summary(), strings.Join(s.Repositories, " ")})
-		}
-		for _, line := range table(rows) {
-			fmt.Fprintln(a.out, line)
+		for i, s := range all {
+			if i > 0 {
+				fmt.Fprintln(a.out)
+			}
+			fmt.Fprintln(a.out, s.Name)
+			for _, line := range groupLines(s.groups(), 0) {
+				fmt.Fprintln(a.out, "  "+line.plain())
+			}
 		}
 		return nil
 	}

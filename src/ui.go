@@ -105,11 +105,11 @@ func (a *app) raw() (func(), error) {
 	return func() { term.Restore(fd, state) }, nil
 }
 
-// A row is one selectable line, or a header when pick is false. More lines
-// follow below it, aligned with its content.
+// A row is one selectable line, or a header when pick is false. A selected
+// row may describe itself below the list, wrapped to the given width.
 type row struct {
 	line   uiLine
-	more   []uiLine
+	detail func(width int) []uiLine
 	indent int
 	pick   bool
 }
@@ -158,27 +158,18 @@ func (a *app) list(v view, at int) (string, int, error) {
 			selected = picks[cur]
 		}
 		body := []uiLine{}
-		first, last := 0, 0
 		for i, r := range v.rows {
-			indent := strings.Repeat(" ", r.indent)
-			line := uiLine{{indent, ""}}
+			line := uiLine{{strings.Repeat(" ", r.indent), ""}}
 			content := r.line
 			if r.pick {
 				mark := uiSpan{"  ", ""}
 				if i == selected {
 					mark = uiSpan{"› ", "1;36"}
 					content = highlight(content)
-					first = len(body)
 				}
 				line = append(line, mark)
 			}
 			body = append(body, append(line, content...))
-			for _, more := range r.more {
-				body = append(body, append(uiLine{{indent + "  ", ""}}, more...))
-			}
-			if i == selected {
-				last = len(body) - 1
-			}
 		}
 		top := []uiLine{heading(v.title), {{strings.Repeat("─", limit), "2"}}, {}}
 		if v.notice != "" {
@@ -191,6 +182,20 @@ func (a *app) list(v view, at int) (string, int, error) {
 		}
 		foot := hints(v.keys, limit)
 		room := max(1, height-len(top)-len(foot)-1)
+		// Details follow the list while it keeps room for a few rows.
+		detail := []uiLine{}
+		if selected >= 0 && v.rows[selected].detail != nil {
+			indent := v.rows[selected].indent + 2
+			detail = append(detail, nil)
+			for _, line := range v.rows[selected].detail(limit - indent) {
+				detail = append(detail, append(uiLine{{strings.Repeat(" ", indent), ""}}, line...))
+			}
+		}
+		if room-len(detail) >= min(len(body), 3) {
+			room -= len(detail)
+		} else {
+			detail = nil
+		}
 		info := v.info
 		if len(body) > room {
 			info = strings.TrimSpace(fmt.Sprintf("%s  %d/%d", info, cur+1, len(picks)))
@@ -198,23 +203,18 @@ func (a *app) list(v view, at int) (string, int, error) {
 		if gap := limit - textWidth(top[0].plain()) - textWidth(info); info != "" && gap >= 2 {
 			top[0] = append(top[0], uiSpan{strings.Repeat(" ", gap) + info, "2"})
 		}
-		offset = min(offset, first)
-		offset = max(offset, last-room+1)
-		offset = max(0, min(offset, len(body)-room))
+		at := max(0, selected)
+		offset = max(0, min(offset, at, len(body)-room), at-room+1)
 		var screen strings.Builder
 		screen.WriteString("\x1b[H")
 		put := func(line uiLine) { screen.WriteString("\x1b[2K  " + a.renderLine(line, limit) + "\r\n") }
-		for _, line := range top {
+		lines := append(append(top, body[offset:min(len(body), offset+room)]...), detail...)
+		for len(lines) <= len(top)+room+len(detail) {
+			lines = append(lines, nil)
+		}
+		for _, line := range lines {
 			put(line)
 		}
-		for i := offset; i < offset+room; i++ {
-			if i < len(body) {
-				put(body[i])
-			} else {
-				put(nil)
-			}
-		}
-		put(nil)
 		for i, line := range foot {
 			screen.WriteString("\x1b[2K  " + a.renderLine(line, limit))
 			if i < len(foot)-1 {

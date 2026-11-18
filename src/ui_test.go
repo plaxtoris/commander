@@ -247,8 +247,8 @@ func TestInteractiveAutomaticUpdate(t *testing.T) {
 				switch r.URL.Path {
 				case "/SHA256SUMS":
 					checks.Add(1)
-					fmt.Fprintf(w, "%x  commander\n", sum)
-				case "/commander":
+					fmt.Fprintf(w, "%x  %s\n", sum, releaseAsset)
+				case "/" + releaseAsset:
 					w.Write(binary)
 				case "/hcloud":
 					installs.Add(1)
@@ -331,7 +331,7 @@ func TestInteractiveAccountPresentationAndResize(t *testing.T) {
 			useHetzner(t, a)
 			addSession(t, a, "Work Team", hMember("existing"), hMember("Case.Sensitive"))
 			s := openUI(t, a.root)
-			s.wait(t, "hetzner existing · hetzner Case.Sensitive")
+			s.wait(t, "hetzner        existing · Case.Sensitive")
 			s.send(t, "e")
 			s.wait(t, "+ add account")
 			frame := terminalControls.ReplaceAllString(s.output, "")
@@ -390,6 +390,77 @@ func TestAccountPresentationPreservesDataAndRejectsEscapes(t *testing.T) {
 	text := a.renderLine(line, 100)
 	if strings.Contains(text, "\x1b") {
 		t.Fatal("redirected output or account data emitted color escapes")
+	}
+}
+
+func TestSessionGroupsAlignAndWrapBetweenItems(t *testing.T) {
+	s := session{Accounts: []member{
+		{Service: "confluence", Account: "alice@example.invalid", Context: "https://wiki.example.invalid"},
+		hMember("dev"), hMember("dns"), hMember("prd"),
+		{Service: "azure", Account: "ops@example.invalid", Context: "Production"},
+		ghMember("alice"),
+	}, Repositories: []string{"acme/*", "acme/tool"}}
+	render := func(s session, width int) string {
+		lines := []string{}
+		for _, line := range groupLines(s.groups(), width) {
+			lines = append(lines, line.plain())
+		}
+		return strings.Join(lines, "\n")
+	}
+	wide := `github         alice
+azure          ops@example.invalid (Production)
+hetzner        dev · dns · prd
+confluence     alice@example.invalid (wiki.example.invalid)
+repositories   acme/* · acme/tool`
+	if got := render(s, 0); got != wide {
+		t.Fatalf("wide groups:\n%s", got)
+	}
+	narrow := `github         alice
+azure          ops@example.invalid (Production)
+hetzner        dev · dns
+               prd
+confluence     alice@example.invalid (wiki.example.invalid)
+repositories   acme/*
+               acme/tool`
+	if got := render(s, 24); got != narrow {
+		t.Fatalf("narrow groups:\n%s", got)
+	}
+	if got := render(session{}, 0); got != "accounts       none" {
+		t.Fatalf("empty session: %q", got)
+	}
+}
+
+func TestInteractiveMenuShowsSelectedAccounts(t *testing.T) {
+	a := testApp(t)
+	useHetzner(t, a)
+	addSession(t, a, "alpha", hMember("first"))
+	addSession(t, a, "beta", hMember("second"), hMember("third"), ghMember("alice"))
+	s := openUI(t, a.root)
+	// Every key draws one frame that ends with the key hints.
+	for _, step := range []struct {
+		keys string
+		want []string
+	}{
+		{"", []string{"› alpha   hetzner", "  beta    github · hetzner", "hetzner        first"}},
+		{"j", []string{"› beta    github · hetzner", "github         alice\r\n", "hetzner        second · third"}},
+		{"G", []string{"› + new session"}},
+	} {
+		start := len(s.output)
+		s.send(t, step.keys)
+		s.wait(t, "[q]uit")
+		frame := terminalControls.ReplaceAllString(s.output[start:], "")
+		for _, line := range step.want {
+			if !strings.Contains(frame, line) {
+				t.Fatalf("missing %q after %q: %s", line, step.keys, frame)
+			}
+		}
+		if strings.Contains(frame, "first") != (step.keys == "") {
+			t.Fatalf("details did not follow the selection after %q: %s", step.keys, frame)
+		}
+	}
+	s.send(t, "q")
+	if err := s.command.Wait(); err != nil {
+		t.Fatal(err)
 	}
 }
 

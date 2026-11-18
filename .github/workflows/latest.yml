@@ -15,8 +15,20 @@ concurrency:
 
 jobs:
   check:
-    runs-on: ubuntu-24.04
+    name: check ${{ matrix.machine }}
+    strategy:
+      matrix:
+        include: &machines
+          - runner: ubuntu-24.04
+            machine: x86_64
+            arch: amd64
+          - runner: ubuntu-24.04-arm
+            machine: aarch64
+            arch: arm64
+    runs-on: ${{ matrix.runner }}
     timeout-minutes: 30
+    env:
+      COMMANDER: dist/commander-${{ matrix.machine }}
     steps:
       - uses: actions/checkout@v7
         with:
@@ -30,10 +42,13 @@ jobs:
           make test
           go test -race ./...
       - name: Build
-        run: make build
+        run: |
+          make build
+          test "$(uname -m)" = "${{ matrix.machine }}"
+          test "$("$COMMANDER" version)" = "Commander $(git rev-parse HEAD) linux/${{ matrix.arch }}"
       - name: Fresh system Git
         run: |
-          docker run --rm -v "$PWD/dist/commander:/usr/local/bin/commander:ro" \
+          docker run --rm -v "$PWD/$COMMANDER:/usr/local/bin/commander:ro" \
             -e COMMANDER_HOME=/tmp/commander debian:bookworm-slim sh -ec '
               ! command -v git
               commander exec -- git --version
@@ -46,7 +61,7 @@ jobs:
         run: |
           install_dir="$RUNNER_TEMP/commander-fresh"
           mkdir -p "$install_dir"
-          cp dist/commander "$install_dir/commander"
+          cp "$COMMANDER" "$install_dir/commander"
           "$install_dir/commander" setup
           "$install_dir/commander" setup
           mv "$install_dir" "$RUNNER_TEMP/commander moved"
@@ -62,8 +77,8 @@ jobs:
           docker run --rm -v "$PWD:/workspace:ro" -e GOCACHE=/tmp/go-build -e GOMODCACHE=/tmp/go-mod commander-development-check make test
       - uses: actions/upload-artifact@v7
         with:
-          name: commander
-          path: dist/commander
+          name: commander-${{ matrix.machine }}
+          path: dist/commander-${{ matrix.machine }}
           retention-days: 1
 
   release:
@@ -79,19 +94,23 @@ jobs:
     steps:
       - uses: actions/download-artifact@v8
         with:
-          name: commander
+          pattern: commander-*
+          merge-multiple: true
           path: dist
       - name: Publish a fresh latest release
         shell: bash
         run: |
           set -euo pipefail
           cd dist
-          sha256sum commander > SHA256SUMS
-          printf 'Commander for WSL and Linux on x86_64.\n\nNamed sessions select accounts and repositories. Selective encrypted transfer optionally includes shared memory. Project containers connect Git at runtime. Tasks integrate verified work and remove temporary branches and worktrees. Docker Engine/Desktop remains a prerequisite for project containers.\n\nBuild: %s\n' "$GITHUB_SHA" > "$RUNNER_TEMP/release-notes"
+          # Installs from before aarch64 support update from the plain name.
+          cp commander-x86_64 commander
+          assets="commander commander-aarch64 commander-x86_64"
+          sha256sum $assets > SHA256SUMS
+          printf 'Commander for WSL and Linux on x86_64 and aarch64.\n\nNamed sessions select accounts and repositories. Selective encrypted transfer optionally includes shared memory. Project containers connect Git at runtime. Tasks integrate verified work and remove temporary branches and worktrees. Docker Engine/Desktop remains a prerequisite for project containers.\n\nBuild: %s\n' "$GITHUB_SHA" > "$RUNNER_TEMP/release-notes"
           # A new release per build keeps its date equal to the binary's. The
           # draft holds the uploaded files, so latest is missing only briefly.
           draft="build-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT"
-          gh release create "$draft" commander SHA256SUMS --draft --target "$GITHUB_SHA" --title latest --notes-file "$RUNNER_TEMP/release-notes"
+          gh release create "$draft" $assets SHA256SUMS --draft --target "$GITHUB_SHA" --title latest --notes-file "$RUNNER_TEMP/release-notes"
           gh release list --limit 100 --json tagName --jq '.[].tagName' | { grep -vx "$draft" || true; } |
           while IFS= read -r tag; do
             gh release delete "$tag" --cleanup-tag --yes
@@ -107,12 +126,22 @@ jobs:
           done
           test "$(gh release list --json tagName --jq 'length')" = 1
           test "$(gh api "repos/$GH_REPO/git/ref/tags/latest" --jq .object.sha)" = "$GITHUB_SHA"
-          test "$(gh release view latest --json assets --jq '[.assets[].name] | sort | join(",")')" = SHA256SUMS,commander
-      - name: Verify published download
+          test "$(gh release view latest --json assets --jq '[.assets[].name] | sort | join(",")')" = SHA256SUMS,commander,commander-aarch64,commander-x86_64
+
+  published:
+    name: published ${{ matrix.machine }}
+    needs: release
+    strategy:
+      matrix:
+        include: *machines
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 10
+    steps:
+      - name: Install with the README command
         run: |
-          mkdir "$RUNNER_TEMP/release-check"
-          cd "$RUNNER_TEMP/release-check"
-          gh release download latest --pattern commander --pattern SHA256SUMS
-          sha256sum --check SHA256SUMS
+          cd "$RUNNER_TEMP"
+          latest="https://github.com/${{ github.repository }}/releases/download/latest"
+          curl -fL -o commander "$latest/commander-$(uname -m)"
           chmod +x commander
-          test "$(./commander version)" = "Commander $GITHUB_SHA linux/amd64"
+          curl -fsSL "$latest/SHA256SUMS" | awk -v asset="commander-$(uname -m)" '$2 == asset { print $1 "  commander" }' | sha256sum --check
+          test "$(./commander version)" = "Commander $GITHUB_SHA linux/${{ matrix.arch }}"

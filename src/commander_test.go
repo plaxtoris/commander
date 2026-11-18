@@ -391,10 +391,19 @@ func TestUnsafeToolArchives(t *testing.T) {
 
 func TestCatalogAndGeneratedInstructions(t *testing.T) {
 	a := testApp(t)
-	for _, name := range []string{"gh", "hcloud", "node", "uv", "gcloud", "docker", "compose"} {
-		asset := a.catalog.Archives[name]
-		if len(asset.SHA256) != 64 || !strings.HasPrefix(asset.URL, "https://") || asset.Version == "" {
-			t.Fatal(name)
+	if machine == "" || len(a.catalog.Archives) != len(archiveEntries) {
+		t.Fatal("no catalog for this machine")
+	}
+	reference, sums := archives["x86_64"], map[string]bool{}
+	for name, pins := range archives {
+		for tool, asset := range pins {
+			same := reference[tool]
+			same.URL, same.SHA256 = asset.URL, asset.SHA256
+			if len(pins) != len(archiveEntries) || same != asset || len(asset.SHA256) != 64 || sums[asset.SHA256] ||
+				!strings.HasPrefix(asset.URL, "https://") || !strings.Contains(asset.URL, asset.Version) {
+				t.Fatal(name, tool)
+			}
+			sums[asset.SHA256] = true
 		}
 	}
 	data := []byte(agentInstructions)
@@ -601,7 +610,7 @@ func TestInteractiveNewSessionWithHiddenLogin(t *testing.T) {
 	session.send(t, "newproject\n")
 	session.wait(t, "[x] newproject")
 	session.send(t, "\x1b[H\r")
-	session.wait(t, "hetzner newproject")
+	session.wait(t, "hetzner        newproject")
 	session.send(t, "q")
 	if err := session.command.Wait(); err != nil {
 		t.Fatal(err)

@@ -173,10 +173,10 @@ func TestIntegrationSelfUpdate(t *testing.T) {
 	sum := sha256.Sum256(binary)
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path == "/SHA256SUMS" {
-			fmt.Fprintf(w, "%s  commander\n", hex.EncodeToString(sum[:]))
+			fmt.Fprintf(w, "%s  %s\n", hex.EncodeToString(sum[:]), releaseAsset)
 			return
 		}
-		if r.URL.Path == "/commander" {
+		if r.URL.Path == "/"+releaseAsset {
 			w.Write(binary)
 			return
 		}

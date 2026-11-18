@@ -16,6 +16,9 @@ import (
 )
 
 var releaseURL = "https://github.com/plaxtoris/commander/releases/download/latest/"
+
+// Each release asset is named for the machine it runs on.
+var releaseAsset = "commander-" + machine
 var releaseCheckTimeout = 8 * time.Second
 
 func (a *app) start() error {
@@ -96,6 +99,9 @@ func (a *app) verifyReleaseAccount(ctx context.Context) error {
 }
 
 func (a *app) update() (bool, error) {
+	if machine == "" {
+		return false, errUnsupported
+	}
 	if err := a.ensure(); err != nil {
 		return false, err
 	}
@@ -111,7 +117,6 @@ func (a *app) update() (bool, error) {
 	defer os.RemoveAll(stage)
 	ctx, cancel := context.WithTimeout(context.Background(), releaseCheckTimeout)
 	defer cancel()
-	const name = "commander"
 	sums := filepath.Join(stage, "SHA256SUMS")
 	private := false
 	downloadRelease := func(ctx context.Context, asset string) error {
@@ -148,7 +153,7 @@ func (a *app) update() (bool, error) {
 	expected := ""
 	for _, line := range strings.Split(string(data), "\n") {
 		fields := strings.Fields(line)
-		if len(fields) == 2 && strings.TrimPrefix(fields[1], "*") == name {
+		if len(fields) == 2 && strings.TrimPrefix(fields[1], "*") == releaseAsset {
 			if expected != "" {
 				return false, errors.New("release checksum is ambiguous")
 			}
@@ -159,7 +164,7 @@ func (a *app) update() (bool, error) {
 	if err != nil || len(decoded) != sha256.Size {
 		return false, errors.New("release checksum is missing or invalid")
 	}
-	destination := filepath.Join(a.root, name)
+	destination := filepath.Join(a.root, "commander")
 	if err = noSymlinks(a.root, destination); err != nil {
 		return false, err
 	}
@@ -171,13 +176,13 @@ func (a *app) update() (bool, error) {
 		return false, nil
 	}
 	fmt.Fprintln(a.errOut, "updating commander…")
-	path := filepath.Join(stage, name)
+	path := filepath.Join(stage, releaseAsset)
 	if private {
 		ctx, cancel := context.WithTimeout(context.Background(), 20*time.Minute)
 		defer cancel()
-		err = downloadRelease(ctx, name)
+		err = downloadRelease(ctx, releaseAsset)
 	} else {
-		err = fetch(releaseURL+name, path, expected)
+		err = fetch(releaseURL+releaseAsset, path, expected)
 	}
 	if err != nil {
 		return false, err

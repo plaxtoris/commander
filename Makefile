@@ -5,8 +5,12 @@ test:
 	$(GO) vet ./...
 	$(GO) test ./...
 
+# Each binary is named for the machine that uname -m prints.
+compile = CGO_ENABLED=0 GOOS=linux GOARCH=$(1) $(GO) build -trimpath -ldflags="-s -w -X main.build=$$(git rev-parse HEAD)" -o dist/commander-$(2) ./src
+
 build:
-	CGO_ENABLED=0 GOOS=linux GOARCH=amd64 $(GO) build -trimpath -ldflags="-s -w -X main.build=$$(git rev-parse HEAD)" -o dist/commander ./src
+	$(call compile,amd64,x86_64)
+	$(call compile,arm64,aarch64)
 
 clean:
 	rm -rf dist

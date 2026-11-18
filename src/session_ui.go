@@ -28,12 +28,15 @@ func (a *app) menu() error {
 		for _, s := range all {
 			names = max(names, min(24, textWidth(s.Name)))
 		}
+		// One calm line per session; the selected one lists its accounts below.
 		rows := []row{}
 		for i, s := range all {
-			r := row{pick: true, line: uiLine{{pad(s.Name, names), "1"}, {"   " + s.summary(), "2"}}}
-			if len(s.Repositories) > 0 {
-				r.more = []uiLine{{{strings.Repeat(" ", names+3) + strings.Join(s.Repositories, " · "), "2"}}}
+			used := strings.Join(s.serviceNames(), " · ")
+			if used == "" {
+				used = "no accounts"
 			}
+			r := row{pick: true, line: uiLine{{pad(s.Name, names), "1"}, {"   " + used, "2"}}}
+			r.detail = func(width int) []uiLine { return groupLines(s.groups(), width) }
 			if s.ID == focus {
 				at = i
 			}

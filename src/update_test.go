@@ -69,22 +69,27 @@ func TestUpdateValidation(t *testing.T) {
 			}
 			mustWrite(t, filepath.Join(a.root, "commander"), original)
 			sum := sha256.Sum256(binary)
-			manifest := fmt.Sprintf("%x  commander\n", sum)
+			// Releases list every machine and the name older installs update from.
+			other := sha256.Sum256([]byte("other machine"))
+			manifest := fmt.Sprintf("%x  commander\n%x  commander-other\n%x  %s\n", other, other, sum, releaseAsset)
 			switch mode {
 			case "corrupt":
 				binary = []byte("corrupted download")
 			case "invalid checksum":
-				manifest = strings.Repeat("z", 64) + "  commander\n"
+				manifest = strings.Repeat("z", 64) + "  " + releaseAsset + "\n"
 			case "duplicate checksum":
 				manifest += manifest
 			}
 			var downloads atomic.Int32
 			useRelease(t, func(w http.ResponseWriter, r *http.Request) {
-				if r.URL.Path == "/SHA256SUMS" {
+				switch r.URL.Path {
+				case "/SHA256SUMS":
 					fmt.Fprint(w, manifest)
-				} else {
+				case "/" + releaseAsset:
 					downloads.Add(1)
 					w.Write(binary)
+				default:
+					http.NotFound(w, r)
 				}
 			})
 			updated, err := a.update()
@@ -180,7 +185,7 @@ func TestSetupAndManualUpdateRefreshAgentInstructions(t *testing.T) {
 			binary := []byte("installed fixture")
 			mustWrite(t, filepath.Join(a.root, "commander"), binary)
 			useRelease(t, func(w http.ResponseWriter, r *http.Request) {
-				fmt.Fprintf(w, "%x  commander\n", sha256.Sum256(binary))
+				fmt.Fprintf(w, "%x  %s\n", sha256.Sum256(binary), releaseAsset)
 			})
 			preserved := []string{"CLAUDE.md", "GEMINI.md", ".gitignore", "MEMORY.md", "workspaces/work/project/AGENTS.md"}
 			for _, path := range preserved {
@@ -246,7 +251,7 @@ func TestPrivateUpdateUsesSelectedIdentity(t *testing.T) {
 				asset, stage := args[6], args[8]
 				data := binary
 				if asset == "SHA256SUMS" {
-					data = []byte(fmt.Sprintf("%x  commander\n", sum))
+					data = []byte(fmt.Sprintf("%x  %s\n", sum, releaseAsset))
 				}
 				mustWrite(t, filepath.Join(stage, asset), data)
 				return nil, nil
@@ -289,7 +294,7 @@ func TestInteractiveStartupCurrentAndOffline(t *testing.T) {
 					w.WriteHeader(http.StatusServiceUnavailable)
 					return
 				}
-				fmt.Fprintf(w, "%x  commander\n", sha256.Sum256(binary))
+				fmt.Fprintf(w, "%x  %s\n", sha256.Sum256(binary), releaseAsset)
 			}))
 			defer server.Close()
 			t.Setenv("COMMANDER_UI_UPDATE_URL", server.URL+"/")

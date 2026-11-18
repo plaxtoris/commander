@@ -9,7 +9,7 @@ exactly that selection.
 
 ```sh
 mkdir -p ~/commander && cd ~/commander
-curl -fLO https://github.com/plaxtoris/commander/releases/download/latest/commander
+curl -fL -o commander https://github.com/plaxtoris/commander/releases/download/latest/commander-$(uname -m)
 chmod +x commander && ./commander
 ```
 
@@ -17,11 +17,13 @@ chmod +x commander && ./commander
   commander                                                      2 sessions
   ──────────────────────────────────────────────────────────────────────────
 
-  › client      github alice · confluence alice
-                acme/*
-    personal    github alice · hetzner home · dockerhub alice
-                alice/*
+  › client      github · confluence
+    personal    github · hetzner · dockerhub
     + new session
+
+    github         alice
+    confluence     alice@acme.example (acme.atlassian.net)
+    repositories   acme/*
 
   [enter] open  [n]ew  [e]dit  [r]ename  [d]elete  [i]mport  e[x]port  [q]uit
 ```
@@ -35,15 +37,16 @@ chmod +x commander && ./commander
 - **Agent ready.** Commander writes `AGENTS.md` into its folder. Agents learn the
   rest from `./commander help`.
 
-Linux and WSL on x86_64. Project containers need Docker Engine or Docker Desktop.
+Linux and WSL on x86_64 and aarch64 (arm64). Project containers need Docker Engine
+or Docker Desktop.
 
 ## Development
 
 Open this repository in its development container and run `make test` and
-`make build`. The source lives in `src/`: the generated agent guidance in
-`src/AGENTS.template.md`, the command reference in `src/commander.go` and tool
-pins in `src/tools.go`. Agents learn Commander only from that guidance and
+`make build`, which writes one binary per machine to `dist/`. The source lives
+in `src/`: the generated agent guidance in `src/AGENTS.template.md`, the
+command reference in `src/commander.go` and tool pins in `src/tools.go`. Agents learn Commander only from that guidance and
 `help`, so keep this README short and inviting for people. Use synthetic login
 fixtures, never real credentials.
-CI also tests races and real containers, then publishes a fresh `latest`
-release for every build of `main`.
+CI tests races and real containers on x86_64 and aarch64, publishes a fresh
+`latest` release for every build of `main` and installs it on both.

@@ -76,6 +76,15 @@ func (m member) display() (string, string) {
 	}
 	return m.Account, m.Context
 }
+
+// Item shows the account name, with its context when that tells logins apart.
+func (m member) item() uiLine {
+	name, context := m.display()
+	if context = strings.TrimPrefix(context, "https://"); context == "" || context == "github.com" {
+		return uiLine{{name, ""}}
+	}
+	return uiLine{{name, ""}, {" (" + context + ")", "2"}}
+}
 func (m member) label() string {
 	s := serviceName(m.Service) + " · " + m.Account
 	if m.Context != "" {

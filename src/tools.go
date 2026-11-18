@@ -31,6 +31,12 @@ type catalog struct {
 	Archives map[string]download
 }
 
+// Machine is the name uname -m prints for this build. It selects release
+// assets and tool downloads; it is empty on unsupported systems.
+var machine = map[string]string{"linux/amd64": "x86_64", "linux/arm64": "aarch64"}[runtime.GOOS+"/"+runtime.GOARCH]
+
+var errUnsupported = errors.New("Commander supports Linux and WSL on x86_64 and aarch64")
+
 var toolCatalog = catalog{
 	Packages: map[string]string{
 		"azure":        "2.92.0",
@@ -38,7 +44,12 @@ var toolCatalog = catalog{
 		"devcontainer": "0.90.0",
 		"python":       "3.13.18",
 	},
-	Archives: map[string]download{
+	Archives: archives[machine],
+}
+
+// Archives pin the same tool versions for every machine.
+var archives = map[string]map[string]download{
+	"x86_64": {
 		"gh": {
 			Version: "2.104.0",
 			URL:     "https://github.com/cli/cli/releases/download/v2.104.0/gh_2.104.0_linux_amd64.tar.gz",
@@ -78,6 +89,49 @@ var toolCatalog = catalog{
 			Version: "5.7.1",
 			URL:     "https://github.com/docker/compose/releases/download/v5.7.1/docker-compose-linux-x86_64",
 			SHA256:  "af426722a8af5de812fcee30cc1c39f0639f5f723cbadefb25e5d4db054064cf",
+			Raw:     true,
+		},
+	},
+	"aarch64": {
+		"gh": {
+			Version: "2.104.0",
+			URL:     "https://github.com/cli/cli/releases/download/v2.104.0/gh_2.104.0_linux_arm64.tar.gz",
+			SHA256:  "cb34cefc6f4e77b90731374a2b737516bb8f3033c6ca46aa949e5344f68069e3",
+			Strip:   1,
+		},
+		"hcloud": {
+			Version: "1.70.2",
+			URL:     "https://github.com/hetznercloud/cli/releases/download/v1.70.2/hcloud-linux-arm64.tar.gz",
+			SHA256:  "05820ba0e3141b212c7cff036d1bd7cd35843e96d7033c2036ffe76253ebbea8",
+		},
+		"uv": {
+			Version: "0.13.8",
+			URL:     "https://github.com/astral-sh/uv/releases/download/0.13.8/uv-aarch64-unknown-linux-musl.tar.gz",
+			SHA256:  "0c6f8593fcf1eadfc60e663b685c408267559d7c5d61c689bbb9f3a7e369ba32",
+			Strip:   1,
+		},
+		"node": {
+			Version: "24.22.3",
+			URL:     "https://nodejs.org/dist/v24.22.3/node-v24.22.3-linux-arm64.tar.gz",
+			SHA256:  "261af2af250dfd7e9f25cf151d1b2713a0adf8f10a9ad116c4947f68627affe8",
+			Strip:   1,
+		},
+		"gcloud": {
+			Version: "593.0.0",
+			URL:     "https://dl.google.com/dl/cloudsdk/channels/rapid/downloads/google-cloud-cli-593.0.0-linux-arm.tar.gz",
+			SHA256:  "f40acaca49c9774bca035c96dcf7350a13c09007e906cb4832e91dc36ce11497",
+			Strip:   1,
+		},
+		"docker": {
+			Version: "29.9.3",
+			URL:     "https://download.docker.com/linux/static/stable/aarch64/docker-29.9.3.tgz",
+			SHA256:  "1b27fd739378ef938401e81ce5afb73b7ad7432d4f598814a9ff5f826bb464d2",
+			Strip:   1,
+		},
+		"compose": {
+			Version: "5.7.1",
+			URL:     "https://github.com/docker/compose/releases/download/v5.7.1/docker-compose-linux-aarch64",
+			SHA256:  "f2f49f903240895fa764c0dca3a14548b754ad9426f6b609ccaf55ec5a3aa2a5",
 			Raw:     true,
 		},
 	},
@@ -460,8 +514,8 @@ func (a *app) prepareTool(tool string) error {
 	if ready {
 		return nil
 	}
-	if runtime.GOOS != "linux" || runtime.GOARCH != "amd64" {
-		return errors.New("Commander supports Linux and WSL on x86_64")
+	if machine == "" {
+		return errUnsupported
 	}
 	if err := a.ensure(); err != nil {
 		return err

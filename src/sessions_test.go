@@ -242,7 +242,7 @@ func TestSessionNamesRenameAndDelete(t *testing.T) {
 	if err = a.sessionCommand([]string{"list"}); err != nil {
 		t.Fatal(err)
 	}
-	if got := a.out.(*bytes.Buffer).String(); got != "client  no accounts\nother   no accounts  acme/* acme/tool\n" {
+	if got := a.out.(*bytes.Buffer).String(); got != "client\n  accounts       none\n\nother\n  accounts       none\n  repositories   acme/* · acme/tool\n" {
 		t.Fatalf("list output: %q", got)
 	}
 	if err = a.command([]string{"--session", "other", "context"}); err == nil || !strings.Contains(err.Error(), `session "other" has no accounts`) {

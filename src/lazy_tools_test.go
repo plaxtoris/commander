@@ -323,7 +323,7 @@ func TestMenuSurvivesUsedToolDownloadFailure(t *testing.T) {
 	mustWrite(t, filepath.Join(a.root, "commander"), binary)
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path == "/SHA256SUMS" {
-			fmt.Fprintf(w, "%x  commander\n", sha256.Sum256(binary))
+			fmt.Fprintf(w, "%x  %s\n", sha256.Sum256(binary), releaseAsset)
 			return
 		}
 		w.WriteHeader(http.StatusServiceUnavailable)
