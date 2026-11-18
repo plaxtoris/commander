@@ -129,7 +129,7 @@ Installation
   commander doctor                         checks the installation
   commander version                        shows the installed build
 
-PROJECT is OWNER/REPO under workspaces. Outside a session shell put
+PROJECT is SESSION/REPO under workspaces. Outside a session shell put
 --session NAME right after commander; put --account SELECTOR there too for up
 or task when the session has several GitHub logins. Services are github,
 azure, office, hetzner, gcloud, dockerhub and confluence.

@@ -205,7 +205,7 @@ func (a *app) loginToken(service string) error {
 	c := tokenLogin{}
 	var err error
 	if service == "confluence" {
-		site, e := a.prompt("confluence url", "")
+		site, e := a.prompt("confluence url", "", nil)
 		if e != nil {
 			return e
 		}
@@ -214,13 +214,13 @@ func (a *app) loginToken(service string) error {
 			return err
 		}
 		c.API = c.Site + "/wiki"
-		c.User, err = a.prompt("atlassian email", "")
+		c.User, err = a.prompt("atlassian email", "", nil)
 		if err != nil {
 			return err
 		}
 		fmt.Fprintln(a.out, "create a token at https://id.atlassian.com/manage-profile/security/api-tokens")
 	} else {
-		c.User, err = a.prompt("dockerhub username", "")
+		c.User, err = a.prompt("dockerhub username", "", nil)
 		if err != nil {
 			return err
 		}

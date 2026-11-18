@@ -80,7 +80,7 @@ func (a *app) menu() error {
 			notice = s.Name + " saved"
 		case key == "r":
 			var name string
-			if name, err = admin.prompt("rename "+s.Name, s.Name); err == nil && name != s.Name {
+			if name, err = admin.prompt("rename "+s.Name, s.Name, nil); err == nil && name != s.Name {
 				err = admin.renameSession(s, name)
 				notice = "renamed to " + name
 			}
@@ -101,7 +101,7 @@ func (a *app) menu() error {
 }
 
 func (a *app) createSession() (session, error) {
-	name, err := a.prompt("name", "")
+	name, err := a.prompt("name", "", nil)
 	if err != nil {
 		return session{}, err
 	}

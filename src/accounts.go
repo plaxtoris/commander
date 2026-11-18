@@ -470,7 +470,7 @@ func (a *app) login(service string) error {
 		if len(token) != 64 || strings.IndexFunc(token, func(r rune) bool { return !(r >= 'a' && r <= 'z' || r >= 'A' && r <= 'Z' || r >= '0' && r <= '9') }) >= 0 {
 			return errors.New("a Hetzner token contains 64 letters or digits")
 		}
-		name, err := a.prompt("project name", "")
+		name, err := a.prompt("project name", "", nil)
 		if err != nil {
 			return err
 		}

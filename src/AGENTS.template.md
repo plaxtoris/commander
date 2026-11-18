@@ -53,18 +53,20 @@ remembered, corrected or removed, and never claim a save that failed.
 
 ## Projects
 
-4. Keep clones in `workspaces/<owner>/<repo>/` and read each project's README.
-   Keep Commander instructions out of project files. For concurrent changes
-   run `./commander task new <owner>/<repo> NAME [BASE]` and work only in the
-   returned worktree. Commit, run the project checks and integrate with
-   `./commander task finish NAME -- CHECK ARGS`, where CHECK ARGS is the
-   project's check command from its README. It checks the merged result,
-   pushes and removes the temporary branches, worktree and containers.
+4. Clone repositories only into `workspaces/<session>/<repo>/`, where
+   `<session>` is the exact name of the active session that
+   `./commander context` prints, never the repository owner. Read each
+   project's README and keep Commander instructions out of project files. For
+   concurrent changes run `./commander task new <session>/<repo> NAME [BASE]`
+   and work only in the returned worktree. Commit, run the project checks and
+   integrate with `./commander task finish NAME -- CHECK ARGS`, where CHECK
+   ARGS is the project's check command from its README. It checks the merged
+   result, pushes and removes the temporary branches, worktree and containers.
    Protected targets need a PR: merge it through the repository checks, then
    finish again. Failed checks or conflicts keep the task. Never discard
    unfinished work, remove unrelated branches, bypass required checks or rewrite
    shared history.
-5. Start trusted projects with `./commander up <owner>/<repo>`. It prints the
+5. Start trusted projects with `./commander up <session>/<repo>`. It prints the
    container ID for `./commander container ID -- COMMAND ARGS`; you can also
    attach an editor. With several GitHub logins in the session, put
    `--account USER` right after `./commander` for `up` and `task`. Git

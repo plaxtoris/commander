@@ -273,9 +273,9 @@ func mark(on bool) uiSpan {
 	return uiSpan{"[ ]", "2"}
 }
 
-// Prompt edits one line in place of the key hints. Escape or an empty line
-// cancels.
-func (a *app) prompt(label, value string) (string, error) {
+// Prompt edits one line in place of the key hints. Tab extends the line
+// through complete when given. Escape or an empty line cancels.
+func (a *app) prompt(label, value string, complete func(string) string) (string, error) {
 	restore, err := a.raw()
 	if err != nil {
 		return "", err
@@ -311,6 +311,12 @@ func (a *app) prompt(label, value string) (string, error) {
 			}
 		case "\x15":
 			text = text[:0]
+		case "\t":
+			if complete != nil {
+				if next := complete(string(text)); len(next) <= 4096 {
+					text = []byte(next)
+				}
+			}
 		default:
 			if len(key) == 1 && key[0] >= 32 && len(text) < 4096 {
 				text = append(text, key[0])
@@ -403,4 +409,50 @@ func archivePath(path string) (string, error) {
 		path = filepath.Join(home, path[2:])
 	}
 	return filepath.Abs(path)
+}
+
+// CompletePath extends a typed path like a shell: to the only folder or zip
+// archive that matches, or to the longest prefix all matches share. Hidden
+// entries match only when the typed name starts with a dot.
+func completePath(text string) string {
+	if text == "~" {
+		return "~/"
+	}
+	dir, prefix := filepath.Split(text)
+	base, err := archivePath(dir)
+	if err != nil {
+		return text
+	}
+	entries, err := os.ReadDir(base)
+	if err != nil {
+		return text
+	}
+	common, found := "", false
+	for _, e := range entries {
+		name := e.Name()
+		if !strings.HasPrefix(name, prefix) || (strings.HasPrefix(name, ".") && !strings.HasPrefix(prefix, ".")) {
+			continue
+		}
+		folder := e.IsDir()
+		if e.Type()&os.ModeSymlink != 0 {
+			info, err := os.Stat(filepath.Join(base, name))
+			folder = err == nil && info.IsDir()
+		}
+		if folder {
+			name += "/"
+		} else if !strings.EqualFold(filepath.Ext(name), ".zip") {
+			continue
+		}
+		if !found {
+			common, found = name, true
+		}
+		for !strings.HasPrefix(name, common) {
+			_, size := utf8.DecodeLastRuneInString(common)
+			common = common[:len(common)-size]
+		}
+	}
+	if !found {
+		return text
+	}
+	return dir + common
 }

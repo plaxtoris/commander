@@ -118,7 +118,7 @@ func TestInteractiveImport(t *testing.T) {
 	s.wait(t, "[q]uit")
 	s.send(t, "i")
 	s.wait(t, "archive:")
-	s.send(t, archive+"\r")
+	s.send(t, filepath.Join(filepath.Dir(archive), "comm")+"\t\r")
 	s.wait(t, "archive password:")
 	s.send(t, "fixture password\r")
 	s.wait(t, "imported 1 session, 1 account")
@@ -131,6 +131,33 @@ func TestInteractiveImport(t *testing.T) {
 	}
 	if imported, err := a.findSession("imported"); err != nil || len(imported.Accounts) != 1 {
 		t.Fatal(imported, err)
+	}
+}
+
+func TestCompletePath(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("HOME", dir)
+	for _, name := range []string{"alpha.zip", "alpine.ZIP", "notes.txt", ".hidden.zip", "archive/ärger.zip", "archive/öl.zip"} {
+		mustWrite(t, filepath.Join(dir, name), nil)
+	}
+	if err := os.Symlink(filepath.Join(dir, "archive"), filepath.Join(dir, "linked")); err != nil {
+		t.Fatal(err)
+	}
+	for typed, want := range map[string]string{
+		"~":               "~/",
+		"~/alph":          "~/alpha.zip",
+		"~/al":            "~/alp",
+		"~/ar":            "~/archive/",
+		"~/li":            "~/linked/",
+		"~/n":             "~/n",
+		"~/.":             "~/.hidden.zip",
+		"~/missing/":      "~/missing/",
+		dir + "/archive/": dir + "/archive/",
+		dir + "/linked/ö": dir + "/linked/öl.zip",
+	} {
+		if got := completePath(typed); got != want {
+			t.Errorf("completePath(%q) = %q, want %q", typed, got, want)
+		}
 	}
 }
 

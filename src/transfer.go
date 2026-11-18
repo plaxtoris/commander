@@ -347,7 +347,7 @@ func (a *app) importChoices(p profileArchive, confirm func(string) bool) (import
 func (a *app) importArchive(path string) (string, error) {
 	var err error
 	if path == "" {
-		if path, err = a.prompt("archive", ""); err != nil {
+		if path, err = a.prompt("archive", "", completePath); err != nil {
 			return "", err
 		}
 	}
