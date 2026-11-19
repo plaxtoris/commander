@@ -219,7 +219,8 @@ func TestInteractiveSmallTerminalAndPaging(t *testing.T) {
 	}
 	s.send(t, "\x1b[F")
 	s.wait(t, "session-29")
-	s.send(t, strings.Repeat("\x1b[5~", 5))
+	// Warnings and selected account details can reduce a page to a few rows.
+	s.send(t, strings.Repeat("\x1b[5~", 30))
 	s.wait(t, "session-00")
 	s.send(t, "q")
 	if err := s.command.Wait(); err != nil {
@@ -463,7 +464,7 @@ func TestInteractiveMenuShowsSelectedAccounts(t *testing.T) {
 	addSession(t, a, "alpha", hMember("first"))
 	addSession(t, a, "beta", hMember("second"), hMember("third"), ghMember("alice"))
 	s := openUI(t, a.root)
-	// Every key draws one frame that ends with the key hints.
+	// Account details follow the selection across background health redraws.
 	for _, step := range []struct {
 		keys string
 		want []string
@@ -472,10 +473,13 @@ func TestInteractiveMenuShowsSelectedAccounts(t *testing.T) {
 		{"j", []string{"› beta    github · hetzner", "github         alice\r\n", "hetzner        second · third"}},
 		{"G", []string{"› + new session"}},
 	} {
-		start := len(s.output)
 		s.send(t, step.keys)
-		s.wait(t, "[q]uit")
-		frame := terminalControls.ReplaceAllString(s.output[start:], "")
+		frame := ""
+		for !strings.Contains(frame, step.want[0]) {
+			s.wait(t, "[q]uit")
+			start := strings.LastIndex(s.output, "\x1b[H")
+			frame = terminalControls.ReplaceAllString(s.output[start:], "")
+		}
 		for _, line := range step.want {
 			if !strings.Contains(frame, line) {
 				t.Fatalf("missing %q after %q: %s", line, step.keys, frame)

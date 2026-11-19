@@ -21,6 +21,12 @@ func (a *app) menu() error {
 	notice, tone, focus, at := "", "", admin.lastSession(), 0
 	var checking <-chan struct{}
 	check := true
+	var restore func()
+	defer func() {
+		if restore != nil {
+			restore()
+		}
+	}()
 	for {
 		all, err := admin.sessions()
 		if err != nil {
@@ -83,9 +89,21 @@ func (a *app) menu() error {
 				message, color = "! "+attentionLabel(len(issues))+" · [l] logins  [c] check again", "33"
 			}
 		}
+		// Keep input raw across automatic redraws, including keys typed while
+		// the refreshed session rows are being built. Actions restore it below.
+		if restore == nil {
+			restore, err = admin.raw()
+			if err != nil {
+				return err
+			}
+		}
 		key, i, err := admin.list(view{title: title, info: info, keys: homeKeys, notice: message, tone: color, rows: rows, refresh: checking}, at)
 		if err != nil {
 			return err
+		}
+		if key != "refresh" {
+			restore()
+			restore = nil
 		}
 		notice, tone, focus, at = "", "32", "", i
 		picked := len(all) > 0 && i < len(all)
