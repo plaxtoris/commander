@@ -110,6 +110,7 @@ func (a *app) raw() (func(), error) {
 type row struct {
 	line   uiLine
 	detail func(width int) []uiLine
+	keys   string
 	indent int
 	pick   bool
 }
@@ -118,6 +119,7 @@ type view struct {
 	title, info, keys string
 	notice, tone      string
 	rows              []row
+	refresh           <-chan struct{}
 }
 
 func heading(title string) uiLine {
@@ -180,7 +182,11 @@ func (a *app) list(v view, at int) (string, int, error) {
 			top = append(top, uiLine{{v.notice, tone}}.wrap(limit)...)
 			top = append(top, uiLine{})
 		}
-		foot := hints(v.keys, limit)
+		keys := v.keys
+		if selected >= 0 && v.rows[selected].keys != "" {
+			keys = v.rows[selected].keys
+		}
+		foot := hints(keys, limit)
 		room := max(1, height-len(top)-len(foot)-1)
 		// Details follow the list while it keeps room for a few rows.
 		detail := []uiLine{}
@@ -227,6 +233,29 @@ func (a *app) list(v view, at int) (string, int, error) {
 		}
 		screen.WriteString("\r")
 		fmt.Fprint(a.out, screen.String())
+		// Poll only while a background account check is running. Input remains
+		// available immediately and the completed check redraws the same row.
+		for v.refresh != nil {
+			select {
+			case <-v.refresh:
+				return "refresh", selected, nil
+			default:
+			}
+			var set syscall.FdSet
+			fd := int(a.in.Fd())
+			if fd >= len(set.Bits)*64 {
+				break
+			}
+			set.Bits[fd/64] |= 1 << uint(fd%64)
+			timeout := syscall.Timeval{Usec: 100000}
+			n, err := syscall.Select(fd+1, &set, nil, nil, &timeout)
+			if err != nil && !errors.Is(err, syscall.EINTR) {
+				return "", selected, err
+			}
+			if n > 0 {
+				break
+			}
+		}
 		key, err := a.key()
 		if err != nil {
 			return "", -1, err

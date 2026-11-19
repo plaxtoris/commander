@@ -242,7 +242,7 @@ func TestOverviewReportsInvalidLogin(t *testing.T) {
 		if tool == "git" {
 			return []byte("git version fixture"), nil
 		}
-		return []byte(`{"hosts":{"github.com":[{"login":"alice","state":"error","token":"private-fixture"}]}}`), nil
+		return []byte(`{"hosts":{"github.com":[{"login":"alice","state":"error","error":"HTTP 401: Bad credentials","token":"private-fixture"}]}}`), nil
 	}
 	if err := a.command([]string{"overview", "work"}); err == nil {
 		t.Fatal("reported invalid login as ready")

@@ -533,6 +533,7 @@ func (a *app) logins(only ...string) ([]account, map[string]string) {
 			continue
 		}
 		rows = append(rows, found...)
+		a.rememberHealth(found)
 	}
 	return rows, failed
 }

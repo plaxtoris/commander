@@ -281,7 +281,11 @@ func (a *app) credentialLock(key string) (func(), error) {
 // One account owns its mutable refresh state. GitHub callers receive an access
 // token after this short operation, so long workflow watches do not serialize.
 func (a *app) accountRuntime(m member) (string, map[string]string, func() error, error) {
-	unlock, err := a.credentialLock(m.Service + ":" + m.Account)
+	key := m.Service + ":" + m.Account
+	if m.Service == "github" {
+		key = "github"
+	}
+	unlock, err := a.credentialLock(key)
 	if err != nil {
 		return "", nil, nil, err
 	}

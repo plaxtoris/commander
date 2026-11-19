@@ -25,11 +25,15 @@ chmod +x commander && ./commander
     confluence     alice@acme.example (acme.atlassian.net)
     repositories   acme/*
 
-  [enter] open  [n]ew  [e]dit  [r]ename  [d]elete  [i]mport  e[x]port  [q]uit
+  [enter] open  [l]ogins  [c]heck  [n]ew  [e]dit  [r]ename  [d]elete  [i]mport  e[x]port  [q]uit
 ```
 
 - **Many accounts, no switching.** Every command gets only its session's logins.
   No global active account ever changes.
+- **Visible login health.** Saved warnings appear immediately while accounts are
+  checked in the background. Press `l` to open a session's logins, then `l` on a
+  GitHub account to sign in again, or `c` to check again. Commander verifies the
+  browser account before replacing its login.
 - **Parallel work.** Sessions, task worktrees and project containers run side by side.
   Each terminal keeps its own session; the menu starts at the one you opened last.
 - **Portable.** Tools install on demand inside the folder. Move it, or export a

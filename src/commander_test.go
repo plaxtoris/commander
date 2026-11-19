@@ -19,6 +19,7 @@ import (
 	"reflect"
 	"regexp"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -476,14 +477,26 @@ func TestUIHelper(t *testing.T) {
 		}
 	}
 	created := ""
+	var githubConnected atomic.Bool
 	a.run = func(tool string, args []string, capture bool, extra map[string]string) ([]byte, error) {
 		if tool == "git" {
 			return []byte("git version fixture"), nil
 		}
 		if tool == "gh" && args[0] == "auth" {
+			if os.Getenv("COMMANDER_UI_GITHUB_EXPIRED") != "" {
+				if args[1] == "login" {
+					mustWrite(t, filepath.Join(extra["GH_CONFIG_DIR"], "hosts.yml"), []byte(`{"github.com":{"user":"alice","oauth_token":"fixture-new","users":{"alice":{"oauth_token":"fixture-new"}}}}`))
+					githubConnected.Store(true)
+				} else if !githubConnected.Load() {
+					return []byte(`{"hosts":{"github.com":[{"login":"alice","state":"error","error":"HTTP 401: Bad credentials"}]}}`), nil
+				}
+			}
 			return []byte(`{"hosts":{"github.com":[{"login":"alice","state":"success","active":true}]}}`), nil
 		}
 		if tool == "gh" && args[0] == "api" && extra["GH_CONFIG_DIR"] != "" {
+			if contains(args, "user") {
+				return []byte("alice\n"), nil
+			}
 			return []byte("acme\nbad/name\n"), nil
 		}
 		if tool != "hcloud" {

@@ -5,8 +5,11 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"os"
+	"path/filepath"
 	"sort"
 	"strings"
+	"time"
 	"unicode"
 	"unicode/utf8"
 )
@@ -169,6 +172,23 @@ func validateSelections(p selections) error {
 }
 
 func (a *app) accounts(service string) ([]account, error) {
+	if service == "github" {
+		nativeUnlock, err := fileLock(filepath.Join(a.root, ".secrets", ".native.lock"), true, true)
+		if err != nil {
+			return nil, err
+		}
+		defer nativeUnlock()
+		// Status can rotate tokens too, so it shares the runtime refresh lock.
+		unlock, err := a.credentialLock("github")
+		if err != nil {
+			return nil, err
+		}
+		defer unlock()
+	}
+	return a.queryAccounts(service)
+}
+
+func (a *app) queryAccounts(service string) ([]account, error) {
 	if tokenService(service) {
 		return a.tokenAccounts(service)
 	}
@@ -221,8 +241,14 @@ func (a *app) accounts(service string) ([]account, error) {
 			row.Key = jsonKey([]string{get("host"), get("login")})
 			row.Account = get("login") + " @ " + get("host")
 			row.Active = flag("active")
-			if get("state") != "success" {
+			switch {
+			case get("state") == "success":
+			case get("state") == "refresh_expired" || strings.HasPrefix(get("error"), "HTTP 401:"):
 				row.State = "Sign in again"
+			case get("state") == "timeout":
+				row.State = "Check connection"
+			default:
+				row.State = "Could not check"
 			}
 		case "azure":
 			row.Key = jsonKey(get("id"))
@@ -271,6 +297,7 @@ func serviceFailure(err error) string {
 }
 
 func (a *app) resolve(members []member) []account {
+	checked := time.Now().UTC()
 	admin := a.admin()
 	found := map[string]account{}
 	queried := map[string]bool{}
@@ -312,6 +339,7 @@ func (a *app) resolve(members []member) []account {
 		}
 		result = append(result, account{member: m, Active: r.Active, State: state})
 	}
+	a.rememberHealthAt(result, checked)
 	return result
 }
 
@@ -377,11 +405,12 @@ func attention(rows []account) error {
 	invalid := []string{}
 	for _, r := range rows {
 		if !ready(r.State) {
-			invalid = append(invalid, serviceName(r.Service)+": "+strings.ToLower(r.State))
+			name, _ := r.display()
+			invalid = append(invalid, strings.TrimSpace(serviceName(r.Service)+" "+name)+": "+strings.ToLower(r.State))
 		}
 	}
 	if len(invalid) > 0 {
-		return errors.New("accounts need attention: " + strings.Join(invalid, "; ") + "; sign in again with ./commander")
+		return errors.New("accounts need attention: " + strings.Join(invalid, "; ") + "; open ./commander and press [l] for logins or [c] to check again")
 	}
 	return nil
 }
@@ -430,8 +459,12 @@ func (a *app) login(service string) error {
 	}
 	switch service {
 	case "github":
-		_, err := a.run("gh", []string{"auth", "login", "--hostname", "github.com", "--git-protocol", "https", "--web", "--clipboard=false", "--expiring", "--insecure-storage", "--scopes", githubScopes}, false, map[string]string{"GH_PROMPT_DISABLED": "1"})
-		return err
+		unlock, err := a.credentialLock("github")
+		if err != nil {
+			return err
+		}
+		defer unlock()
+		return a.githubLogin("github.com", map[string]string{"GH_PROMPT_DISABLED": "1"})
 	case "azure":
 		_, err := a.run("az", []string{"login", "--use-device-code", "--allow-no-subscriptions", "--output", "none"}, false, map[string]string{"AZURE_CORE_LOGIN_EXPERIENCE_V2": "off"})
 		return err
@@ -494,6 +527,63 @@ func (a *app) login(service string) error {
 	return errors.New("unknown service")
 }
 
+func (a *app) githubLogin(host string, extra map[string]string) error {
+	_, err := a.run("gh", []string{"auth", "login", "--hostname", host, "--git-protocol", "https", "--web", "--clipboard=false", "--expiring", "--insecure-storage", "--scopes", githubScopes}, false, extra)
+	return err
+}
+
+// Reconnect verifies the requested identity before replacing its credentials.
+// A cancelled login or a different browser account leaves saved logins intact.
+func (a *app) reconnectGitHub(m member) error {
+	unlock, err := a.lock("native")
+	if err != nil {
+		return err
+	}
+	defer unlock()
+	refreshUnlock, err := a.credentialLock("github")
+	if err != nil {
+		return err
+	}
+	defer refreshUnlock()
+	root, err := os.MkdirTemp(filepath.Join(a.root, ".secrets"), ".login-")
+	if err != nil {
+		return err
+	}
+	defer os.RemoveAll(root)
+	host, user := m.github()
+	extra := map[string]string{"GH_CONFIG_DIR": filepath.Join(root, ".secrets", ".config", "gh"), "GH_PROMPT_DISABLED": "1"}
+	fmt.Fprintf(a.out, "sign in as %s on %s in your browser.\n\n", clean(user), clean(host))
+	if err = a.githubLogin(host, extra); err != nil {
+		return err
+	}
+	identity, err := a.run("gh", []string{"api", "--hostname", host, "user", "--jq", ".login"}, true, extra)
+	if err != nil {
+		return err
+	}
+	if strings.TrimSpace(string(identity)) != user {
+		return fmt.Errorf("sign in as %s; the browser used a different account", clean(user))
+	}
+	state, err := newStorage(root).state("github")
+	if err != nil {
+		return err
+	}
+	selected, err := selectLogins("github", state, []member{m})
+	if err != nil {
+		return err
+	}
+	store := newStorage(a.root)
+	current, err := store.state("github")
+	if err != nil {
+		return err
+	}
+	merged := mergeCredentialState("github", current, selected)
+	if err = store.publish(map[string][]byte{".secrets/.config/gh/hosts.yml": encode(merged)}); err != nil {
+		return err
+	}
+	a.rememberHealth([]account{{member: m, State: "Ready"}})
+	return nil
+}
+
 func (a *app) deleteLogin(m member) error {
 	if tokenService(m.Service) {
 		records, err := a.tokenLogins(m.Service)
@@ -506,6 +596,11 @@ func (a *app) deleteLogin(m member) error {
 	var args []string
 	switch m.Service {
 	case "github":
+		unlock, err := a.credentialLock("github")
+		if err != nil {
+			return err
+		}
+		defer unlock()
 		host, user := m.github()
 		args = []string{"auth", "logout", "--hostname", host, "--user", user}
 	case "azure":

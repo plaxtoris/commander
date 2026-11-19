@@ -7,8 +7,8 @@ import (
 	"strings"
 )
 
-const homeKeys = "[enter] open  [n]ew  [e]dit  [r]ename  [d]elete  [i]mport  e[x]port  [q]uit"
-const editKeys = "[space] select  [a]dd account  [x] delete login  [enter] save  [esc] cancel"
+const homeKeys = "[enter] open  [l]ogins  [c]heck  [n]ew  [e]dit  [r]ename  [d]elete  [i]mport  e[x]port  [q]uit"
+const editKeys = "[space] select  [c]heck  [a]dd account  [x] delete login  [enter] save  [esc] cancel"
 
 // The menu lists sessions. Every action is one key; names and confirmations
 // replace the key hints instead of opening another screen.
@@ -19,11 +19,17 @@ func (a *app) menu() error {
 	}
 	admin := a.admin()
 	notice, tone, focus, at := "", "", admin.lastSession(), 0
+	var checking <-chan struct{}
+	check := true
 	for {
 		all, err := admin.sessions()
 		if err != nil {
 			return err
 		}
+		if check {
+			checking, check = admin.checkHealth(all), false
+		}
+		states := admin.health()
 		names := 0
 		for _, s := range all {
 			names = max(names, min(24, textWidth(s.Name)))
@@ -36,7 +42,22 @@ func (a *app) menu() error {
 				used = "no accounts"
 			}
 			r := row{pick: true, line: uiLine{{pad(s.Name, names), "1"}, {"   " + used, "2"}}}
-			r.detail = func(width int) []uiLine { return groupLines(s.groups(), width) }
+			issues := healthIssues(s, states)
+			if len(issues) > 0 {
+				r.line = append(r.line, uiSpan{"  ! " + attentionLabel(len(issues)), "33"})
+			}
+			r.detail = func(width int) []uiLine {
+				lines := groupLines(s.groups(), width)
+				for _, r := range issues {
+					name, _ := r.display()
+					label, color := statusLabel(r.State)
+					lines = append(lines, uiLine{{serviceName(r.Service) + " " + name + "  " + label, color}}.wrap(width)...)
+				}
+				if len(issues) > 0 {
+					lines = append(lines, uiLine{{"[l] open logins to reconnect or check again", "33"}}.wrap(width)...)
+				}
+				return lines
+			}
 			if s.ID == focus {
 				at = i
 			}
@@ -46,7 +67,23 @@ func (a *app) menu() error {
 			rows = append(rows, row{line: uiLine{{"no sessions yet", "2"}}})
 		}
 		rows = append(rows, row{pick: true, line: uiLine{{"+ new session", "36"}}})
-		key, i, err := admin.list(view{title: title, info: count(len(all), "session"), keys: homeKeys, notice: notice, tone: tone, rows: rows}, at)
+		info := count(len(all), "session")
+		if checking != nil {
+			info += " · checking accounts…"
+		}
+		message, color := notice, tone
+		if message == "" {
+			issues := map[string]bool{}
+			for _, s := range all {
+				for _, r := range healthIssues(s, states) {
+					issues[r.id()] = true
+				}
+			}
+			if len(issues) > 0 {
+				message, color = "! "+attentionLabel(len(issues))+" · [l] logins  [c] check again", "33"
+			}
+		}
+		key, i, err := admin.list(view{title: title, info: info, keys: homeKeys, notice: message, tone: color, rows: rows, refresh: checking}, at)
 		if err != nil {
 			return err
 		}
@@ -57,6 +94,10 @@ func (a *app) menu() error {
 			s = all[i]
 		}
 		switch {
+		case key == "refresh":
+			checking = nil
+		case key == "c":
+			check = checking == nil
 		case key == "q" || key == "esc":
 			admin.clear()
 			return nil
@@ -75,6 +116,13 @@ func (a *app) menu() error {
 			if errors.As(err, &exit) {
 				err = nil
 			}
+		case key == "l":
+			var selected string
+			if issues := healthIssues(s, states); len(issues) > 0 {
+				selected = issues[0].id()
+			}
+			err = admin.editSession(s, selected)
+			notice = s.Name + " saved"
 		case key == "e":
 			err = admin.editSession(s)
 			notice = s.Name + " saved"
@@ -115,8 +163,8 @@ func (a *app) createSession() (session, error) {
 	return a.newSession(name, accounts, repos)
 }
 
-func (a *app) editSession(s session) error {
-	accounts, repos, err := a.editSelection(s.Name, s.Accounts, s.Repositories)
+func (a *app) editSession(s session, focus ...string) error {
+	accounts, repos, err := a.editSelection(s.Name, s.Accounts, s.Repositories, focus...)
 	if err != nil {
 		return err
 	}
@@ -144,7 +192,7 @@ type target struct {
 // repositories of the ticked GitHub logins and an add row. It returns the
 // ticked accounts and repositories. Ticked accounts that are no longer
 // connected stay visible until they are unticked.
-func (a *app) editSelection(title string, accounts []member, repos []string) ([]member, []string, error) {
+func (a *app) editSelection(title string, accounts []member, repos []string, focus ...string) ([]member, []string, error) {
 	// Logins are added and removed in the global store, even from a session shell.
 	a = a.admin()
 	chosen, ticked := map[string]bool{}, map[string]bool{}
@@ -168,7 +216,11 @@ func (a *app) editSelection(title string, accounts []member, repos []string) ([]
 			}
 			for _, m := range accounts {
 				if !known[m.id()] {
-					logins = append(logins, account{member: m, State: "Missing account"})
+					state := "Missing account"
+					if failed[m.Service] != "" {
+						state = failed[m.Service]
+					}
+					logins = append(logins, account{member: m, State: state})
 				}
 			}
 			reload = false
@@ -227,7 +279,14 @@ func (a *app) editSelection(title string, accounts []member, repos []string) ([]
 					status, color := statusLabel(r.State)
 					line = append(line, uiSpan{"  " + status, color})
 				}
-				rows, targets = append(rows, row{indent: 2, pick: true, line: line}), append(targets, target{login: i})
+				rendered := row{indent: 2, pick: true, line: line}
+				if r.Service == "github" {
+					rendered.keys = "[l] sign in again  " + editKeys
+				}
+				if len(focus) > 0 && focus[0] == r.id() {
+					at, focus = len(rows), nil
+				}
+				rows, targets = append(rows, rendered), append(targets, target{login: i})
 			}
 			if failed[service] != "" {
 				if first {
@@ -248,7 +307,17 @@ func (a *app) editSelection(title string, accounts []member, repos []string) ([]
 			rows, targets = append(rows, row{line: uiLine{{"no accounts yet", "2"}}}), append(targets, target{login: -1})
 		}
 		rows, targets = append(rows, row{pick: true, line: uiLine{{"+ add account", "36"}}}), append(targets, target{login: -1, add: true})
-		key, i, err := a.list(view{title: title, keys: editKeys, notice: notice, tone: tone, rows: rows}, at)
+		issues := 0
+		for _, r := range logins {
+			if !ready(r.State) {
+				issues++
+			}
+		}
+		info := ""
+		if issues > 0 {
+			info = "! " + attentionLabel(issues)
+		}
+		key, i, err := a.list(view{title: title, info: info, keys: editKeys, notice: notice, tone: tone, rows: rows}, at)
 		if err != nil {
 			return nil, nil, err
 		}
@@ -257,6 +326,19 @@ func (a *app) editSelection(title string, accounts []member, repos []string) ([]
 		switch {
 		case key == "esc" || key == "q":
 			return nil, nil, errCancelled
+		case key == "c":
+			reload, owners = true, map[string][]string{}
+		case key == "l" && t.login >= 0 && logins[t.login].Service == "github":
+			r := logins[t.login]
+			a.clear()
+			err = a.reconnectGitHub(r.member)
+			if err == nil {
+				name, _ := r.display()
+				notice, tone = name+" connected", "32"
+			} else if !errors.Is(err, errCancelled) {
+				notice = err.Error()
+			}
+			focus, reload, owners = []string{r.id()}, true, map[string][]string{}
 		case key == "a" || key == "enter" && t.add:
 			added, err := a.addLogin()
 			if err != nil && !errors.Is(err, errCancelled) {
@@ -371,7 +453,8 @@ func (a *app) addLogin() ([]member, error) {
 	if err = a.login(service); err != nil {
 		return nil, err
 	}
-	after, err := a.accounts(service)
+	// The native lock already excludes status checks and account runtimes.
+	after, err := a.queryAccounts(service)
 	if err != nil {
 		return nil, err
 	}
