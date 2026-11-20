@@ -239,7 +239,7 @@ func (a *app) runAgent(m member, args []string) error {
 	defer unlock()
 	// Codex requires a private home outside the system temp directory for
 	// its command aliases. Use the same private run area as scoped tools.
-	home, err := os.MkdirTemp(filepath.Join(a.root, ".secrets"), ".run-")
+	home, err := runtimeDir(filepath.Join(a.root, ".secrets"), ".run-")
 	if err != nil {
 		return err
 	}

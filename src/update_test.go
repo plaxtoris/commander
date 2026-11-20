@@ -17,6 +17,8 @@ import (
 	"sync/atomic"
 	"testing"
 	"time"
+
+	"golang.org/x/sys/unix"
 )
 
 // Ready tool fixtures keep startup tests offline while exercising real setup.
@@ -275,6 +277,70 @@ func TestPrivateUpdateUsesSelectedIdentity(t *testing.T) {
 	}
 }
 
+func TestUpdateCleanupKeepsActiveAndRecoveryFolders(t *testing.T) {
+	a := testApp(t)
+	stage := filepath.Join(a.root, ".update-42")
+	mustWrite(t, filepath.Join(stage, "download"), []byte("fixture"))
+	outside := t.TempDir()
+	if err := os.Symlink(outside, filepath.Join(a.root, ".update-43")); err != nil {
+		t.Fatal(err)
+	}
+	recovery := filepath.Join(a.root, ".import-11", "recovery")
+	mustWrite(t, recovery, nil)
+	unlock, err := a.lock("update")
+	if err != nil {
+		t.Fatal(err)
+	}
+	a.cleanupAfterUpdate()
+	unlock()
+	if _, err := os.Stat(stage); err != nil {
+		t.Fatal("removed active update", err)
+	}
+	a.cleanupAfterUpdate()
+	if _, err := os.Stat(stage); !os.IsNotExist(err) {
+		t.Fatal("left abandoned update", err)
+	}
+	for _, path := range []string{outside, filepath.Join(a.root, ".update-43"), recovery} {
+		if _, err := os.Lstat(path); err != nil {
+			t.Fatal("removed unrelated path", path, err)
+		}
+	}
+}
+
+func TestUpdateCleanupRequiresSameHostAndAnEarlierBoot(t *testing.T) {
+	a := testApp(t)
+	host := strings.Repeat("a", 32)
+	boot := host + strings.Repeat("b", 32)
+	for _, item := range []struct{ name, owner string }{
+		{".run-11", host + strings.Repeat("c", 32)},
+		{".run-12", boot},
+		{".run-13", ""},
+		{".run-14", strings.Repeat("d", 64)},
+		{".run-project", host + strings.Repeat("c", 32)},
+	} {
+		path := filepath.Join(a.root, ".secrets", item.name)
+		if err := os.Mkdir(path, 0700); err != nil {
+			t.Fatal(err)
+		}
+		if item.owner != "" {
+			if err := unix.Lsetxattr(path, runtimeBootAttr, []byte(item.owner), 0); errors.Is(err, unix.ENOTSUP) {
+				t.Skip("fixture filesystem does not support extended attributes")
+			} else if err != nil {
+				t.Fatal(err)
+			}
+		}
+	}
+	if err := a.pruneUpdateDirs(".secrets", boot, ".run-", ".docker-"); err != nil {
+		t.Fatal(err)
+	}
+	for _, name := range []string{".run-11", ".run-12", ".run-13", ".run-14", ".run-project"} {
+		_, err := os.Stat(filepath.Join(a.root, ".secrets", name))
+		if (name == ".run-11" && !os.IsNotExist(err)) || (name != ".run-11" && err != nil) {
+			t.Fatal("unexpected cleanup result", name, err)
+		}
+	}
+}
+
 func TestInteractiveStartupCurrentAndOffline(t *testing.T) {
 	for _, offline := range []bool{false, true} {
 		t.Run(fmt.Sprint(offline), func(t *testing.T) {
@@ -298,12 +364,17 @@ func TestInteractiveStartupCurrentAndOffline(t *testing.T) {
 			}))
 			defer server.Close()
 			t.Setenv("COMMANDER_UI_UPDATE_URL", server.URL+"/")
+			staging := filepath.Join(moved, ".update-15")
 			for i := 0; i < 2; i++ {
+				mustWrite(t, filepath.Join(staging, "download"), nil)
 				mustWrite(t, filepath.Join(moved, "AGENTS.md"), []byte("outdated instructions\n"))
 				s := openUI(t, moved)
 				s.wait(t, "[q] quit")
 				if offline && !strings.Contains(s.output, "update skipped:") {
 					t.Fatal("offline startup did not explain the skipped update")
+				}
+				if _, err := os.Stat(staging); (offline && err != nil) || (!offline && !os.IsNotExist(err)) {
+					t.Fatal("unexpected automatic cleanup result", err)
 				}
 				s.send(t, "q")
 				if err := s.command.Wait(); err != nil {

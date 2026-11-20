@@ -385,7 +385,7 @@ func (a *app) accountRuntime(m member) (string, map[string]string, func() error,
 	if err != nil {
 		return fail(err)
 	}
-	root, err := os.MkdirTemp(filepath.Join(a.root, ".secrets"), ".run-")
+	root, err := runtimeDir(filepath.Join(a.root, ".secrets"), ".run-")
 	if err != nil {
 		return fail(err)
 	}

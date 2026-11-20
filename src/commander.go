@@ -284,6 +284,7 @@ func (a *app) command(args []string) error {
 		if err := a.refreshAgentInstructions(); err != nil {
 			return err
 		}
+		a.cleanupAfterUpdate()
 		return a.refreshTools()
 	case "export", "import":
 		return a.transfer(args)

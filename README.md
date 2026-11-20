@@ -68,6 +68,13 @@ the settings for each agent included in the archive and keeps the settings for
 other agents. Use the current Commander version to open archives with settings.
 Use these files for preferences and manage logins through the Commander menu.
 
+## Update cleanup
+
+After a successful update check, Commander removes abandoned update downloads.
+On filesystems that support extended attributes, it also removes temporary agent,
+Docker and tool installation folders that Commander marked during an earlier boot.
+Interrupted imports are kept for recovery.
+
 ## Development
 
 Open this repository in its development container and run `make test` and

@@ -328,7 +328,7 @@ func (a *app) installArchive(name string, spec download) error {
 			return nil
 		}
 	}
-	staging, err := os.MkdirTemp(filepath.Join(a.root, "tools"), ".install-")
+	staging, err := runtimeDir(filepath.Join(a.root, "tools"), ".install-")
 	if err != nil {
 		return err
 	}
@@ -462,7 +462,7 @@ func (a *app) installPackage(name string) error {
 	if err := noSymlinks(a.root, filepath.Join(dir, name)); err != nil {
 		return err
 	}
-	stage, err := os.MkdirTemp(dir, ".packages-")
+	stage, err := runtimeDir(dir, ".packages-")
 	if err != nil {
 		return err
 	}
