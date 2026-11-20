@@ -42,6 +42,41 @@ func argument(args []string, flags ...string) string {
 
 func (a *app) selectedMember(service string, args []string) (member, error) {
 	selector := a.account
+	if service == "github" && selector == "" && a.session != nil {
+		repo := argument(args, "--repo", "-R")
+		if len(args) > 0 && args[0] == "api" {
+			repo = ""
+			for _, arg := range args[1:] {
+				parts := strings.Split(strings.TrimPrefix(strings.SplitN(arg, "?", 2)[0], "/"), "/")
+				if len(parts) >= 3 && parts[0] == "repos" {
+					repo = parts[1] + "/" + parts[2]
+					break
+				}
+				if len(parts) >= 2 && parts[0] == "orgs" {
+					repo = parts[1] + "/*"
+					break
+				}
+			}
+			return a.repoMember(repo)
+		}
+		if len(args) >= 3 && args[0] == "repo" {
+			switch args[1] {
+			case "list":
+				repo = args[2] + "/*"
+			case "view", "clone", "edit", "delete", "create":
+				if !strings.HasPrefix(args[2], "-") {
+					repo = args[2]
+				}
+			}
+		}
+		if owner := argument(args, "--org", "--owner"); owner != "" {
+			repo = owner + "/*"
+		}
+		if repo == "" && len(args) > 0 && args[0] != "auth" {
+			repo = a.workingRepository()
+		}
+		return a.repoMember(repo)
+	}
 	if selector == "" {
 		switch service {
 		case "azure":
@@ -55,8 +90,42 @@ func (a *app) selectedMember(service string, args []string) (member, error) {
 	return a.sessionAccount(service, selector)
 }
 
-// sessionAccount returns the one session account of service that matches
-// selector, or explains how to pick one.
+// An explicit login wins, followed by an exact repository and then its owner.
+func (a *app) repoMember(repo string) (member, error) {
+	if a.account != "" || a.session == nil {
+		return a.sessionAccount("github", a.account)
+	}
+	repo = strings.ToLower(strings.TrimSuffix(repo, ".git"))
+	if !strings.HasSuffix(repo, "/*") {
+		repo = repositoryName(repo)
+	}
+	owner, _, _ := strings.Cut(repo, "/")
+	for _, scope := range []string{repo, owner + "/*"} {
+		if !validRepositoryScope(scope) {
+			continue
+		}
+		var matches []member
+		for _, m := range a.session.Accounts {
+			if m.Service != "github" {
+				continue
+			}
+			for _, r := range m.Repos {
+				if strings.EqualFold(scope, r) {
+					matches = append(matches, m)
+					break
+				}
+			}
+		}
+		if len(matches) == 1 {
+			return matches[0], nil
+		}
+		if len(matches) > 1 {
+			return member{}, errors.New("choose one github login for " + scope + " in the session")
+		}
+	}
+	return a.sessionAccount("github", "")
+}
+
 func (a *app) sessionAccount(service, selector string) (member, error) {
 	if a.session == nil {
 		return member{}, errNoSession
@@ -180,7 +249,7 @@ func (a *app) checkGitHub(args []string, m member) error {
 		}
 		return errors.New("owner is outside the session selection")
 	}
-	if len(args) >= 3 && args[0] == "repo" && (args[1] == "clone" || args[1] == "view" || args[1] == "edit" || args[1] == "delete") {
+	if len(args) >= 3 && args[0] == "repo" && !strings.HasPrefix(args[2], "-") && (args[1] == "clone" || args[1] == "view" || args[1] == "edit" || args[1] == "delete") {
 		repo = args[2]
 	}
 	if len(args) >= 3 && args[0] == "repo" && args[1] == "create" {
@@ -203,6 +272,11 @@ func (a *app) checkGitHub(args []string, m member) error {
 }
 
 func (a *app) execute(tool string, args []string) error {
+	agent := agentService(tool)
+	scopedAgent := agent != "" && !(len(args) == 1 && contains([]string{"--version", "-v", "--help", "-h"}, args[0]))
+	if scopedAgent && a.session == nil {
+		return errNoSession
+	}
 	if tool == "git" {
 		if err := a.checkGit(args); err != nil {
 			return err
@@ -228,14 +302,21 @@ func (a *app) execute(tool string, args []string) error {
 		return err
 	}
 	defer unlock()
+	if err = a.sessionWrappers(*a.session); err != nil {
+		return err
+	}
+	if scopedAgent {
+		m, err := a.sessionAccount(agent, a.account)
+		if err != nil {
+			return err
+		}
+		return a.runAgent(m, args)
+	}
 	nativeUnlock, err := fileLock(filepath.Join(a.root, ".secrets", ".native.lock"), true, true)
 	if err != nil {
 		return err
 	}
 	defer nativeUnlock()
-	if err = a.sessionWrappers(*a.session); err != nil {
-		return err
-	}
 	if service == "" || tokenService(service) {
 		_, err = a.run(tool, args, false, nil)
 		return err
@@ -530,7 +611,7 @@ func (a *app) writeGitCredential(input io.Reader, output io.Writer) error {
 	if fields["protocol"] != "https" || !a.session.allows(fields["path"]) {
 		return errors.New("Git repository is outside the session selection")
 	}
-	m, err := a.selectedMember("github", nil)
+	m, err := a.repoMember(fields["path"])
 	if err != nil {
 		return err
 	}

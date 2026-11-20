@@ -7,11 +7,23 @@ import (
 	"strings"
 )
 
-const homeKeys = "[enter] open  [l]ogins  [c]heck  [n]ew  [e]dit  [r]ename  [d]elete  [i]mport  e[x]port  [q]uit"
-const editKeys = "[space] select  [c]heck  [a]dd account  [x] delete login  [enter] save  [esc] cancel"
+const homeKeys = "[enter] start  [e] edit  [m] more  [q] quit"
+const editKeys = "[space] select  [enter] save  [m] more  [esc] cancel"
 
-// The menu lists sessions. Every action is one key; names and confirmations
-// replace the key hints instead of opening another screen.
+type menuAction struct{ key, label string }
+
+func (a *app) actions(title string, actions []menuAction) (string, error) {
+	labels := make([]string, len(actions))
+	for i, action := range actions {
+		labels[i] = action.label
+	}
+	i, err := a.choose(title, labels, 0)
+	if err != nil {
+		return "", err
+	}
+	return actions[i].key, nil
+}
+
 func (a *app) menu() error {
 	title := ""
 	if a.session != nil {
@@ -43,52 +55,36 @@ func (a *app) menu() error {
 		// One calm line per session; the selected one lists its accounts below.
 		rows := []row{}
 		for i, s := range all {
-			used := strings.Join(s.serviceNames(), " · ")
-			if used == "" {
-				used = "no accounts"
-			}
+			used := s.summary()
 			r := row{pick: true, line: uiLine{{pad(s.Name, names), "1"}, {"   " + used, "2"}}}
 			issues := healthIssues(s, states)
 			if len(issues) > 0 {
 				r.line = append(r.line, uiSpan{"  ! " + attentionLabel(len(issues)), "33"})
 			}
 			r.detail = func(width int) []uiLine {
-				lines := groupLines(s.groups(), width)
-				for _, r := range issues {
-					name, _ := r.display()
-					label, color := statusLabel(r.State)
-					lines = append(lines, uiLine{{serviceName(r.Service) + " " + name + "  " + label, color}}.wrap(width)...)
+				groups := s.groups()
+				scope := groups[:0]
+				for _, g := range groups {
+					switch g.label {
+					case "github", "repositories":
+						scope = append(scope, g)
+					case "accounts", "codex", "claude", serviceName("litellm"):
+						// Already shown on the session row.
+					default:
+						if len(groups) <= 3 {
+							scope = append(scope, g)
+						}
+					}
 				}
-				if len(issues) > 0 {
-					lines = append(lines, uiLine{{"[l] open logins to reconnect or check again", "33"}}.wrap(width)...)
-				}
-				return lines
+				return groupLines(scope, width)
 			}
 			if s.ID == focus {
 				at = i
 			}
 			rows = append(rows, r)
 		}
-		if len(all) == 0 {
-			rows = append(rows, row{line: uiLine{{"no sessions yet", "2"}}})
-		}
-		rows = append(rows, row{pick: true, line: uiLine{{"+ new session", "36"}}})
+		rows = append(rows, row{pick: true, line: uiLine{{"+ new session", "36"}}, keys: "[enter] create  [i] import  [q] quit"})
 		info := count(len(all), "session")
-		if checking != nil {
-			info += " · checking accounts…"
-		}
-		message, color := notice, tone
-		if message == "" {
-			issues := map[string]bool{}
-			for _, s := range all {
-				for _, r := range healthIssues(s, states) {
-					issues[r.id()] = true
-				}
-			}
-			if len(issues) > 0 {
-				message, color = "! "+attentionLabel(len(issues))+" · [l] logins  [c] check again", "33"
-			}
-		}
 		// Keep input raw across automatic redraws, including keys typed while
 		// the refreshed session rows are being built. Actions restore it below.
 		if restore == nil {
@@ -97,7 +93,7 @@ func (a *app) menu() error {
 				return err
 			}
 		}
-		key, i, err := admin.list(view{title: title, info: info, keys: homeKeys, notice: message, tone: color, rows: rows, refresh: checking}, at)
+		key, i, err := admin.list(view{title: title, info: info, keys: homeKeys, notice: notice, tone: tone, rows: rows, refresh: checking}, at)
 		if err != nil {
 			return err
 		}
@@ -111,11 +107,21 @@ func (a *app) menu() error {
 		if picked {
 			s = all[i]
 		}
+		if key == "m" && picked {
+			key, err = admin.actions(s.Name, []menuAction{{"s", "open shell"}, {"c", "check accounts"}, {"r", "rename session"}, {"x", "export session"}, {"i", "import session"}, {"d", "delete session"}})
+			if errors.Is(err, errCancelled) {
+				continue
+			}
+			if err != nil {
+				return err
+			}
+		}
 		switch {
 		case key == "refresh":
 			checking = nil
 		case key == "c":
 			check = checking == nil
+			notice = "checking accounts…"
 		case key == "q" || key == "esc":
 			admin.clear()
 			return nil
@@ -123,26 +129,34 @@ func (a *app) menu() error {
 			notice, err = admin.importArchive("")
 		case key == "n" || key == "enter" && !picked:
 			s, err = admin.createSession()
-			notice, focus = s.Name+" created", s.ID
+			if err == nil {
+				notice, focus = s.Name+" created", s.ID
+				for _, m := range s.Accounts {
+					if codingService(m.Service) {
+						err = admin.code(s)
+						break
+					}
+				}
+			}
 		case !picked:
 		case key == "x":
 			notice, err = admin.exportArchive(s)
 		case key == "enter":
+			err = admin.code(s)
+			focus = s.ID
+		case key == "s":
 			admin.clear()
 			err = admin.sessionShell(s)
 			var exit *exec.ExitError
 			if errors.As(err, &exit) {
 				err = nil
 			}
-		case key == "l":
+		case key == "e" || key == "l":
 			var selected string
 			if issues := healthIssues(s, states); len(issues) > 0 {
 				selected = issues[0].id()
 			}
 			err = admin.editSession(s, selected)
-			notice = s.Name + " saved"
-		case key == "e":
-			err = admin.editSession(s)
 			notice = s.Name + " saved"
 		case key == "r":
 			var name string
@@ -174,7 +188,7 @@ func (a *app) createSession() (session, error) {
 	if err = a.checkName(name, ""); err != nil {
 		return session{}, err
 	}
-	accounts, repos, err := a.editSelection(name, nil, nil)
+	accounts, repos, err := a.editSelection(name, nil, nil, true)
 	if err != nil {
 		return session{}, err
 	}
@@ -182,14 +196,11 @@ func (a *app) createSession() (session, error) {
 }
 
 func (a *app) editSession(s session, focus ...string) error {
-	accounts, repos, err := a.editSelection(s.Name, s.Accounts, s.Repositories, focus...)
+	accounts, repos, err := a.editSelection(s.Name, s.Accounts, s.Repositories, false, focus...)
 	if err != nil {
 		return err
 	}
-	return a.updateSession(s.ID, func(current *session) error {
-		current.Accounts, current.Repositories = accounts, repos
-		return nil
-	})
+	return a.saveSelection(s, accounts, repos)
 }
 
 func (a *app) loading(title string) {
@@ -201,21 +212,27 @@ func (a *app) loading(title string) {
 
 // What an edit screen row stands for.
 type target struct {
-	login int
-	scope string
-	add   bool
+	login  int
+	scope  string
+	add    bool
+	repo   bool
+	expand bool
 }
 
 // EditSelection shows every connected login under its service, the
 // repositories of the ticked GitHub logins and an add row. It returns the
 // ticked accounts and repositories. Ticked accounts that are no longer
 // connected stay visible until they are unticked.
-func (a *app) editSelection(title string, accounts []member, repos []string, focus ...string) ([]member, []string, error) {
+func (a *app) editSelection(title string, accounts []member, repos []string, creating bool, focus ...string) ([]member, []string, error) {
 	// Logins are added and removed in the global store, even from a session shell.
 	a = a.admin()
 	chosen, ticked := map[string]bool{}, map[string]bool{}
+	routes := map[string]string{}
 	for _, m := range accounts {
 		chosen[m.id()] = true
+		for _, repo := range m.Repos {
+			routes[strings.ToLower(repo)] = m.id()
+		}
 	}
 	for _, r := range repos {
 		ticked[strings.ToLower(r)] = true
@@ -224,10 +241,16 @@ func (a *app) editSelection(title string, accounts []member, repos []string, foc
 	var logins []account
 	var failed map[string]string
 	notice, tone, at, reload := "", "", 0, true
+	showScope := !creating
+selection:
 	for {
 		if reload {
 			a.loading(title)
-			logins, failed = a.logins()
+			if showScope {
+				logins, failed = a.logins()
+			} else {
+				logins, failed = a.logins("codex", "claude", "litellm")
+			}
 			known := map[string]bool{}
 			for _, r := range logins {
 				known[r.id()] = true
@@ -272,6 +295,66 @@ func (a *app) editSelection(title string, accounts []member, repos []string, foc
 		for _, r := range repos {
 			add(r)
 		}
+		var gitLogins []member
+		for _, r := range logins {
+			if r.Service == "github" && chosen[r.id()] {
+				gitLogins = append(gitLogins, r.member)
+			}
+		}
+		route := func(scope string) string {
+			if id := routes[strings.ToLower(scope)]; chosen[id] {
+				return id
+			}
+			if len(gitLogins) == 1 {
+				return gitLogins[0].id()
+			}
+			single := ""
+			owner, _, _ := strings.Cut(strings.ToLower(scope), "/")
+			if id := routes[owner+"/*"]; ticked[owner+"/*"] && chosen[id] {
+				return id
+			}
+			for _, m := range gitLogins {
+				for _, candidate := range owners[m.id()] {
+					if strings.EqualFold(candidate, owner+"/*") {
+						if single != "" && single != m.id() {
+							return ""
+						}
+						single = m.id()
+					}
+				}
+			}
+			return single
+		}
+		chooseRoute := func(scope string) error {
+			names := make([]string, len(gitLogins))
+			current, id := 0, route(scope)
+			for i, m := range gitLogins {
+				names[i] = m.ref()
+				if id == m.id() {
+					current = i
+				}
+			}
+			pick, err := a.choose("github · "+scope, names, current)
+			if err == nil {
+				routes[strings.ToLower(scope)] = gitLogins[pick].id()
+			}
+			return err
+		}
+		keys := editKeys
+		quickStart := false
+		if creating {
+			quickStart = true
+			for _, r := range logins {
+				if chosen[r.id()] && codingService(r.Service) {
+					quickStart = false
+					break
+				}
+			}
+			keys = "[enter] start  [space] select  [esc] cancel"
+			if quickStart {
+				keys = "[enter] create  [space] select  [esc] cancel"
+			}
+		}
 		rows, targets := []row{}, []target{}
 		header := func(text string) {
 			rows, targets = append(rows, row{line: uiLine{{text, "1"}}}), append(targets, target{login: -1})
@@ -298,8 +381,11 @@ func (a *app) editSelection(title string, accounts []member, repos []string, foc
 					line = append(line, uiSpan{"  " + status, color})
 				}
 				rendered := row{indent: 2, pick: true, line: line}
-				if r.Service == "github" {
-					rendered.keys = "[l] sign in again  " + editKeys
+				if quickStart && codingService(r.Service) && ready(r.State) {
+					rendered.keys = "[enter] start  [space] select  [esc] cancel"
+				}
+				if !ready(r.State) && (r.Service == "github" || codingService(r.Service)) {
+					rendered.keys = "[l] sign in again  " + keys
 				}
 				if len(focus) > 0 && focus[0] == r.id() {
 					at, focus = len(rows), nil
@@ -313,18 +399,43 @@ func (a *app) editSelection(title string, accounts []member, repos []string, foc
 				status, color := statusLabel(failed[service])
 				rows, targets = append(rows, row{indent: 4, line: uiLine{{status, color}}}), append(targets, target{login: -1})
 			}
-			if service == "github" && len(scopes) > 0 {
+			if service == "github" && (len(scopes) > 0 || len(gitLogins) > 0) {
 				header("repositories")
 				for _, scope := range scopes {
 					line := uiLine{mark(ticked[strings.ToLower(scope)]), {" " + scope, ""}}
-					rows, targets = append(rows, row{indent: 2, pick: true, line: line}), append(targets, target{login: -1, scope: scope})
+					r := row{indent: 2, pick: true, line: line}
+					if len(gitLogins) > 1 {
+						label := "choose login"
+						for _, m := range gitLogins {
+							if route(scope) == m.id() {
+								label = m.ref()
+								break
+							}
+						}
+						r.line = append(r.line, uiSpan{"  · " + label, "2"})
+						r.keys = "[g] github login  " + keys
+					}
+					rows, targets = append(rows, r), append(targets, target{login: -1, scope: scope})
 				}
+				rows, targets = append(rows, row{indent: 2, pick: true, line: uiLine{{"+ add repo", "36"}}, keys: "[enter] add repo  [esc] cancel"}), append(targets, target{login: -1, repo: true})
 			}
 		}
 		if len(logins) == 0 {
-			rows, targets = append(rows, row{line: uiLine{{"no accounts yet", "2"}}}), append(targets, target{login: -1})
+			label := "no accounts yet"
+			if !showScope {
+				label = "no agent accounts yet"
+			}
+			rows, targets = append(rows, row{line: uiLine{{label, "2"}}}), append(targets, target{login: -1})
 		}
-		rows, targets = append(rows, row{pick: true, line: uiLine{{"+ add account", "36"}}}), append(targets, target{login: -1, add: true})
+		addLabel := "add account"
+		if !showScope {
+			addLabel = "add agent"
+		}
+		rows, targets = append(rows, row{pick: true, line: uiLine{{"+ " + addLabel, "36"}}, keys: "[enter] " + addLabel + "  [esc] cancel"}), append(targets, target{login: -1, add: true})
+		if !showScope {
+			rows = append(rows, row{pick: true, line: uiLine{{"accounts & repos", ""}}, keys: "[enter] choose scope  [esc] cancel"})
+			targets = append(targets, target{login: -1, expand: true})
+		}
 		issues := 0
 		for _, r := range logins {
 			if !ready(r.State) {
@@ -335,21 +446,54 @@ func (a *app) editSelection(title string, accounts []member, repos []string, foc
 		if issues > 0 {
 			info = "! " + attentionLabel(issues)
 		}
-		key, i, err := a.list(view{title: title, info: info, keys: editKeys, notice: notice, tone: tone, rows: rows}, at)
+		key, i, err := a.list(view{title: title, info: info, keys: keys, notice: notice, tone: tone, rows: rows}, at)
 		if err != nil {
 			return nil, nil, err
 		}
 		notice, tone, at = "", "", i
 		t := targets[i]
+		if key == "enter" && t.expand {
+			showScope, reload = true, true
+			continue
+		}
+		if key == "enter" && t.repo {
+			key = "r"
+		}
+		if key == "m" {
+			items := []menuAction{{"c", "check accounts"}}
+			if t.login >= 0 {
+				service := logins[t.login].Service
+				if service == "github" || codingService(service) {
+					items = append(items, menuAction{"l", "sign in again"})
+				}
+				items = append(items, menuAction{"x", "delete login"})
+			}
+			key, err = a.actions(title, items)
+			if errors.Is(err, errCancelled) {
+				continue
+			}
+			if err != nil {
+				return nil, nil, err
+			}
+		}
 		switch {
 		case key == "esc" || key == "q":
 			return nil, nil, errCancelled
 		case key == "c":
 			reload, owners = true, map[string][]string{}
-		case key == "l" && t.login >= 0 && logins[t.login].Service == "github":
+		case key == "l" && t.login >= 0 && (logins[t.login].Service == "github" || codingService(logins[t.login].Service)):
 			r := logins[t.login]
 			a.clear()
-			err = a.reconnectGitHub(r.member)
+			if codingService(r.Service) {
+				var done func()
+				done, err = a.lock("native")
+				if err == nil {
+					_, err = a.connectCoding(r.Service, r.Account)
+					done()
+				}
+			} else {
+				err = a.reconnectGitHub(r.member)
+			}
 			if err == nil {
 				name, _ := r.display()
 				notice, tone = name+" connected", "32"
@@ -358,15 +502,22 @@ func (a *app) editSelection(title string, accounts []member, repos []string, foc
 			}
 			focus, reload, owners = []string{r.id()}, true, map[string][]string{}
 		case key == "a" || key == "enter" && t.add:
-			added, err := a.addLogin()
+			added, err := a.addLogin(!showScope)
 			if err != nil && !errors.Is(err, errCancelled) {
 				notice = err.Error()
 			}
 			for _, m := range added {
 				chosen[m.id()] = true
+				focus = []string{m.id()}
+				if !codingService(m.Service) {
+					showScope = true
+				}
 			}
 			reload = len(added) > 0 || err == nil
 		case key == "enter":
+			if quickStart && t.login >= 0 && codingService(logins[t.login].Service) && ready(logins[t.login].State) {
+				chosen[logins[t.login].id()] = true
+			}
 			selected, scoped := []member{}, []string{}
 			for _, r := range logins {
 				if chosen[r.id()] {
@@ -375,15 +526,53 @@ func (a *app) editSelection(title string, accounts []member, repos []string, foc
 			}
 			for _, scope := range scopes {
 				if ticked[strings.ToLower(scope)] {
+					if len(gitLogins) > 1 && route(scope) == "" {
+						if err := chooseRoute(scope); errors.Is(err, errCancelled) {
+							continue selection
+						} else if err != nil {
+							return nil, nil, err
+						}
+					}
 					scoped = append(scoped, scope)
 				}
 			}
+			for i, m := range selected {
+				if m.Service == "github" {
+					selected[i].Repos = nil
+					for _, scope := range scoped {
+						if route(scope) == m.id() && len(gitLogins) > 1 {
+							selected[i].Repos = append(selected[i].Repos, scope)
+						}
+					}
+				}
+			}
 			return selected, scoped, nil
+		case key == "r":
+			scope, e := a.prompt("repo or org/*", "", nil)
+			if e == nil {
+				if validRepositoryScope(scope) {
+					if len(gitLogins) > 1 && route(scope) == "" && chooseRoute(scope) != nil {
+						continue
+					}
+					repos = append(repos, scope)
+					ticked[strings.ToLower(scope)] = true
+				} else {
+					notice = "use owner/repo or owner/*"
+				}
+			}
+		case key == "g" && t.scope != "" && len(gitLogins) > 1:
+			if chooseRoute(t.scope) == nil {
+				ticked[strings.ToLower(t.scope)] = true
+			}
 		case key == "space" && t.login >= 0:
 			id := logins[t.login].id()
 			chosen[id] = !chosen[id]
 		case key == "space" && t.scope != "":
-			ticked[strings.ToLower(t.scope)] = !ticked[strings.ToLower(t.scope)]
+			k := strings.ToLower(t.scope)
+			if !ticked[k] && len(gitLogins) > 1 && route(t.scope) == "" && chooseRoute(t.scope) != nil {
+				continue
+			}
+			ticked[k] = !ticked[k]
 		case key == "x" && t.login >= 0:
 			r := logins[t.login]
 			err = a.removeLogin(r)
@@ -430,35 +619,38 @@ func (a *app) githubOwners(m member) ([]string, error) {
 }
 
 // AddLogin signs in to a service and returns the accounts it added.
-func (a *app) addLogin() ([]member, error) {
-	loginChoices := [][2]string{}
+func (a *app) addLogin(agentsOnly bool) ([]member, error) {
+	var choices []menuAction
 	for _, service := range services {
-		loginChoices = append(loginChoices, [2]string{service, serviceName(service)})
-	}
-	loginChoices = append(loginChoices, [2]string{"office setup", serviceName("office") + " · new organization"}, [2]string{"office repair", serviceName("office") + " · repair permissions"})
-	rows := []row{}
-	for _, choice := range loginChoices {
-		rows = append(rows, row{pick: true, line: uiLine{{choice[1], ""}}})
-	}
-	key, i := "", 0
-	for key != "enter" {
-		var err error
-		if key, i, err = a.list(view{title: "add account", keys: "[enter] sign in  [esc] back", rows: rows}, i); err != nil {
-			return nil, err
-		}
-		if key == "esc" || key == "q" {
-			return nil, errCancelled
+		if !agentsOnly || codingService(service) {
+			choices = append(choices, menuAction{service, serviceName(service)})
 		}
 	}
-	service, mode, _ := strings.Cut(loginChoices[i][0], " ")
-	before, _ := a.accounts(service)
+	title := "add agent"
+	if !agentsOnly {
+		title = "add account"
+		choices = append(choices, menuAction{"office setup", "microsoft 365 · new organization"}, menuAction{"office repair", "microsoft 365 · repair permissions"})
+	}
+	action, err := a.actions(title, choices)
+	if err != nil {
+		return nil, err
+	}
+	service, mode, _ := strings.Cut(action, " ")
 	a.clear()
-	a.out.Write([]byte("  " + a.renderLine(heading(loginChoices[i][1]), 120) + "\n\n"))
+	a.out.Write([]byte("  " + a.renderLine(heading(serviceName(service)), 120) + "\n\n"))
 	unlock, err := a.lock("native")
 	if err != nil {
 		return nil, err
 	}
 	defer unlock()
+	if codingService(service) {
+		m, e := a.connectCoding(service, "")
+		if e != nil {
+			return nil, e
+		}
+		return []member{m}, nil
+	}
+	before, _ := a.queryAccounts(service)
 	switch mode {
 	case "repair":
 		_, err = a.run("m365", []string{"cli", "app", "reconsent", "--output", "text"}, false, nil)

@@ -358,14 +358,14 @@ func TestInteractiveTokenLogins(t *testing.T) {
 				defer server.Close()
 				t.Setenv("COMMANDER_UI_SERVICE_URL", server.URL)
 				s := openUI(t, a.root)
-				s.wait(t, "[q]uit")
+				s.wait(t, "[q] quit")
 				s.send(t, "e")
 				s.wait(t, "+ add account")
 				s.send(t, "a")
 				s.wait(t, "google cloud")
-				choice := strings.Repeat("\x1b[B", 5) + "\r"
+				choice := strings.Repeat("\x1b[B", 8) + "\r"
 				if service == "confluence" {
-					choice = strings.Repeat("\x1b[B", 6) + "\r"
+					choice = strings.Repeat("\x1b[B", 9) + "\r"
 				}
 				s.send(t, choice)
 				if service == "confluence" {
@@ -385,7 +385,7 @@ func TestInteractiveTokenLogins(t *testing.T) {
 					s.wait(t, "[x] alice")
 				}
 				s.send(t, "\x1b")
-				s.wait(t, "[q]uit")
+				s.wait(t, "[q] quit")
 				s.send(t, "q")
 				if err := s.command.Wait(); err != nil {
 					t.Fatal(err)

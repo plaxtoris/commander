@@ -210,9 +210,21 @@ func TestAccountsEveryProviderAndNoSecretOutput(t *testing.T) {
 		return []byte(fixtures[tool]), nil
 	}
 	for _, service := range services {
+		if codingService(service) {
+			dir, err := a.codingDir(member{Service: service, Key: jsonKey("work")})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err = os.MkdirAll(dir, 0700); err != nil {
+				t.Fatal(err)
+			}
+			if err = os.WriteFile(filepath.Join(dir, credentialFiles[service]), []byte(`{"token":"hidden"}`), 0600); err != nil {
+				t.Fatal(err)
+			}
+		}
 		if tokenService(service) {
 			continue
-		} // Built-in providers have HTTP fixture tests.
+		} // HTTP providers have their own fixture tests.
 		rows, err := a.accounts(service)
 		if err != nil || len(rows) != 1 || rows[0].State != "Ready" {
 			t.Fatal(service, rows, err)
@@ -467,6 +479,7 @@ func TestUIHelper(t *testing.T) {
 	}
 	if url := os.Getenv("COMMANDER_UI_UPDATE_URL"); url != "" {
 		releaseURL = url
+		a.latest = func(_ context.Context, _ string, _ catalog) (toolRelease, error) { return toolRelease{}, nil }
 		a.releaseRun = func(context.Context, []string) ([]byte, error) {
 			return nil, errors.New("private release fixture unavailable")
 		}
@@ -609,14 +622,16 @@ func (s *terminalSession) send(t *testing.T, value string) {
 func TestInteractiveNewSessionWithHiddenLogin(t *testing.T) {
 	root := t.TempDir()
 	session := openUI(t, root)
-	session.wait(t, "[q]uit")
+	session.wait(t, "[q] quit")
 	session.send(t, "n")
 	session.wait(t, "name:")
 	session.send(t, "work\r")
+	session.wait(t, "accounts & repos")
+	session.send(t, "j\r")
 	session.wait(t, "+ add account")
 	session.send(t, "a")
 	session.wait(t, "google cloud")
-	session.send(t, "\x1b[B\x1b[B\x1b[B\r")
+	session.send(t, strings.Repeat("\x1b[B", 6)+"\r")
 	session.wait(t, "project token:")
 	session.send(t, strings.Repeat("a", 64)+"\n")
 	session.wait(t, "project name:")
@@ -649,11 +664,11 @@ func TestInteractiveCancelKeepsSession(t *testing.T) {
 	session.send(t, "e")
 	session.wait(t, "no accounts yet")
 	session.send(t, "\x1b")
-	session.wait(t, "[q]uit")
+	session.wait(t, "[q] quit")
 	session.send(t, "d")
 	session.wait(t, "delete session work?")
 	session.send(t, "n")
-	session.wait(t, "[q]uit")
+	session.wait(t, "[q] quit")
 	session.send(t, "q")
 	if err := session.command.Wait(); err != nil {
 		t.Fatal(err)

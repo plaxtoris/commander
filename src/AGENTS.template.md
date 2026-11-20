@@ -4,7 +4,11 @@ This folder is a Commander installation with native tools, accounts, sessions
 and projects. Commander regenerates this file. Tools install on demand, so
 unused ones are normal. Run `./commander help` for every command. Reply in the
 language of the user's current prompt unless asked otherwise; the language of
-these instructions or of memory does not decide it.
+these instructions or of memory does not decide it. Complete clear tasks
+independently and verify the result. Reuse existing code and keep the
+implementation and interface simple. Ask when ambiguity or material risk
+requires the user’s judgment.
+From session workspaces use the absolute Commander path in COMMANDER_HOME.
 
 ## Memory
 
@@ -39,8 +43,9 @@ remembered, corrected or removed, and never claim a save that failed.
    user connects missing logins in the menu. Local work without service access
    needs no accounts.
 2. Run tools as `./commander exec -- TOOL ARGS`, adding `--account SELECTOR`
-   after `exec` when a service has several selected accounts. From project
-   folders use the absolute Commander path. Each call gets only its selected
+   after `exec` when more than one login matches. From project
+   folders use the absolute Commander path. A saved GitHub login for a repo
+   or organization is selected automatically. Each call gets only its selected
    login; never switch a global active account. Verify identity before acting.
    A selection defines scope, not permission to change resources or send
    messages, and it neither sandboxes programs nor reduces token permissions.
@@ -68,8 +73,9 @@ remembered, corrected or removed, and never claim a save that failed.
    shared history.
 5. Start trusted projects with `./commander up <session>/<repo>`. It prints the
    container ID for `./commander container ID -- COMMAND ARGS`; you can also
-   attach an editor. With several GitHub logins in the session, put
-   `--account USER` right after `./commander` for `up` and `task`. Git
+   attach an editor. If the repository has no assigned GitHub login and
+   the session has several, put `--account USER` right after `./commander`
+   for `up` and `task`. Git
    connects at runtime, so keep project images minimal and free of agents,
    agent state and logins. Product `make dev` and `make prd` can run their
    Make targets on the host through that connection.

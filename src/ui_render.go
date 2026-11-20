@@ -140,9 +140,9 @@ func accountLines(rows []account, limit int) []uiLine {
 // GroupLines wraps between items, never inside one; a width of zero never
 // wraps. Labels share one column, so every session aligns alike.
 func groupLines(groups []group, width int) []uiLine {
-	labels := textWidth("repositories")
-	for _, service := range services {
-		labels = max(labels, textWidth(serviceName(service)))
+	labels := 13
+	for _, g := range groups {
+		labels = max(labels, textWidth(g.label))
 	}
 	labels += 2
 	lines := []uiLine{}

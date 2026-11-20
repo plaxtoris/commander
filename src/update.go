@@ -23,11 +23,11 @@ var releaseCheckTimeout = 8 * time.Second
 
 func (a *app) start() error {
 	// A restarted process prepares the new catalog immediately, without another
-	// network check or an update loop if the rolling release changes again.
+	// self update check or an update loop if the rolling release changes again.
 	restarted := os.Getenv("COMMANDER_RESTARTED") == a.root
 	os.Unsetenv("COMMANDER_RESTARTED")
 	if !restarted {
-		fmt.Fprintln(a.errOut, "checking updates…")
+		fmt.Fprintln(a.errOut, "updating…")
 		updated, err := a.update()
 		if err != nil {
 			fmt.Fprintln(a.errOut, "update skipped:", err)
@@ -38,8 +38,11 @@ func (a *app) start() error {
 	if err := a.ensure(); err != nil {
 		return err
 	}
-	if err := a.setup(); err != nil {
-		fmt.Fprintln(a.errOut, "tools need attention; retry when needed:", err)
+	if err := a.refreshAgentInstructions(); err != nil {
+		return err
+	}
+	if err := a.refreshTools(); err != nil {
+		fmt.Fprintln(a.errOut, "tools need attention · retry with commander update")
 	}
 	return a.menu()
 }
@@ -99,6 +102,10 @@ func (a *app) verifyReleaseAccount(ctx context.Context) error {
 }
 
 func (a *app) update() (bool, error) {
+	if a.localBuild {
+		// The next make build supplies Commander itself. Installed tools still update.
+		return false, nil
+	}
 	if machine == "" {
 		return false, errUnsupported
 	}
@@ -175,7 +182,7 @@ func (a *app) update() (bool, error) {
 	if current == expected {
 		return false, nil
 	}
-	fmt.Fprintln(a.errOut, "updating commander…")
+
 	path := filepath.Join(stage, releaseAsset)
 	if private {
 		ctx, cancel := context.WithTimeout(context.Background(), 20*time.Minute)
@@ -207,6 +214,6 @@ func (a *app) update() (bool, error) {
 	if err = os.Rename(path, destination); err != nil {
 		return false, err
 	}
-	fmt.Fprintln(a.errOut, "updated · restarting…")
+
 	return true, nil
 }

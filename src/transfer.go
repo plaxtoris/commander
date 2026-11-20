@@ -19,7 +19,7 @@ type importSelection struct {
 }
 
 func hasLogin(service string, state object, m member) bool {
-	if tokenService(service) || service == "gcloud" {
+	if codingService(service) || tokenService(service) || service == "gcloud" {
 		_, ok := state[m.selector()]
 		return ok
 	}
@@ -97,7 +97,7 @@ func (a *app) sessionArchive(s session) (profileArchive, error) {
 	}
 	store := newStorage(a.root)
 	for service, members := range grouped {
-		state, err := store.state(service)
+		state, err := store.state(service, members...)
 		if err != nil {
 			return p, err
 		}
@@ -135,7 +135,7 @@ func (a *app) importSelected(payload profileArchive, selection importSelection) 
 		grouped[m.Service] = append(grouped[m.Service], m)
 	}
 	for service, members := range grouped {
-		current, err := store.state(service)
+		current, err := store.state(service, members...)
 		if err != nil {
 			return err
 		}
@@ -151,8 +151,22 @@ func (a *app) importSelected(payload profileArchive, selection importSelection) 
 			if conflict && !selection.Replace[m.id()] {
 				return errConflict
 			}
+			if codingService(service) {
+				if !conflict && hasLogin(service, current, m) {
+					delete(incoming, m.selector())
+					continue
+				}
+				unlock, err := a.nativeLoginLock(m, false)
+				if err != nil {
+					return err
+				}
+				defer unlock()
+			}
 		}
-		merged := mergeCredentialState(service, current, incoming)
+		merged := incoming
+		if !codingService(service) {
+			merged = mergeCredentialState(service, current, incoming)
+		}
 		// A fresh encoder writes the complete merged service state without treating
 		// an explicitly selected replacement as an accidental import conflict.
 		tmp, err := os.MkdirTemp(a.root, ".import-")
@@ -321,7 +335,7 @@ func (a *app) importChoices(p profileArchive, confirm func(string) bool) (import
 				continue
 			}
 			chosen[m.id()] = true
-			current, err := store.state(m.Service)
+			current, err := store.state(m.Service, m)
 			if err != nil {
 				return selection, err
 			}
@@ -373,13 +387,16 @@ func (a *app) importArchive(path string) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	defer unlock()
 	release, err := a.waitLock("sessions")
 	if err != nil {
+		unlock()
 		return "", err
 	}
-	defer release()
-	if err = a.importSelected(p, selection); err != nil {
+	err = a.importSelected(p, selection)
+	release()
+	unlock()
+	// GitHub's status check acquires the native login lock itself.
+	if err != nil {
 		return "", err
 	}
 	message := fmt.Sprintf("imported %s, %s", count(len(selection.Sessions), "session"), count(len(selection.Accounts), "account"))

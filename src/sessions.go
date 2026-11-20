@@ -10,7 +10,9 @@ import (
 	"os/exec"
 	"path/filepath"
 	"regexp"
+	"slices"
 	"sort"
+	"strconv"
 	"strings"
 )
 
@@ -60,8 +62,18 @@ func (a *app) parseAccounts(value string) ([]member, error) {
 		if !ok {
 			return nil, errors.New("accounts use service=selector, separated by commas; - selects none")
 		}
+		// Keep the original endpoint ID in saved sessions and portable archives.
+		if service == "openai-compatible" {
+			service = "litellm"
+		}
 		if !contains(services, service) {
-			return nil, fmt.Errorf("unknown service %s; use %s", quote(service), strings.Join(services, ", "))
+			names := append([]string{}, services...)
+			for i, name := range names {
+				if name == "litellm" {
+					names[i] = serviceName(name)
+				}
+			}
+			return nil, fmt.Errorf("unknown service %s; use %s", quote(service), strings.Join(names, ", "))
 		}
 		parts, names = append(parts, [2]string{service, selector}), append(names, service)
 	}
@@ -211,6 +223,9 @@ func (a *app) checkName(name, id string) error {
 	if !validName(name) {
 		return errors.New("use a visible session name of at most 80 characters")
 	}
+	if !workspaceName(name) {
+		return errors.New("choose a session name without a slash or leading dot")
+	}
 	all, err := a.sessions()
 	if err != nil {
 		return err
@@ -274,6 +289,31 @@ func (a *app) renameSession(s session, name string) error {
 	return a.updateSession(s.ID, func(s *session) error {
 		s.Name = name
 		return a.checkName(name, s.ID)
+	})
+}
+
+// Compare only the fields the editor changed, under the session write lock.
+func (a *app) saveSelection(before session, accounts []member, repos []string) error {
+	sameMembers := func(left, right []member) bool {
+		return slices.EqualFunc(left, right, func(x, y member) bool {
+			return x.id() == y.id() && x.Account == y.Account && x.Context == y.Context && slices.Equal(x.Repos, y.Repos)
+		})
+	}
+	return a.updateSession(before.ID, func(current *session) error {
+		changed := errors.New("session changed elsewhere; reopen it to edit")
+		if !sameMembers(accounts, before.Accounts) {
+			if !sameMembers(current.Accounts, before.Accounts) && !sameMembers(current.Accounts, accounts) {
+				return changed
+			}
+			current.Accounts = accounts
+		}
+		if !slices.Equal(repos, before.Repositories) {
+			if !slices.Equal(current.Repositories, before.Repositories) && !slices.Equal(current.Repositories, repos) {
+				return changed
+			}
+			current.Repositories = repos
+		}
+		return nil
 	})
 }
 
@@ -355,18 +395,33 @@ func (s session) groups() []group {
 	return groups
 }
 
-// ServiceNames lists the services the session uses, in menu order.
-func (s session) serviceNames() []string {
-	names := []string{}
-	for _, service := range services {
-		for _, m := range s.Accounts {
-			if m.Service == service {
-				names = append(names, serviceName(service))
-				break
-			}
+func (s session) summary() string {
+	var names []string
+	for _, m := range s.Accounts {
+		if tool := agents[m.Service]; tool != "" {
+			names = append(names, tool+" · "+m.Account)
 		}
 	}
-	return names
+	if len(names) == 0 {
+		if len(s.Accounts) == 0 {
+			return "no accounts"
+		}
+		for _, service := range services {
+			for _, m := range s.Accounts {
+				if m.Service == service {
+					names = append(names, serviceName(service))
+					break
+				}
+			}
+		}
+		if len(names) > 2 {
+			return count(len(s.Accounts), "account")
+		}
+	}
+	if len(names) > 2 {
+		return names[0] + " +" + strconv.Itoa(len(names)-1)
+	}
+	return strings.Join(names, " · ")
 }
 
 // Selection flags replace a session's accounts or repositories. Without
@@ -392,7 +447,7 @@ func (a *app) selectionFlags(s *session, args []string) error {
 	if len(args) > 0 || !a.terminal() {
 		return nil
 	}
-	accounts, repos, err := a.editSelection(s.Name, s.Accounts, s.Repositories)
+	accounts, repos, err := a.editSelection(s.Name, s.Accounts, s.Repositories, false)
 	s.Accounts, s.Repositories = accounts, repos
 	return err
 }
@@ -434,7 +489,7 @@ func (a *app) sessionCommand(args []string) error {
 		if err != nil {
 			return err
 		}
-		fmt.Fprintf(a.out, "session %s created · open it with: commander session shell %s\n", s.Name, quote(s.Name))
+		fmt.Fprintf(a.out, "session %s created\n", s.Name)
 		return nil
 	}
 	s, err := a.findSession(args[1])
@@ -443,13 +498,11 @@ func (a *app) sessionCommand(args []string) error {
 	}
 	switch args[0] {
 	case "edit":
+		before := s
 		if err = a.selectionFlags(&s, args[2:]); err != nil {
 			return err
 		}
-		return a.updateSession(s.ID, func(current *session) error {
-			current.Accounts, current.Repositories = s.Accounts, s.Repositories
-			return nil
-		})
+		return a.saveSelection(before, s.Accounts, s.Repositories)
 	case "rename":
 		return a.renameSession(s, args[2])
 	case "delete":
@@ -516,15 +569,13 @@ func (a *app) sessionLock(id string, shared, wait bool) (func(), error) {
 	return unlock, nil
 }
 
-// Logins lists the connected accounts of used services. A failed service keeps
-// a status, so screens can explain why its accounts are missing.
 // logins lists connected accounts of the given services, or of all services.
 func (a *app) logins(only ...string) ([]account, map[string]string) {
 	admin := a.admin()
 	rows := []account{}
 	failed := map[string]string{}
 	for _, service := range services {
-		if len(only) > 0 && !contains(only, service) || !tokenService(service) && !a.toolUsed(serviceTools[service]) {
+		if len(only) > 0 && !contains(only, service) || !codingService(service) && !tokenService(service) && !a.toolUsed(serviceTools[service]) {
 			continue
 		}
 		found, err := admin.accounts(service)
@@ -555,12 +606,15 @@ func (a *app) sessionWrappers(s session) error {
 		return err
 	}
 	bin := filepath.Join(p, "bin")
+	if err = noSymlinks(a.root, bin); err != nil {
+		return err
+	}
 	if err = os.MkdirAll(bin, 0700); err != nil {
 		return err
 	}
 	for _, tool := range append(append([]string{}, managedTools...), "dockerhub", "confluence") {
 		body := "#!/bin/sh\nexec " + quote(filepath.Join(a.root, "commander")) + " --session " + quote(s.ID) + " exec -- " + quote(tool) + " \"$@\"\n"
-		if err = atomicWrite(filepath.Join(bin, tool), []byte(body), 0700); err != nil {
+		if err = writeGenerated(filepath.Join(bin, tool), []byte(body), 0700); err != nil {
 			return err
 		}
 	}

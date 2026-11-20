@@ -140,7 +140,7 @@ func TestInteractiveReconnectFromSessionWarning(t *testing.T) {
 	s.send(t, "l")
 	s.wait(t, "alice connected")
 	s.send(t, "\x1b")
-	s.wait(t, "[q]uit")
+	s.wait(t, "[q] quit")
 	start := strings.LastIndex(s.output, "commander")
 	if strings.Contains(s.output[start:], "needs attention") {
 		t.Fatal("home retained the warning after reconnect", s.output[start:])

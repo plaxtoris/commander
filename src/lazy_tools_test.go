@@ -333,7 +333,7 @@ func TestMenuSurvivesUsedToolDownloadFailure(t *testing.T) {
 	t.Setenv("COMMANDER_UI_TOOL_URL", server.URL+"/hcloud")
 	t.Setenv("COMMANDER_UI_TOOL_SUM", strings.Repeat("a", 64))
 	s := openUI(t, a.root)
-	s.wait(t, "[q]uit")
+	s.wait(t, "[q] quit")
 	if !strings.Contains(s.output, "tools need attention") {
 		t.Fatal("missing repair feedback")
 	}

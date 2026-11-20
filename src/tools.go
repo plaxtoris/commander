@@ -17,6 +17,8 @@ import (
 	"sort"
 	"strings"
 	"time"
+
+	"golang.org/x/sys/unix"
 )
 
 type download struct {
@@ -39,8 +41,9 @@ var errUnsupported = errors.New("Commander supports Linux and WSL on x86_64 and 
 
 var toolCatalog = catalog{
 	Packages: map[string]string{
-		"azure":        "2.92.0",
-		"m365":         "12.0.0",
+		"azure": "2.92.0",
+		"m365":  "12.0.0",
+		"codex": "0.171.0", "claude": "2.1.329", "pi": "1.5.2",
 		"devcontainer": "0.90.0",
 		"python":       "3.13.18",
 	},
@@ -285,6 +288,14 @@ func replaceDirectory(staged, destination string) error {
 	}
 	existed := false
 	if _, err := os.Stat(destination); err == nil {
+		// Linux can swap both directories atomically while other callers start tools.
+		err = unix.Renameat2(unix.AT_FDCWD, staged, unix.AT_FDCWD, destination, unix.RENAME_EXCHANGE)
+		if err == nil {
+			return os.RemoveAll(staged)
+		}
+		if !errors.Is(err, unix.ENOSYS) && !errors.Is(err, unix.EINVAL) && !errors.Is(err, unix.EOPNOTSUPP) {
+			return err
+		}
 		if err = os.Rename(destination, old); err != nil {
 			return err
 		}
@@ -354,7 +365,22 @@ func (a *app) installArchive(name string, spec download) error {
 			}
 		}
 	}
+	if entry := archiveEntries[name]; entry != "" {
+		info, err := os.Stat(filepath.Join(unpacked, entry))
+		if err != nil || !info.Mode().IsRegular() || info.Mode().Perm()&0111 == 0 {
+			return fmt.Errorf("%s archive is missing its executable", name)
+		}
+	}
+	if name == "gcloud" {
+		version, err := os.ReadFile(filepath.Join(unpacked, "VERSION"))
+		if err != nil || strings.TrimSpace(string(version)) != spec.Version {
+			return errors.New("gcloud archive version did not match")
+		}
+	}
 	if err = os.WriteFile(filepath.Join(unpacked, ".commander-version"), []byte(spec.SHA256), 0644); err != nil {
+		return err
+	}
+	if err = atomicWrite(filepath.Join(unpacked, ".commander-release"), encode(toolRelease{Version: spec.Version, SHA256: spec.SHA256}), 0644); err != nil {
 		return err
 	}
 	return replaceDirectory(unpacked, destination)
@@ -390,7 +416,11 @@ func (a *app) installPython() error {
 }
 
 // Each package lives in its own folder, so updates stay independent.
+var npmPackages = map[string]string{"m365": "@pnp/cli-microsoft365", "devcontainer": "@devcontainers/cli", "pi": "@earendil-works/pi-coding-agent", "codex": "@openai/codex", "claude": "@anthropic-ai/claude-code"}
 var packageEntries = map[string]string{
+	"codex":        "node_modules/@openai/codex/bin/codex.js",
+	"claude":       "node_modules/@anthropic-ai/claude-code/bin/claude.exe",
+	"pi":           "node_modules/@earendil-works/pi-coding-agent/dist/bundle/cli.js",
 	"m365":         "node_modules/@pnp/cli-microsoft365/dist/index.js",
 	"devcontainer": "node_modules/@devcontainers/cli/devcontainer.js",
 	"azure":        "azure/cli/__main__.py",
@@ -401,13 +431,32 @@ func (a *app) packageDir(name string) string { return filepath.Join(a.root, "too
 func (a *app) packageReady(name string) bool {
 	dir := a.packageDir(name)
 	stamp, _ := os.ReadFile(filepath.Join(dir, ".commander-version"))
+	return string(stamp) == a.catalog.Packages[name] && packageFilesReady(dir, name)
+}
+
+func packageFilesReady(dir, name string) bool {
 	info, err := os.Stat(filepath.Join(dir, packageEntries[name]))
-	return string(stamp) == a.catalog.Packages[name] && err == nil && info.Mode().IsRegular()
+	if name == "pi" {
+		if i, e := os.Stat(filepath.Join(dir, "pi")); e != nil || i.Mode().Perm()&0111 == 0 {
+			return false
+		}
+	}
+	return err == nil && info.Mode().IsRegular()
 }
 
 func (a *app) installPackage(name string) error {
 	if a.packageReady(name) {
 		return nil
+	}
+	if agentService(name) != "" {
+		unlock, err := a.agentLock(name, false)
+		if errors.Is(err, unix.EWOULDBLOCK) && packageFilesReady(a.packageDir(name), name) {
+			return nil
+		}
+		if err != nil {
+			return err
+		}
+		defer unlock()
 	}
 	dir := filepath.Join(a.root, "tools")
 	if err := noSymlinks(a.root, filepath.Join(dir, name)); err != nil {
@@ -425,14 +474,23 @@ func (a *app) installPackage(name string) error {
 		}
 		err = a.installCommand(filepath.Join(dir, "uv", "uv"), []string{"--quiet", "pip", "install", "--python", python, "--target", stage, "azure-cli==" + a.catalog.Packages[name]}, map[string]string{"UV_CACHE_DIR": filepath.Join(dir, ".cache", "uv")})
 	} else {
-		pkg := "@pnp/cli-microsoft365"
-		if name == "devcontainer" {
-			pkg = "@devcontainers/cli"
-		}
-		err = a.installCommand(filepath.Join(dir, "node", "bin", "node"), []string{filepath.Join(dir, "node", "lib", "node_modules", "npm", "bin", "npm-cli.js"), "install", "--prefix", stage, "--omit=dev", "--no-audit", "--no-fund", "--loglevel=error", pkg + "@" + a.catalog.Packages[name]}, map[string]string{"npm_config_cache": filepath.Join(dir, ".cache", "npm"), "npm_config_update_notifier": "false"})
+		args := []string{filepath.Join(dir, "node", "lib", "node_modules", "npm", "bin", "npm-cli.js"), "install", "--prefix", stage, "--omit=dev", "--no-audit", "--no-fund", "--loglevel=error"}
+		err = a.installCommand(filepath.Join(dir, "node", "bin", "node"), append(args, npmPackages[name]+"@"+a.catalog.Packages[name]), map[string]string{"npm_config_cache": filepath.Join(dir, ".cache", "npm"), "npm_config_update_notifier": "false"})
 	}
 	if err != nil {
 		return errors.New("installation failed; retry the action")
+	}
+	if name == "pi" {
+		launcher := `#!/bin/sh
+dir=$(dirname -- "$0")
+exec "$dir/../node/bin/node" "$dir/node_modules/@earendil-works/pi-coding-agent/dist/bundle/cli.js" "$@"
+`
+		if err = os.WriteFile(filepath.Join(stage, "pi"), []byte(launcher), 0755); err != nil {
+			return err
+		}
+	}
+	if !packageFilesReady(stage, name) {
+		return fmt.Errorf("%s package is missing its entry point", name)
 	}
 	if err = os.WriteFile(filepath.Join(stage, ".commander-version"), []byte(a.catalog.Packages[name]), 0644); err != nil {
 		return err
@@ -441,6 +499,7 @@ func (a *app) installPackage(name string) error {
 }
 
 var toolDependencies = map[string][]string{
+	"codex": {"node", "codex"}, "claude": {"node", "claude"}, "pi": {"node", "pi"},
 	"git": {"git"}, "gh": {"git", "gh"}, "hcloud": {"hcloud"},
 	"az":     {"uv", "python", "azure"},
 	"gcloud": {"uv", "python", "gcloud"},
@@ -448,7 +507,7 @@ var toolDependencies = map[string][]string{
 	"docker": {"docker"}, "docker-compose": {"compose"},
 	"devcontainer": {"git", "node", "docker", "compose", "devcontainer"},
 }
-var managedTools = []string{"git", "gh", "az", "m365", "hcloud", "gcloud", "docker", "docker-compose", "devcontainer"}
+var managedTools = []string{"git", "gh", "az", "m365", "hcloud", "gcloud", "docker", "docker-compose", "devcontainer", "pi", "codex", "claude"}
 var archiveEntries = map[string]string{"gh": "bin/gh", "hcloud": "hcloud", "node": "bin/node", "uv": "uv", "gcloud": "bin/gcloud", "docker": "docker", "compose": "docker-compose"}
 
 type toolPreparationError struct{ error }
@@ -525,6 +584,10 @@ func (a *app) prepareTool(tool string) error {
 		return err
 	}
 	defer unlock()
+	// Another process may have finished a newer installation while we waited.
+	scoped := *a
+	scoped.catalog = a.installedCatalog(a.catalog)
+	a = &scoped
 	marker := filepath.Join(a.root, "tools", ".requested", tool)
 	if err = noSymlinks(a.root, marker); err != nil {
 		return err
@@ -561,7 +624,8 @@ func (a *app) prepareTool(tool string) error {
 	if announced {
 		fmt.Fprintln(a.errOut, toolLabel(tool)+" ready.")
 	}
-	return os.RemoveAll(filepath.Join(a.root, "tools", ".cache"))
+	cache := filepath.Join(a.root, "tools", ".cache")
+	return errors.Join(os.RemoveAll(filepath.Join(cache, "npm")), os.RemoveAll(filepath.Join(cache, "uv")))
 }
 
 // Git stays a system package: reuse it, or install it with the native package

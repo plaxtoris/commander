@@ -105,7 +105,8 @@ func TestInteractiveRenameEditAndDelete(t *testing.T) {
 func TestInteractiveImport(t *testing.T) {
 	source := testApp(t)
 	mustWrite(t, filepath.Join(source.root, ".secrets", ".config", "hcloud", "cli.toml"), []byte("active_context = 'existing'\n[[contexts]]\nname = 'existing'\ntoken = 'fixture-secret'\n"))
-	payload, err := source.exportPayload("imported", []member{hMember("existing")})
+	mustWrite(t, filepath.Join(source.root, ".secrets/.config/gh/hosts.yml"), []byte("github.com:\n  users:\n    alice:\n      oauth_token: fixture-secret\n"))
+	payload, err := source.exportPayload("imported", []member{hMember("existing"), ghMember("alice")})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -115,13 +116,13 @@ func TestInteractiveImport(t *testing.T) {
 	}
 	a := testApp(t)
 	s := openUI(t, a.root)
-	s.wait(t, "[q]uit")
+	s.wait(t, "[q] quit")
 	s.send(t, "i")
 	s.wait(t, "archive:")
 	s.send(t, filepath.Join(filepath.Dir(archive), "comm")+"\t\r")
 	s.wait(t, "archive password:")
 	s.send(t, "fixture password\r")
-	s.wait(t, "imported 1 session, 1 account")
+	s.wait(t, "imported 1 session, 2 accounts")
 	if strings.Contains(s.output, "fixture-secret") {
 		t.Fatal("import exposed login data")
 	}
@@ -129,7 +130,7 @@ func TestInteractiveImport(t *testing.T) {
 	if err := s.command.Wait(); err != nil {
 		t.Fatal(err)
 	}
-	if imported, err := a.findSession("imported"); err != nil || len(imported.Accounts) != 1 {
+	if imported, err := a.findSession("imported"); err != nil || len(imported.Accounts) != 2 {
 		t.Fatal(imported, err)
 	}
 }
@@ -184,7 +185,7 @@ func TestInteractiveExportStartsAtLastSession(t *testing.T) {
 	s.send(t, "x")
 	s.wait(t, "replace work.zip?")
 	s.send(t, "n")
-	s.wait(t, "[q]uit")
+	s.wait(t, "[q] quit")
 	s.send(t, "x")
 	s.wait(t, "replace work.zip?")
 	s.send(t, "y")
@@ -213,7 +214,7 @@ func TestInteractiveSmallTerminalAndPaging(t *testing.T) {
 		addSession(t, a, fmt.Sprintf("session-%02d", i), hMember("project"))
 	}
 	s := openUI(t, a.root, &pty.Winsize{Rows: 18, Cols: 44})
-	s.wait(t, "[q]uit")
+	s.wait(t, "[q] quit")
 	if strings.Contains(s.output, "session-29") {
 		t.Fatal("long list was not paged", s.output)
 	}
@@ -292,7 +293,7 @@ func TestInteractiveAutomaticUpdate(t *testing.T) {
 				t.Setenv("COMMANDER_UI_TOOL_SUM", fmt.Sprintf("%x", toolSum))
 			}
 			s := openUI(t, a.root)
-			s.wait(t, "[q]uit")
+			s.wait(t, "[q] quit")
 			for _, unwanted := range []string{"Update Commander and all tools", "Tools and updates", "Setup"} {
 				if strings.Contains(s.output, unwanted) {
 					t.Fatal("unexpected menu item", unwanted)
@@ -389,7 +390,7 @@ func TestInteractiveAccountPresentationAndResize(t *testing.T) {
 				}
 			}
 			s.send(t, "\x1b")
-			s.wait(t, "[q]uit")
+			s.wait(t, "[q] quit")
 			s.send(t, "q")
 			if err := s.command.Wait(); err != nil {
 				t.Fatal(err)
@@ -476,7 +477,7 @@ func TestInteractiveMenuShowsSelectedAccounts(t *testing.T) {
 		s.send(t, step.keys)
 		frame := ""
 		for !strings.Contains(frame, step.want[0]) {
-			s.wait(t, "[q]uit")
+			s.wait(t, "[q] quit")
 			start := strings.LastIndex(s.output, "\x1b[H")
 			frame = terminalControls.ReplaceAllString(s.output[start:], "")
 		}

@@ -87,7 +87,7 @@ func (a *app) up(project string) error {
 		}
 	}
 	if githubAccounts > 0 {
-		if _, err = a.selectedMember("github", nil); err != nil {
+		if _, err = a.repoMember(repositoryName(origin)); err != nil {
 			return err
 		}
 	}

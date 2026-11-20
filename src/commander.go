@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	_ "embed"
 	"errors"
@@ -23,22 +24,38 @@ func main() {
 	if len(os.Args) > 1 && os.Args[1] == "bridge-client" {
 		os.Exit(bridgeClient(os.Args[2:]))
 	}
+	path, err := os.Executable()
+	if err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		os.Exit(1)
+	}
+	dir := filepath.Dir(path)
 	root := os.Getenv("COMMANDER_HOME")
-	if root == "" {
-		path, err := os.Executable()
-		if err != nil {
-			fmt.Fprintln(os.Stderr, err)
-			os.Exit(1)
+	// make build links the local command to the host's architecture binary.
+	// A session ID belongs only to the installation that created it.
+	alias, _ := os.Readlink(filepath.Join(dir, "commander"))
+	localBuild := alias == releaseAsset && filepath.Base(path) == releaseAsset
+	if localBuild && root != "" && filepath.Clean(root) != dir {
+		os.Unsetenv("COMMANDER_SESSION")
+		// Outer session wrappers would dispatch tools back to the original login.
+		paths := filepath.SplitList(os.Getenv("PATH"))
+		keep := paths[:0]
+		for _, p := range paths {
+			if !strings.HasPrefix(p, filepath.Join(root, ".sessions")+"/") && !strings.HasPrefix(p, filepath.Join(root, "tools")+"/") {
+				keep = append(keep, p)
+			}
 		}
-		path, err = filepath.EvalSymlinks(path)
-		if err != nil {
-			fmt.Fprintln(os.Stderr, err)
-			os.Exit(1)
+		os.Setenv("PATH", strings.Join(keep, string(os.PathListSeparator)))
+		if strings.HasPrefix(os.Getenv("CLOUDSDK_PYTHON"), filepath.Join(root, "tools")+"/") {
+			os.Unsetenv("CLOUDSDK_PYTHON")
 		}
-		root = filepath.Dir(path)
+	}
+	if root == "" || localBuild {
+		root = dir
 	}
 	a, err := newApp(root, os.Stdin, os.Stdout, os.Stderr)
 	if err == nil {
+		a.localBuild = localBuild
 		err = a.command(os.Args[1:])
 	}
 	if err == nil || errors.Is(err, errCancelled) {
@@ -64,6 +81,7 @@ var errCancelled = errors.New("cancelled")
 
 type app struct {
 	root        string
+	localBuild  bool
 	in          *os.File
 	out, errOut io.Writer
 	catalog     catalog
@@ -72,6 +90,7 @@ type app struct {
 	// Tests replace native commands with local fixtures. Production uses nativeRun.
 	run        func(string, []string, bool, map[string]string) ([]byte, error)
 	releaseRun func(context.Context, []string) ([]byte, error)
+	latest     func(context.Context, string, catalog) (toolRelease, error)
 }
 
 func newApp(root string, in *os.File, out, errOut io.Writer) (*app, error) {
@@ -80,12 +99,14 @@ func newApp(root string, in *os.File, out, errOut io.Writer) (*app, error) {
 		return nil, err
 	}
 	a := &app{root: root, in: in, out: out, errOut: errOut, catalog: toolCatalog}
+	a.latest = latestTool
+	a.catalog = a.installedCatalog(a.catalog)
 	a.run = a.nativeRun
 	a.releaseRun = func(ctx context.Context, args []string) ([]byte, error) {
 		if a.session == nil || !a.session.allows("plaxtoris/commander") {
 			return nil, errors.New("private updates require a session selecting plaxtoris/commander")
 		}
-		m, err := a.selectedMember("github", nil)
+		m, err := a.repoMember("plaxtoris/commander")
 		if err != nil {
 			return nil, err
 		}
@@ -102,6 +123,8 @@ const help = `commander · accounts, tools and repositories for agents
 
 Sessions
   commander                                open the session menu
+  commander menu                           open the local menu without updating
+  commander --session NAME code            open a fresh native agent
   commander session [list]                 list sessions
   commander session new NAME [--accounts service=user,...] [--repos owner/*,...]
   commander session edit NAME [--accounts ...] [--repos ...]
@@ -131,8 +154,8 @@ Installation
 
 PROJECT is SESSION/REPO under workspaces. Outside a session shell put
 --session NAME right after commander; put --account SELECTOR there too for up
-or task when the session has several GitHub logins. Services are github,
-azure, office, hetzner, gcloud, dockerhub and confluence.
+or task when a repository has several matching GitHub logins. Services are github,
+azure, office, hetzner, gcloud, dockerhub, confluence, codex, claude and openai-compatible.
 Selections limit what trusted tools use. They grant no permission to act.
 `
 
@@ -160,6 +183,26 @@ func (a *app) command(args []string) error {
 		return a.start()
 	}
 	switch args[0] {
+	case "menu", "code":
+		if len(args) != 1 {
+			return errors.New("unexpected argument")
+		}
+		if !a.terminal() {
+			return errTerminal
+		}
+		if err := a.ensure(); err != nil {
+			return err
+		}
+		if args[0] == "menu" {
+			if err := a.refreshAgentInstructions(); err != nil {
+				return err
+			}
+			return a.menu()
+		}
+		if a.session == nil {
+			return errNoSession
+		}
+		return a.code(*a.session)
 	case "bridge-serve":
 		return a.serveBridge()
 	case "task":
@@ -227,9 +270,17 @@ func (a *app) command(args []string) error {
 			return err
 		}
 		if updated {
-			return a.restartCommander([]string{"setup"})
+			return a.restartCommander([]string{"update-tools"})
 		}
-		return a.setup()
+		fallthrough
+	case "update-tools":
+		if err := a.ensure(); err != nil {
+			return err
+		}
+		if err := a.refreshAgentInstructions(); err != nil {
+			return err
+		}
+		return a.refreshTools()
 	case "export", "import":
 		return a.transfer(args)
 	default:
@@ -286,7 +337,16 @@ func (a *app) refreshAgentInstructions() error {
 	if err := noSymlinks(a.root, path); err != nil {
 		return err
 	}
-	return atomicWrite(path, []byte(agentInstructions), 0644)
+	return writeGenerated(path, []byte(agentInstructions), 0644)
+}
+
+func writeGenerated(path string, data []byte, mode os.FileMode) error {
+	if info, err := os.Lstat(path); err == nil && info.Mode() == mode && info.Size() == int64(len(data)) {
+		if current, err := os.ReadFile(path); err == nil && bytes.Equal(current, data) {
+			return nil
+		}
+	}
+	return atomicWrite(path, data, mode)
 }
 
 func noSymlinks(root, path string) error {
@@ -465,13 +525,11 @@ func (a *app) toolCommand(tool string, args []string) (string, []string, error) 
 		path = filepath.Join(dir, "docker", "docker")
 	case "docker-compose":
 		path = filepath.Join(dir, "compose", "docker-compose")
-	case "m365", "devcontainer":
+	case "claude":
+		path = filepath.Join(a.packageDir(tool), packageEntries[tool])
+	case "pi", "codex", "m365", "devcontainer":
 		path = filepath.Join(dir, "node", "bin", "node")
-		entry := filepath.Join(a.packageDir("m365"), packageEntries["m365"])
-		if tool == "devcontainer" {
-			entry = filepath.Join(a.packageDir("devcontainer"), packageEntries["devcontainer"])
-		}
-		args = append([]string{entry}, args...)
+		args = append([]string{filepath.Join(a.packageDir(tool), packageEntries[tool])}, args...)
 	case "az":
 		var err error
 		path, err = a.python()

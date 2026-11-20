@@ -131,7 +131,11 @@ func (e serviceError) Error() string {
 // Do not include URLs, response bodies or transport errors in diagnostics:
 // services and proxies can reflect credentials into them.
 func requestService(method, target, authorization string, body []byte) ([]byte, error) {
-	req, err := http.NewRequest(method, target, bytes.NewReader(body))
+	return requestServiceContext(context.Background(), method, target, authorization, body)
+}
+
+func requestServiceContext(ctx context.Context, method, target, authorization string, body []byte) ([]byte, error) {
+	req, err := http.NewRequestWithContext(ctx, method, target, bytes.NewReader(body))
 	if err != nil {
 		return nil, errors.New("invalid API request")
 	}

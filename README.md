@@ -2,10 +2,9 @@
 
 One folder for your accounts, tools and repositories, ready for any coding agent.
 
-Sign in once to GitHub, Azure, Microsoft 365, Google Cloud, Hetzner, Docker Hub
-and Confluence. Then give each piece of work a **session**: a named selection of
-accounts and repositories. Open its shell, start your agent, and it works with
-exactly that selection.
+Choose a session and press enter to open Codex, Claude Code or Pi in its
+workspace. Each session defines the accounts and repositories available to the
+agent. Every launch starts a fresh conversation.
 
 ```sh
 mkdir -p ~/commander && cd ~/commander
@@ -17,29 +16,30 @@ chmod +x commander && ./commander
   commander                                                      2 sessions
   ──────────────────────────────────────────────────────────────────────────
 
-  › client      github · confluence
-    personal    github · hetzner · dockerhub
+  › client      claude · work
+    personal    codex · personal
     + new session
 
     github         alice
-    confluence     alice@acme.example (acme.atlassian.net)
     repositories   acme/*
 
-  [enter] open  [l]ogins  [c]heck  [n]ew  [e]dit  [r]ename  [d]elete  [i]mport  e[x]port  [q]uit
+  [enter] start  [e] edit  [m] more  [q] quit
 ```
 
-- **Many accounts, no switching.** Every command gets only its session's logins.
-  No global active account ever changes.
-- **Visible login health.** Saved warnings appear immediately while accounts are
-  checked in the background. Press `l` to open a session's logins, then `l` on a
-  GitHub account to sign in again, or `c` to check again. Commander verifies the
-  browser account before replacing its login.
-- **Parallel work.** Sessions, task worktrees and project containers run side by side.
-  Each terminal keeps its own session; the menu starts at the one you opened last.
-- **Portable.** Tools install on demand inside the folder. Move it, or export a
-  session with its logins to an encrypted `SESSION.zip`.
-- **Agent ready.** Commander writes `AGENTS.md` into its folder. Agents learn the
-  rest from `./commander help`.
+- **Start.** One agent account opens directly. With several, pick the login
+  you want. An OpenAI compatible endpoint opens in Pi. Model, effort and
+  keyboard shortcuts belong to the native agent. Exiting returns to Commander.
+- **New session.** Name it, highlight an agent account and press enter to start.
+  Use space to select several agents. Open `accounts & repos` for GitHub
+  logins, organizations and repositories. Agents run autonomously in this workspace.
+- **Edit.** Connect more accounts or change the scope. Choose a GitHub login
+  per repository or organization when several can reach it. Login issues show
+  on the session that needs attention.
+- **More.** Open a shell, check accounts, rename, import, export or delete a
+  session. Exports are encrypted. After importing a Claude subscription on a
+  different machine, sign in again through Claude Code.
+- **Portable.** Commander installs the official CLIs on demand in its tools
+  directory and checks for updates on startup. Pi lives in `tools/pi/`.
 
 Linux and WSL on x86_64 and aarch64 (arm64). Project containers need Docker Engine
 or Docker Desktop.
@@ -47,10 +47,11 @@ or Docker Desktop.
 ## Development
 
 Open this repository in its development container and run `make test` and
-`make build`, which writes one binary per machine to `dist/`. The source lives
-in `src/`: the generated agent guidance in `src/AGENTS.template.md`, the
-command reference in `src/commander.go` and tool pins in `src/tools.go`. Agents learn Commander only from that guidance and
-`help`, so keep this README short and inviting for people. Use synthetic login
-fixtures, never real credentials.
+`make build`, which writes one binary per machine to `dist/`. Run
+`cd dist && ./commander` to try the build with its own sessions and logins.
+Installed tools update on startup. Rebuild to update Commander itself.
+The source lives in `src/`. Agent guidance comes from `AGENTS.template.md`,
+the command reference from `commander.go` and tool pins from `tools.go`.
+Use synthetic login fixtures for tests.
 CI tests races and real containers on x86_64 and aarch64, publishes a fresh
 `latest` release for every build of `main` and installs it on both.

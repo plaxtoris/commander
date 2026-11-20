@@ -84,7 +84,7 @@ var nativeFiles = map[string]bool{
 
 func newStorage(root string) *storage { return &storage{root: root, originals: map[string][]byte{}} }
 func (s *storage) read(name string) ([]byte, error) {
-	if !nativeFiles[name] {
+	if !nativeFiles[name] && !codingFile(name) {
 		return nil, errors.New("path is outside native login storage")
 	}
 	path := filepath.Join(s.root, ".secrets", filepath.FromSlash(name))
@@ -127,7 +127,10 @@ func (s *storage) json(name string, fallback any) (any, error) {
 	return result, nil
 }
 
-func (s *storage) state(service string) (object, error) {
+func (s *storage) state(service string, members ...member) (object, error) {
+	if codingService(service) {
+		return s.codingState(service, members)
+	}
 	if tokenService(service) {
 		value, err := s.json(tokenFile(service), object{})
 		if err != nil {
@@ -307,6 +310,17 @@ func selectMSAL(cache object, identities, clients, localIDs, realms []string) (o
 }
 
 func selectLogins(service string, state object, members []member) (object, error) {
+	if codingService(service) {
+		out := object{}
+		for _, m := range members {
+			key := m.selector()
+			if !codingLabel.MatchString(key) || key != m.Account || !validCodingRecord(service, state[key]) {
+				return nil, errFormat
+			}
+			out[key] = state[key]
+		}
+		return out, nil
+	}
 	if tokenService(service) {
 		selected := object{}
 		for _, m := range members {
@@ -520,6 +534,16 @@ func mergeRows(existing, incoming []any, key string, flags ...string) ([]any, er
 }
 
 func (s *storage) install(service string, incoming object) (map[string][]byte, error) {
+	if codingService(service) {
+		files := map[string][]byte{}
+		for key, v := range incoming {
+			if !codingLabel.MatchString(key) || !validCodingRecord(service, v) {
+				return nil, errFormat
+			}
+			files[filepath.Join("coding", service, key, credentialFiles[service])] = encode(v)
+		}
+		return files, nil
+	}
 	existing, err := s.state(service)
 	if err != nil {
 		return nil, err
@@ -661,7 +685,9 @@ func (s *storage) publish(files map[string][]byte) error {
 	}
 	sort.Strings(paths)
 	for _, name := range paths {
-		if !sessionFile.MatchString(filepath.ToSlash(name)) && !nativeFiles[strings.TrimPrefix(filepath.ToSlash(name), ".secrets/")] {
+		path := filepath.ToSlash(name)
+		login, private := strings.CutPrefix(path, ".secrets/")
+		if !sessionFile.MatchString(path) && !(private && (nativeFiles[login] || codingFile(login))) {
 			return errFormat
 		}
 		if err := noSymlinks(s.root, filepath.Join(s.root, name)); err != nil {

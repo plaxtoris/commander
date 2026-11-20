@@ -301,7 +301,7 @@ func TestInteractiveStartupCurrentAndOffline(t *testing.T) {
 			for i := 0; i < 2; i++ {
 				mustWrite(t, filepath.Join(moved, "AGENTS.md"), []byte("outdated instructions\n"))
 				s := openUI(t, moved)
-				s.wait(t, "[q]uit")
+				s.wait(t, "[q] quit")
 				if offline && !strings.Contains(s.output, "update skipped:") {
 					t.Fatal("offline startup did not explain the skipped update")
 				}

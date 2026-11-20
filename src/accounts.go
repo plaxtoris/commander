@@ -14,11 +14,11 @@ import (
 	"unicode/utf8"
 )
 
-var services = []string{"github", "azure", "office", "hetzner", "gcloud", "dockerhub", "confluence"}
+var services = []string{"codex", "claude", "litellm", "github", "azure", "office", "hetzner", "gcloud", "dockerhub", "confluence"}
 var serviceTools = map[string]string{"github": "gh", "azure": "az", "office": "m365", "hetzner": "hcloud", "gcloud": "gcloud", "dockerhub": "dockerhub", "confluence": "confluence"}
 
 func serviceName(service string) string {
-	if name := map[string]string{"github": "github", "azure": "azure", "office": "microsoft 365", "hetzner": "hetzner", "gcloud": "google cloud", "dockerhub": "dockerhub", "confluence": "confluence"}[service]; name != "" {
+	if name := map[string]string{"litellm": "openai-compatible", "github": "github", "azure": "azure", "office": "microsoft 365", "hetzner": "hetzner", "gcloud": "google cloud", "dockerhub": "dockerhub", "confluence": "confluence"}[service]; name != "" {
 		return name
 	}
 	return service
@@ -29,6 +29,7 @@ type member struct {
 	Key     json.RawMessage `json:"key"`
 	Account string          `json:"account"`
 	Context string          `json:"context"`
+	Repos   []string        `json:"repos,omitempty"`
 }
 type account struct {
 	member
@@ -123,11 +124,19 @@ func validateMembers(members []member) error {
 	}
 	seen := map[string]bool{}
 	for _, m := range members {
-		if _, ok := serviceTools[m.Service]; !ok {
+		if !contains(services, m.Service) {
 			return invalid
 		}
 		if !printable(m.Account, 1024) || !printable(m.Context, 1024) {
 			return invalid
+		}
+		if codingService(m.Service) && (!codingLabel.MatchString(m.selector()) || m.selector() != m.Account || m.Context != "") {
+			return invalid
+		}
+		for _, scope := range m.Repos {
+			if m.Service != "github" || !validRepositoryScope(scope) {
+				return invalid
+			}
 		}
 		if m.Service == "github" {
 			host, user := m.github()
@@ -189,6 +198,9 @@ func (a *app) accounts(service string) ([]account, error) {
 }
 
 func (a *app) queryAccounts(service string) ([]account, error) {
+	if codingService(service) {
+		return a.codingAccounts(service)
+	}
 	if tokenService(service) {
 		return a.tokenAccounts(service)
 	}
@@ -585,6 +597,18 @@ func (a *app) reconnectGitHub(m member) error {
 }
 
 func (a *app) deleteLogin(m member) error {
+	if codingService(m.Service) {
+		unlock, err := a.nativeLoginLock(m, false)
+		if err != nil {
+			return err
+		}
+		defer unlock()
+		dir, err := a.codingDir(m)
+		if err != nil {
+			return err
+		}
+		return os.RemoveAll(dir)
+	}
 	if tokenService(m.Service) {
 		records, err := a.tokenLogins(m.Service)
 		if err != nil {

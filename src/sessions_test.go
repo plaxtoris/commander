@@ -11,6 +11,30 @@ import (
 	"testing"
 )
 
+func TestConcurrentSelectionEdits(t *testing.T) {
+	a := testApp(t)
+	start := addSession(t, a, "work", ghMember("original"))
+	newLogin := []member{ghMember("next")}
+	if err := a.saveSelection(start, newLogin, start.Repositories); err != nil {
+		t.Fatal(err)
+	}
+	if err := a.saveSelection(start, start.Accounts, []string{"org/app"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := a.saveSelection(start, []member{ghMember("stale")}, []string{"org/other"}); err == nil {
+		t.Fatal("overwrote a newer selection")
+	}
+	got, err := a.readSession(start.ID)
+	if err != nil || len(got.Accounts) != 1 || got.Accounts[0].ref() != "next" || strings.Join(got.Repositories, ",") != "org/app" {
+		t.Fatal(got, err)
+	}
+	for _, invalid := range []string{"/", "nested/name", ".tasks"} {
+		if err := a.checkName(invalid, ""); err == nil {
+			t.Fatal("accepted an unusable workspace name", invalid)
+		}
+	}
+}
+
 func TestSessionSelectionsAreIndependent(t *testing.T) {
 	a := testApp(t)
 	private, err := a.newSession("private", []member{ghMember("shared")}, []string{"private/*"})
@@ -217,7 +241,7 @@ func TestSessionNamesRenameAndDelete(t *testing.T) {
 	if err := a.sessionCommand([]string{"new", "other", "--repos", "acme/*,acme/tool"}); err != nil {
 		t.Fatal(err)
 	}
-	for value, want := range map[string]string{"microsoft 365=me": "unknown service 'microsoft 365'; use github, azure, office", "github=nobody": "no github login matches 'nobody'", "hetzner": "service=selector"} {
+	for value, want := range map[string]string{"microsoft 365=me": "unknown service 'microsoft 365'; use codex, claude, openai-compatible, github, azure, office", "github=nobody": "no github login matches 'nobody'", "hetzner": "service=selector"} {
 		if err := a.sessionCommand([]string{"new", "third", "--accounts", value}); err == nil || !strings.Contains(err.Error(), want) {
 			t.Fatal(value, err)
 		}
@@ -265,7 +289,7 @@ func TestInteractiveRepositoriesFromOrganizations(t *testing.T) {
 		t.Fatal(err)
 	}
 	ui := openUI(t, a.root)
-	ui.wait(t, "[q]uit")
+	ui.wait(t, "[q] quit")
 	ui.send(t, "e")
 	ui.wait(t, "+ add account")
 	frame := terminalControls.ReplaceAllString(ui.output, "")

@@ -361,7 +361,7 @@ func (a *app) ask(question string) bool {
 		return false
 	}
 	defer restore()
-	fmt.Fprint(a.out, "\r\x1b[J  ", a.style(question, "1"), " ", a.style("[y/N]", "2"), " ")
+	fmt.Fprint(a.out, "\r\x1b[J  ", a.style(question, "1"), " ", a.style("[y/n]", "2"), " ")
 	key, err := a.key()
 	fmt.Fprint(a.out, "\r\n")
 	return err == nil && (key == "y" || key == "Y")
