@@ -86,6 +86,10 @@ func TestUpdateValidation(t *testing.T) {
 			useRelease(t, func(w http.ResponseWriter, r *http.Request) {
 				switch r.URL.Path {
 				case "/SHA256SUMS":
+					stages, _ := filepath.Glob(filepath.Join(a.root, ".update-*"))
+					if len(stages) != 0 {
+						t.Error("created a staging directory before finding an update")
+					}
 					fmt.Fprint(w, manifest)
 				case "/" + releaseAsset:
 					downloads.Add(1)

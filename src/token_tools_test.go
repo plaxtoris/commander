@@ -432,7 +432,7 @@ func TestDockerHubNativeCommandPreservesArgumentsAndExitCode(t *testing.T) {
 	useSession(t, a, "work", c.member("dockerhub"))
 	preparedTools(t, a)
 	executable := filepath.Join(a.root, "tools", "docker", "docker")
-	mustWrite(t, executable, []byte("#!/bin/sh\ntest -f \"$DOCKER_CONFIG/config.json\" || exit 99\nprintf '%s\\n' \"$@\"\nprintf 'native error' >&2\nexit 37\n"))
+	mustWrite(t, executable, []byte("#!/bin/sh\ntest -f \"$DOCKER_CONFIG/config.json\" || exit 99\ncase \"$DOCKER_CONFIG\" in */.secrets/.runtime/.run-*) ;; *) exit 98 ;; esac\nprintf '%s\\n' \"$@\"\nprintf 'native error' >&2\nexit 37\n"))
 	if err := os.Chmod(executable, 0755); err != nil {
 		t.Fatal(err)
 	}
@@ -445,7 +445,7 @@ func TestDockerHubNativeCommandPreservesArgumentsAndExitCode(t *testing.T) {
 	if a.out.(*bytes.Buffer).String() != "run\nimage\na b\n$(literal)\n" || a.errOut.(*bytes.Buffer).String() != "native error" {
 		t.Fatal("changed native streams")
 	}
-	matches, _ := filepath.Glob(filepath.Join(a.root, ".secrets", ".docker-*"))
+	matches, _ := filepath.Glob(filepath.Join(a.root, ".secrets", ".runtime", ".run-*"))
 	if len(matches) != 0 {
 		t.Fatal("retained temporary credentials after failure")
 	}
