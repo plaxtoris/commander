@@ -312,7 +312,7 @@ func (a *app) execute(tool string, args []string) error {
 		}
 		return a.runAgent(m, args)
 	}
-	nativeUnlock, err := fileLock(filepath.Join(a.root, ".secrets", ".native.lock"), true, true)
+	nativeUnlock, err := a.installationLock("native", true, true)
 	if err != nil {
 		return err
 	}
@@ -356,7 +356,7 @@ func (a *app) execute(tool string, args []string) error {
 
 func (a *app) credentialLock(key string) (func(), error) {
 	sum := sha256.Sum256([]byte(key))
-	return fileLock(filepath.Join(a.root, ".secrets", fmt.Sprintf(".account-%x.lock", sum[:12])), false, true)
+	return a.installationLock(fmt.Sprintf("account-%x", sum[:12]), false, true)
 }
 
 // One account owns its mutable refresh state. GitHub callers receive an access
@@ -385,7 +385,7 @@ func (a *app) accountRuntime(m member) (string, map[string]string, func() error,
 	if err != nil {
 		return fail(err)
 	}
-	root, err := runtimeDir(filepath.Join(a.root, ".secrets"), ".run-")
+	root, err := a.privateRuntimeDir()
 	if err != nil {
 		return fail(err)
 	}
@@ -584,7 +584,7 @@ func (a *app) writeGitCredential(input io.Reader, output io.Writer) error {
 		return err
 	}
 	defer unlock()
-	nativeUnlock, err := fileLock(filepath.Join(a.root, ".secrets", ".native.lock"), true, true)
+	nativeUnlock, err := a.installationLock("native", true, true)
 	if err != nil {
 		return err
 	}

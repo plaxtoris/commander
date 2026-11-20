@@ -441,11 +441,7 @@ func (a *app) exportArchive(name string, ids []string, memory bool) (string, err
 // Share the native lock with running tools and serialize the short snapshot
 // with credential refreshes that write more than one file.
 func (a *app) exportSnapshot(ids []string, includeMemory bool) (profileArchive, error) {
-	path := filepath.Join(a.root, ".secrets", ".native.lock")
-	if err := noSymlinks(a.root, path); err != nil {
-		return profileArchive{}, err
-	}
-	unlock, err := fileLock(path, true, false)
+	unlock, err := a.installationLock("native", true, false)
 	if err != nil {
 		return profileArchive{}, fmt.Errorf("saved logins are being updated; retry export: %w", err)
 	}

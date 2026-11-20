@@ -71,9 +71,17 @@ Use these files for preferences and manage logins through the Commander menu.
 ## Update cleanup
 
 After a successful update check, Commander removes abandoned update downloads.
-On filesystems that support extended attributes, it also removes temporary agent,
-Docker and tool installation folders that Commander marked during an earlier boot.
-Interrupted imports are kept for recovery.
+Private runtime directories for agents and tools live under `.secrets/.runtime`
+and are removed when their commands exit. If a command was interrupted, the
+updater removes its marked runtime directory after the next system boot. It
+also removes marked tool installation staging directories from earlier boots.
+
+The first run of this version records the current boot in a filesystem
+attribute. After the next boot, Commander uses one shared lock file for
+installation operations and removes the old empty lock files and recognizable
+legacy runtime directories during an update check. On filesystems without
+extended attributes it keeps the legacy locks. Interrupted imports are kept
+for recovery. Session command wrappers are shared by all sessions.
 
 ## Development
 

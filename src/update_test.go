@@ -158,7 +158,7 @@ func TestSetupOnlyUsedToolsAndResumes(t *testing.T) {
 	if err := a.prepareTool("hcloud"); err == nil {
 		t.Fatal("ignored failed installation")
 	}
-	running, err := fileLock(filepath.Join(a.root, ".secrets", ".native.lock"), true, true)
+	running, err := a.installationLock("native", true, true)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -427,5 +427,65 @@ func TestRestartPreservesProcessIO(t *testing.T) {
 	}
 	if out.String() != cmd.Dir+"\nspaces in argument\nliteral $value\nstdin fixture\n" || stderr.String() != "fixture stderr" {
 		t.Fatal("restart changed arguments, cwd or streams", out.String(), stderr.String())
+	}
+}
+
+func TestRuntimeMigration(t *testing.T) {
+	a := testApp(t)
+	parent := filepath.Join(a.root, ".secrets")
+	boot := runtimeBoot()
+	if boot == "" {
+		t.Skip("requires boot identification")
+	}
+	if err := unix.Lsetxattr(parent, runtimeMigrationAttr, []byte(boot), 0); err != nil {
+		t.Skipf("requires extended attributes: %v", err)
+	}
+	legacyDir := filepath.Join(parent, ".docker-712")
+	mustWrite(t, filepath.Join(legacyDir, "fixture"), nil)
+	legacyLock := filepath.Join(parent, ".account-0123456789abcdef01234567.lock")
+	mustWrite(t, legacyLock, nil)
+	mustWrite(t, filepath.Join(parent, ".memory.lock"), []byte("keep nonempty"))
+	a.cleanupAfterUpdate()
+	for _, path := range []string{legacyDir, legacyLock} {
+		if _, err := os.Stat(path); err != nil {
+			t.Fatal("removed same boot legacy entry", path, err)
+		}
+	}
+	previous := strings.Repeat("0", 32)
+	if previous == boot[32:] {
+		previous = strings.Repeat("1", 32)
+	}
+	if err := unix.Lsetxattr(parent, runtimeMigrationAttr, []byte(boot[:32]+previous), 0); err != nil {
+		t.Fatal(err)
+	}
+	a.cleanupAfterUpdate()
+	for _, path := range []string{legacyDir, legacyLock, filepath.Join(parent, ".update.lock")} {
+		if _, err := os.Stat(path); !os.IsNotExist(err) {
+			t.Fatal("kept legacy entry", path, err)
+		}
+	}
+	if _, err := os.Stat(filepath.Join(parent, ".memory.lock")); err != nil {
+		t.Fatal("removed nonempty entry", err)
+	}
+	unlock, err := a.installationLock("native", true, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer unlock()
+	if release, err := a.installationLock("native", false, false); !errors.Is(err, unix.EWOULDBLOCK) {
+		if release != nil {
+			release()
+		}
+		t.Fatal("exclusive lock must contend with a shared lock", err)
+	}
+	for _, name := range []string{"native", "setup"} {
+		release, err := a.installationLock(name, name == "native", false)
+		if err != nil {
+			t.Fatal(err)
+		}
+		release()
+	}
+	if info, err := os.Stat(filepath.Join(parent, ".locks")); err != nil || info.Size() != 0 {
+		t.Fatal("expected a single empty lock file", info, err)
 	}
 }

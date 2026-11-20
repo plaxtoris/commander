@@ -3,7 +3,9 @@ package main
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
 	_ "embed"
+	"encoding/binary"
 	"errors"
 	"fmt"
 	"io"
@@ -15,6 +17,8 @@ import (
 	"strconv"
 	"strings"
 	"syscall"
+
+	"golang.org/x/sys/unix"
 )
 
 var build = "development"
@@ -407,15 +411,51 @@ func (a *app) lock(name string) (func(), error)     { return a.lockFile(name, fa
 func (a *app) waitLock(name string) (func(), error) { return a.lockFile(name, true) }
 
 func (a *app) lockFile(name string, wait bool) (func(), error) {
-	path := filepath.Join(a.root, ".secrets", "."+name+".lock")
-	if err := noSymlinks(a.root, path); err != nil {
-		return nil, err
-	}
-	unlock, err := fileLock(path, false, wait)
+	unlock, err := a.installationLock(name, false, wait)
 	if err != nil {
 		return nil, errors.New("another Commander operation is using this installation; finish it and retry")
 	}
 	return unlock, nil
+}
+
+func (a *app) installationLock(name string, shared, wait bool) (func(), error) {
+	if !a.runtimeMigrated() {
+		path := filepath.Join(a.root, ".secrets", "."+name+".lock")
+		if err := noSymlinks(a.root, path); err != nil {
+			return nil, err
+		}
+		return fileLock(path, shared, wait)
+	}
+	path := filepath.Join(a.root, ".secrets", ".locks")
+	fd, err := unix.Open(path, unix.O_CREAT|unix.O_RDWR|unix.O_CLOEXEC|unix.O_NOFOLLOW, 0600)
+	if err != nil {
+		return nil, err
+	}
+	// Each name owns a byte range. OFD locks also contend between separate
+	// opens in one process and do not allocate bytes in the lock file.
+	sum := sha256.Sum256([]byte(name))
+	lock := unix.Flock_t{Type: unix.F_WRLCK, Whence: unix.SEEK_SET, Start: int64(binary.BigEndian.Uint64(sum[:8]) >> 1), Len: 1}
+	if shared {
+		lock.Type = unix.F_RDLCK
+	}
+	command := unix.F_OFD_SETLK
+	if wait {
+		command = unix.F_OFD_SETLKW
+	}
+	for {
+		err = unix.FcntlFlock(uintptr(fd), command, &lock)
+		if err != unix.EINTR {
+			break
+		}
+	}
+	if errors.Is(err, unix.EACCES) || errors.Is(err, unix.EAGAIN) {
+		err = unix.EWOULDBLOCK
+	}
+	if err != nil {
+		unix.Close(fd)
+		return nil, err
+	}
+	return func() { unix.Close(fd) }, nil
 }
 
 func fileLock(path string, shared, wait bool) (func(), error) {

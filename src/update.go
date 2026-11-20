@@ -66,12 +66,93 @@ func (a *app) cleanupAfterUpdate() {
 	// Subprocesses can outlive Commander. A boot ID on the directory proves
 	// it is abandoned without relying on clocks, PIDs or extra files.
 	if boot := runtimeBoot(); boot != "" {
-		a.reportCleanup(a.pruneUpdateDirs(".secrets", boot, ".run-", ".docker-"))
+		a.reportCleanup(a.pruneUpdateDirs(".secrets/.runtime", boot, ".run-"))
+		if a.runtimeMigrated() {
+			a.reportCleanup(a.pruneRuntimeDirs(".secrets", boot, true, ".run-", ".docker-"))
+			a.reportCleanup(a.pruneLegacyLocks())
+		} else {
+			a.reportCleanup(a.pruneUpdateDirs(".secrets", boot, ".run-", ".docker-"))
+		}
 		a.reportCleanup(a.pruneUpdateDirs("tools", boot, ".install-", ".packages-"))
 	}
 }
 
 const runtimeBootAttr = "user.commander.boot"
+const runtimeMigrationAttr = "user.commander.runtime-migration"
+
+func (a *app) privateRuntimeDir() (string, error) {
+	parent := filepath.Join(a.root, ".secrets", ".runtime")
+	if err := noSymlinks(a.root, parent); err != nil {
+		return "", err
+	}
+	if err := os.MkdirAll(parent, 0700); err != nil {
+		return "", err
+	}
+	return runtimeDir(parent, ".run-")
+}
+
+func (a *app) runtimeMigrated() bool {
+	boot := runtimeBoot()
+	path := filepath.Join(a.root, ".secrets")
+	if boot == "" || noSymlinks(a.root, path) != nil {
+		return false
+	}
+	var marker [64]byte
+	n, err := unix.Lgetxattr(path, runtimeMigrationAttr, marker[:])
+	if err == unix.ENODATA {
+		// Older processes may still create or use the legacy files until
+		// this boot ends. Never unlink a lock they could still be using.
+		_ = unix.Lsetxattr(path, runtimeMigrationAttr, []byte(boot), unix.XATTR_CREATE)
+		return false
+	}
+	return err == nil && n == len(marker) && string(marker[:32]) == boot[:32] &&
+		validRuntimeID(string(marker[32:])) && string(marker[32:]) != boot[32:]
+}
+
+func (a *app) pruneLegacyLocks() error {
+	parent := filepath.Join(a.root, ".secrets")
+	entries, err := os.ReadDir(parent)
+	if err != nil {
+		return err
+	}
+	var failures []error
+	for _, entry := range entries {
+		if !legacyLockName(entry.Name()) {
+			continue
+		}
+		info, err := entry.Info()
+		if os.IsNotExist(err) {
+			continue
+		}
+		if err == nil && info.Mode().IsRegular() && info.Mode().Perm() == 0600 && info.Size() == 0 {
+			err = os.Remove(filepath.Join(parent, entry.Name()))
+		}
+		if err != nil && !os.IsNotExist(err) {
+			failures = append(failures, err)
+		}
+	}
+	return errors.Join(failures...)
+}
+
+func legacyLockName(name string) bool {
+	switch name {
+	case ".coding-config.lock", ".health.lock", ".memory.lock", ".native.lock",
+		".sessions.lock", ".setup.lock", ".tool-refresh.lock", ".update.lock",
+		".claude-tool.lock", ".codex-tool.lock", ".pi-tool.lock":
+		return true
+	}
+	if label, ok := strings.CutSuffix(name, ".login.lock"); ok {
+		for _, prefix := range []string{".claude-", ".codex-"} {
+			if label, ok := strings.CutPrefix(label, prefix); ok && codingLabel.MatchString(label) {
+				return true
+			}
+		}
+	}
+	hash, ok := strings.CutPrefix(name, ".account-")
+	hash, suffix := strings.CutSuffix(hash, ".lock")
+	_, err := hex.DecodeString(hash)
+	return ok && suffix && len(hash) == 24 && strings.ToLower(hash) == hash && err == nil
+}
 
 var runtimeBoot = sync.OnceValue(func() string {
 	readID := func(path string) string {
@@ -107,9 +188,12 @@ func runtimeDir(parent, prefix string) (string, error) {
 	return dir, err
 }
 
-func olderRuntimeDir(path, boot string) bool {
+func olderRuntimeDir(path, boot string, unmarked bool) bool {
 	var owner [64]byte
 	n, err := unix.Lgetxattr(path, runtimeBootAttr, owner[:])
+	if unmarked && err == unix.ENODATA {
+		return true
+	}
 	if err != nil || n != len(owner) {
 		return false
 	}
@@ -124,6 +208,10 @@ func (a *app) reportCleanup(err error) {
 }
 
 func (a *app) pruneUpdateDirs(dir, boot string, prefixes ...string) error {
+	return a.pruneRuntimeDirs(dir, boot, false, prefixes...)
+}
+
+func (a *app) pruneRuntimeDirs(dir, boot string, unmarked bool, prefixes ...string) error {
 	parent := filepath.Join(a.root, dir)
 	if err := noSymlinks(a.root, parent); err != nil {
 		return err
@@ -158,7 +246,7 @@ func (a *app) pruneUpdateDirs(dir, boot string, prefixes ...string) error {
 				break
 			}
 			path := filepath.Join(parent, entry.Name())
-			if stat.IsDir() && stat.Mode().Perm() == 0700 && (boot == "" || olderRuntimeDir(path, boot)) {
+			if stat.IsDir() && stat.Mode().Perm() == 0700 && (boot == "" || olderRuntimeDir(path, boot, unmarked)) {
 				if err := os.RemoveAll(path); err != nil {
 					failures = append(failures, err)
 				}
@@ -239,14 +327,19 @@ func (a *app) update() (bool, error) {
 		return false, err
 	}
 	defer unlock()
-	stage, err := os.MkdirTemp(a.root, ".update-")
-	if err != nil {
-		return false, err
+	var stage string
+	defer func() {
+		if stage != "" {
+			os.RemoveAll(stage)
+		}
+	}()
+	createStage := func() error {
+		var err error
+		stage, err = os.MkdirTemp(a.root, ".update-")
+		return err
 	}
-	defer os.RemoveAll(stage)
 	ctx, cancel := context.WithTimeout(context.Background(), releaseCheckTimeout)
 	defer cancel()
-	sums := filepath.Join(stage, "SHA256SUMS")
 	private := false
 	downloadRelease := func(ctx context.Context, asset string) error {
 		_, err := a.releaseRun(ctx, []string{"release", "download", "latest", "--repo", "plaxtoris/commander", "--pattern", asset, "--dir", stage})
@@ -255,13 +348,23 @@ func (a *app) update() (bool, error) {
 		}
 		return nil
 	}
-	if err = fetchContext(ctx, releaseURL+"SHA256SUMS", sums, ""); err != nil {
+	body, err := downloadBody(ctx, releaseURL+"SHA256SUMS")
+	var data []byte
+	if err == nil {
+		const limit = 64 << 10
+		data, err = io.ReadAll(io.LimitReader(body, limit+1))
+		body.Close()
+		if len(data) > limit {
+			return false, errors.New("release checksum file is too large")
+		}
+	}
+	if err != nil {
 		if ctx.Err() != nil {
 			return false, errors.New("update check timed out")
 		}
 		// Shared access prevents account removal during an authenticated download
 		// while other sessions continue with their own selected credentials.
-		release, err := fileLock(filepath.Join(a.root, ".secrets", ".native.lock"), true, true)
+		release, err := a.installationLock("native", true, true)
 		if err != nil {
 			return false, err
 		}
@@ -269,15 +372,17 @@ func (a *app) update() (bool, error) {
 		if err = a.verifyReleaseAccount(ctx); err != nil {
 			return false, err
 		}
-		os.Remove(sums)
+		if err = createStage(); err != nil {
+			return false, err
+		}
 		if err = downloadRelease(ctx, "SHA256SUMS"); err != nil {
 			return false, err
 		}
+		data, err = os.ReadFile(filepath.Join(stage, "SHA256SUMS"))
+		if err != nil {
+			return false, err
+		}
 		private = true
-	}
-	data, err := os.ReadFile(sums)
-	if err != nil {
-		return false, err
 	}
 	expected := ""
 	for _, line := range strings.Split(string(data), "\n") {
@@ -305,6 +410,11 @@ func (a *app) update() (bool, error) {
 		return false, nil
 	}
 
+	if stage == "" {
+		if err = createStage(); err != nil {
+			return false, err
+		}
+	}
 	path := filepath.Join(stage, releaseAsset)
 	if private {
 		ctx, cancel := context.WithTimeout(context.Background(), 20*time.Minute)

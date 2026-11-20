@@ -147,24 +147,17 @@ func fetch(url, path, expected string) error {
 }
 
 func fetchContext(ctx context.Context, url, path, expected string) error {
-	request, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
+	body, err := downloadBody(ctx, url)
 	if err != nil {
 		return err
 	}
-	response, err := httpClient.Do(request)
-	if err != nil {
-		return fmt.Errorf("download failed: %w", err)
-	}
-	defer response.Body.Close()
-	if response.StatusCode != http.StatusOK {
-		return fmt.Errorf("download failed: HTTP %d from %s", response.StatusCode, url)
-	}
+	defer body.Close()
 	f, err := os.OpenFile(path, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0600)
 	if err != nil {
 		return err
 	}
 	hash := sha256.New()
-	n, err := io.Copy(io.MultiWriter(f, hash), io.LimitReader(response.Body, 1<<30+1))
+	n, err := io.Copy(io.MultiWriter(f, hash), io.LimitReader(body, 1<<30+1))
 	closeErr := f.Close()
 	if err != nil || closeErr != nil || n > 1<<30 {
 		os.Remove(path)
@@ -175,6 +168,22 @@ func fetchContext(ctx context.Context, url, path, expected string) error {
 		return errors.New("download checksum did not match; no files were installed")
 	}
 	return nil
+}
+
+func downloadBody(ctx context.Context, url string) (io.ReadCloser, error) {
+	request, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
+	if err != nil {
+		return nil, err
+	}
+	response, err := httpClient.Do(request)
+	if err != nil {
+		return nil, fmt.Errorf("download failed: %w", err)
+	}
+	if response.StatusCode != http.StatusOK {
+		response.Body.Close()
+		return nil, fmt.Errorf("download failed: HTTP %d from %s", response.StatusCode, url)
+	}
+	return response.Body, nil
 }
 
 func extract(archive, destination string, strip int) error {
@@ -579,7 +588,7 @@ func (a *app) prepareTool(tool string) error {
 	if err := a.ensure(); err != nil {
 		return err
 	}
-	unlock, err := fileLock(filepath.Join(a.root, ".secrets", ".setup.lock"), false, true)
+	unlock, err := a.installationLock("setup", false, true)
 	if err != nil {
 		return err
 	}

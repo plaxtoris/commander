@@ -168,7 +168,7 @@ func TestExportSnapshotWithAnotherSessionRunning(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer unlockSession()
-	unlockNative, err := fileLock(filepath.Join(a.root, ".secrets", ".native.lock"), true, false)
+	unlockNative, err := a.installationLock("native", true, false)
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -50,7 +50,7 @@ func TestBridgeCredentialsFollowLiveSessionSelection(t *testing.T) {
 	if w = request("company/app"); w.Code != 403 {
 		t.Fatal("container used stale selection")
 	}
-	leftovers, _ := filepath.Glob(filepath.Join(a.root, ".secrets", ".run-*"))
+	leftovers, _ := filepath.Glob(filepath.Join(a.root, ".secrets", ".runtime", ".run-*"))
 	if len(leftovers) != 0 {
 		t.Fatal("temporary credentials left")
 	}

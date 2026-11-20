@@ -31,7 +31,7 @@ func agentService(tool string) string {
 
 // Active agents share a lease. An update can retry the next time Commander opens.
 func (a *app) agentLock(tool string, running bool) (func(), error) {
-	return fileLock(filepath.Join(a.root, ".secrets", "."+tool+"-tool.lock"), running, running)
+	return a.installationLock(tool+"-tool", running, running)
 }
 
 func (a *app) prepareAgent(service string) (func(), error) {
@@ -432,11 +432,7 @@ func (a *app) nativeLoginLock(m member, shared bool) (func(), error) {
 	if !codingLabel.MatchString(m.selector()) {
 		return nil, errFormat
 	}
-	path := filepath.Join(a.root, ".secrets", "."+m.Service+"-"+m.selector()+".login.lock")
-	if err := noSymlinks(a.root, path); err != nil {
-		return nil, err
-	}
-	unlock, err := fileLock(path, shared, false)
+	unlock, err := a.installationLock(m.Service+"-"+m.selector()+".login", shared, false)
 	if errors.Is(err, syscall.EWOULDBLOCK) {
 		return nil, fmt.Errorf("%s · %s is in use; finish that session and retry", m.Service, m.Account)
 	}

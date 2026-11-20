@@ -182,7 +182,7 @@ func validateSelections(p selections) error {
 
 func (a *app) accounts(service string) ([]account, error) {
 	if service == "github" {
-		nativeUnlock, err := fileLock(filepath.Join(a.root, ".secrets", ".native.lock"), true, true)
+		nativeUnlock, err := a.installationLock("native", true, true)
 		if err != nil {
 			return nil, err
 		}

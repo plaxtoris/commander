@@ -484,7 +484,7 @@ func (a *app) dockerConfig(selector string) (string, func(), error) {
 	if err := a.ensure(); err != nil {
 		return "", empty, err
 	}
-	dir, err := runtimeDir(filepath.Join(a.root, ".secrets"), ".docker-")
+	dir, err := a.privateRuntimeDir()
 	if err != nil {
 		return "", empty, err
 	}
