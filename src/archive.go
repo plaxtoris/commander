@@ -15,6 +15,7 @@ import (
 	"regexp"
 	"sort"
 	"strings"
+	"syscall"
 
 	"github.com/pelletier/go-toml/v2"
 	"github.com/yeka/zip"
@@ -63,8 +64,9 @@ type profileArchive struct {
 	Profile  selections        `json:"profile"`
 	Logins   map[string]object `json:"logins"`
 	Accounts []member          `json:"accounts,omitempty"`
-	// Older archives may carry memory. Imports ignore it.
-	Memory *string `json:"memory,omitempty"`
+	// Keep reading archives created before shared agent settings.
+	Memory        *string       `json:"memory,omitempty"`
+	CodingConfigs codingConfigs `json:"codingConfigs,omitempty"`
 }
 
 var sessionFile = regexp.MustCompile(`^\.sessions/[a-f0-9]{24}/session\.json$`)
@@ -84,20 +86,20 @@ var nativeFiles = map[string]bool{
 
 func newStorage(root string) *storage { return &storage{root: root, originals: map[string][]byte{}} }
 func (s *storage) read(name string) ([]byte, error) {
-	if !nativeFiles[name] && !codingFile(name) {
+	if name != codingConfigFile && !nativeFiles[name] && !codingFile(name) {
 		return nil, errors.New("path is outside native login storage")
 	}
 	path := filepath.Join(s.root, ".secrets", filepath.FromSlash(name))
 	if err := noSymlinks(s.root, path); err != nil {
 		return nil, err
 	}
-	f, err := os.Open(path)
+	f, err := os.OpenFile(path, os.O_RDONLY|syscall.O_NONBLOCK|syscall.O_NOFOLLOW, 0)
 	if os.IsNotExist(err) {
 		s.originals[filepath.Join(".secrets", name)] = nil
 		return nil, nil
 	}
 	if err != nil {
-		return nil, errors.New("could not access native login storage")
+		return nil, errors.New("could not access Commander storage")
 	}
 	defer f.Close()
 	info, err := f.Stat()
@@ -500,43 +502,12 @@ func mergeCache(existing, incoming object) (object, error) {
 	}
 	return result, nil
 }
-func mergeRows(existing, incoming []any, key string, flags ...string) ([]any, error) {
-	index := map[string]object{}
-	normalize := func(v any) object {
-		r := obj(clone(v))
-		for _, flag := range flags {
-			delete(r, flag)
-		}
-		return r
-	}
-	for _, v := range existing {
-		index[textValue(obj(v)[key])] = normalize(v)
-	}
-	result := append([]any{}, existing...)
-	for _, v := range incoming {
-		k := textValue(obj(v)[key])
-		if previous, ok := index[k]; ok {
-			if !reflect.DeepEqual(previous, normalize(v)) {
-				return nil, errConflict
-			}
-			continue
-		}
-		r := obj(clone(v))
-		if len(existing) > 0 {
-			for _, flag := range flags {
-				r[flag] = false
-			}
-		}
-		result = append(result, r)
-		index[k] = normalize(v)
-	}
-	return result, nil
-}
 
-func (s *storage) install(service string, incoming object) (map[string][]byte, error) {
+// Credential state is already scoped or merged by the caller.
+func encodeLogins(service string, state object) (map[string][]byte, error) {
+	files := map[string][]byte{}
 	if codingService(service) {
-		files := map[string][]byte{}
-		for key, v := range incoming {
+		for key, v := range state {
 			if !codingLabel.MatchString(key) || !validCodingRecord(service, v) {
 				return nil, errFormat
 			}
@@ -544,142 +515,122 @@ func (s *storage) install(service string, incoming object) (map[string][]byte, e
 		}
 		return files, nil
 	}
-	existing, err := s.state(service)
-	if err != nil {
-		return nil, err
-	}
-	files := map[string][]byte{}
 	if tokenService(service) {
-		merged, err := mergeMap(existing, incoming)
-		if err != nil {
-			return nil, err
-		}
-		files[tokenFile(service)] = encode(merged)
+		files[tokenFile(service)] = encode(state)
 		return files, nil
 	}
 	switch service {
 	case "github":
-		for host, v := range incoming {
-			entry := obj(v)
-			saved, ok := existing[host]
-			if !ok {
-				existing[host] = entry
-				continue
-			}
-			r := obj(saved)
-			users := obj(r["users"])
-			if textValue(r["user"]) != "" && textValue(r["oauth_token"]) != "" {
-				if _, ok := users[textValue(r["user"])]; !ok {
-					users[textValue(r["user"])] = object{"oauth_token": r["oauth_token"]}
-				}
-			}
-			r["users"], err = mergeMap(users, obj(entry["users"]))
-			if err != nil {
-				return nil, err
-			}
-		}
-		files[".config/gh/hosts.yml"] = encode(existing)
+		files[".config/gh/hosts.yml"] = encode(state)
 	case "hetzner":
-		for k := range existing {
-			if k != "active_context" && k != "contexts" {
-				return nil, errFormat
-			}
-		}
-		rows, err := mergeRows(list(existing["contexts"]), list(incoming["contexts"]), "name")
+		rows, err := uniqueLoginRows(list(state["contexts"]), "name")
 		if err != nil {
 			return nil, err
 		}
-		active := existing["active_context"]
-		if textValue(active) == "" {
-			active = incoming["active_context"]
-		}
-		data, err := toml.Marshal(object{"active_context": active, "contexts": rows})
+		data, err := toml.Marshal(object{"active_context": textValue(state["active_context"]), "contexts": rows})
 		if err != nil {
 			return nil, errFormat
 		}
 		files[".config/hcloud/cli.toml"] = data
 	case "azure":
-		profile := obj(existing["profile"])
-		profile["subscriptions"], err = mergeRows(list(profile["subscriptions"]), list(obj(incoming["profile"])["subscriptions"]), "id", "isDefault")
+		profile := obj(state["profile"])
+		rows, err := uniqueLoginRows(list(profile["subscriptions"]), "id", "isDefault")
 		if err != nil {
 			return nil, err
 		}
-		cache, err := mergeCache(obj(existing["cache"]), obj(incoming["cache"]))
-		if err != nil {
-			return nil, err
-		}
+		profile = obj(clone(profile))
+		profile["subscriptions"] = rows
 		files[".azure/azureProfile.json"] = encode(profile)
-		files[".azure/msal_token_cache.json"] = encode(cache)
+		files[".azure/msal_token_cache.json"] = encode(state["cache"])
 	case "office":
-		current := obj(existing["current"])
-		if textValue(current["name"]) == "" {
-			current = obj(incoming["current"])
-		}
-		connections, err := mergeRows(list(existing["connections"]), list(incoming["connections"]), "name", "active")
+		rows, err := uniqueLoginRows(list(state["connections"]), "name", "active")
 		if err != nil {
 			return nil, err
 		}
-		cache, err := mergeCache(obj(existing["cache"]), obj(incoming["cache"]))
-		if err != nil {
-			return nil, err
-		}
-		files[".cli-m365-all-connections.json"] = encode(connections)
+		current := obj(state["current"])
+		files[".cli-m365-all-connections.json"] = encode(rows)
 		files[".cli-m365-connection.json"] = encode(current)
-		files[".cli-m365-msal-cache.json"] = encode(cache)
-		name := ".config/configstore/cli-m365-config.json"
-		data, err := s.read(name)
-		if err != nil {
-			return nil, err
-		}
-		if data == nil {
-			files[name] = encode(object{"clientId": current["appId"], "tenantId": current["tenant"], "authType": "deviceCode", "autoOpenLinksInBrowser": false, "copyDeviceCodeToClipboard": false})
-		}
+		files[".cli-m365-msal-cache.json"] = encode(state["cache"])
+		files[".config/configstore/cli-m365-config.json"] = encode(object{"clientId": current["appId"], "tenantId": current["tenant"], "authType": "deviceCode", "autoOpenLinksInBrowser": false, "copyDeviceCodeToClipboard": false})
 	case "gcloud":
-		name := ".config/gcloud/credentials.db"
-		for _, suffix := range []string{"-wal", "-shm", "-journal"} {
-			if _, err := os.Lstat(filepath.Join(s.root, ".secrets", name+suffix)); err == nil {
-				return nil, errors.New("Google Cloud storage is busy; finish native commands and retry")
-			}
-		}
-		records, err := mergeMap(existing, incoming)
+		data, err := encodeCloudLogins(state)
 		if err != nil {
 			return nil, err
 		}
-		dir, err := os.MkdirTemp("", "commander-database-")
-		if err != nil {
-			return nil, err
-		}
-		defer os.RemoveAll(dir)
-		path := filepath.Join(dir, "credentials.db")
-		db, err := sql.Open("sqlite", path)
-		if err != nil {
-			return nil, errFormat
-		}
-		if _, err = db.Exec("CREATE TABLE credentials (account_id TEXT PRIMARY KEY, value BLOB)"); err != nil {
-			db.Close()
-			return nil, errFormat
-		}
-		for key, value := range records {
-			if _, err = db.Exec("INSERT INTO credentials VALUES (?, ?)", key, encode(value)); err != nil {
-				db.Close()
-				return nil, errFormat
-			}
-		}
-		if err = db.Close(); err != nil {
-			return nil, errFormat
-		}
-		files[name], err = os.ReadFile(path)
-		if err != nil {
-			return nil, errFormat
-		}
+		files[".config/gcloud/credentials.db"] = data
 	default:
 		return nil, errFormat
 	}
 	return files, nil
 }
 
+func uniqueLoginRows(rows []any, key string, flags ...string) ([]any, error) {
+	index := map[string]object{}
+	result := make([]any, 0, len(rows))
+	for _, row := range rows {
+		normalized := obj(clone(row))
+		for _, flag := range flags {
+			delete(normalized, flag)
+		}
+		id := textValue(obj(row)[key])
+		if previous, ok := index[id]; ok {
+			if !reflect.DeepEqual(previous, normalized) {
+				return nil, errConflict
+			}
+			continue
+		}
+		result = append(result, row)
+		index[id] = normalized
+	}
+	return result, nil
+}
+
+func encodeCloudLogins(records object) ([]byte, error) {
+	file, err := os.CreateTemp("", "commander-database-*")
+	if err != nil {
+		return nil, err
+	}
+	path := file.Name()
+	defer os.Remove(path)
+	if err = file.Close(); err != nil {
+		return nil, err
+	}
+	db, err := sql.Open("sqlite", path)
+	if err != nil {
+		return nil, errFormat
+	}
+	defer db.Close()
+	tx, err := db.Begin()
+	if err != nil {
+		return nil, errFormat
+	}
+	defer tx.Rollback()
+	if _, err = tx.Exec("CREATE TABLE credentials (account_id TEXT PRIMARY KEY, value BLOB)"); err != nil {
+		return nil, errFormat
+	}
+	for key, value := range records {
+		if _, err = tx.Exec("INSERT INTO credentials VALUES (?, ?)", key, encode(value)); err != nil {
+			return nil, errFormat
+		}
+	}
+	if err = tx.Commit(); err != nil {
+		return nil, errFormat
+	}
+	if err = db.Close(); err != nil {
+		return nil, errFormat
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return nil, errFormat
+	}
+	return data, nil
+}
+
 func (s *storage) publish(files map[string][]byte, retired ...string) error {
-	paths := []string{}
+	if len(files) == 0 && len(retired) == 0 {
+		return nil
+	}
+	paths := make([]string, 0, len(files))
 	for name := range files {
 		paths = append(paths, name)
 	}
@@ -687,7 +638,7 @@ func (s *storage) publish(files map[string][]byte, retired ...string) error {
 	for _, name := range paths {
 		path := filepath.ToSlash(name)
 		login, private := strings.CutPrefix(path, ".secrets/")
-		if path != "MEMORY.md" && !sessionFile.MatchString(path) && !(private && (nativeFiles[login] || codingFile(login))) {
+		if path != "MEMORY.md" && !sessionFile.MatchString(path) && !(private && (login == codingConfigFile || nativeFiles[login] || codingFile(login))) {
 			return errFormat
 		}
 		if err := noSymlinks(s.root, filepath.Join(s.root, name)); err != nil {

@@ -51,6 +51,23 @@ chmod +x commander && ./commander
 Linux and WSL on x86_64 and aarch64 (arm64). Project containers need Docker Engine
 or Docker Desktop.
 
+## Shared agent settings
+
+Use `commander config codex config.toml`, `commander config claude settings.json`
+or `commander config pi settings.json` to set defaults for all sessions. Omit
+the file to print the saved settings. Use `-` to read from standard input. An
+empty file clears the saved settings for that agent.
+
+New agent launches pick up the saved settings. Commander continues to select
+the login from the current session. For Pi, set `defaultModel` to a model ID.
+Commander uses the first model from the selected endpoint if it cannot find that
+ID.
+
+Encrypted exports automatically include all saved agent settings. Import replaces
+the settings for each agent included in the archive and keeps the settings for
+other agents. Use the current Commander version to open archives with settings.
+Use these files for preferences and manage logins through the Commander menu.
+
 ## Development
 
 Open this repository in its development container and run `make test` and

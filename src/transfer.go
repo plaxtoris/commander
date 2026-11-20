@@ -67,6 +67,9 @@ func normalizeArchive(p profileArchive) (profileArchive, error) {
 			return p, err
 		}
 	}
+	if err := p.CodingConfigs.validate(); err != nil {
+		return p, err
+	}
 	if err := validateSelections(p.Profile); err != nil {
 		return p, err
 	}
@@ -115,6 +118,11 @@ func (a *app) archiveSessions(sessions []session, memory *string) (profileArchiv
 		}
 	}
 	store := newStorage(a.root)
+	configs, err := store.codingConfigs()
+	if err != nil {
+		return p, err
+	}
+	p.CodingConfigs = configs
 	for service, members := range grouped {
 		state, err := store.state(service, members...)
 		if err != nil {
@@ -186,14 +194,7 @@ func (a *app) importSelected(payload profileArchive, selection importSelection) 
 		if !codingService(service) {
 			merged = mergeCredentialState(service, current, incoming)
 		}
-		// A fresh encoder writes the complete merged service state without treating
-		// an explicitly selected replacement as an accidental import conflict.
-		tmp, err := os.MkdirTemp(a.root, ".import-")
-		if err != nil {
-			return err
-		}
-		encoded, err := newStorage(tmp).install(service, merged)
-		os.RemoveAll(tmp)
+		encoded, err := encodeLogins(service, merged)
 		if err != nil {
 			return err
 		}
@@ -203,6 +204,21 @@ func (a *app) importSelected(payload profileArchive, selection importSelection) 
 			}
 			files[filepath.Join(".secrets", name)] = data
 		}
+	}
+	if len(p.CodingConfigs) > 0 {
+		unlock, err := a.waitLock("coding-config")
+		if err != nil {
+			return err
+		}
+		defer unlock()
+		configs, err := store.codingConfigs()
+		if err != nil {
+			return err
+		}
+		for agent, data := range p.CodingConfigs {
+			configs[agent] = data
+		}
+		files[filepath.Join(".secrets", codingConfigFile)] = encode(configs)
 	}
 	if p.Memory != nil {
 		unlock, err := a.waitLock("memory")
@@ -320,15 +336,25 @@ func (a *app) chooseExport() (string, error) {
 	if hasMemory {
 		names = append(names, "MEMORY.md")
 	}
+	configs, err := newStorage(a.root).codingConfigs()
+	if err != nil {
+		return "", err
+	}
 	if len(names) == 0 {
-		return "", errors.New("no sessions or memory to export")
+		if len(configs) > 0 {
+			return a.exportArchive("commander.zip", nil, false)
+		}
+		return "", errors.New("no sessions, memory or agent settings to export")
 	}
 	selected := make([]bool, len(names))
 	for i := range selected {
 		selected[i] = true
 	}
 	at := 0
-	notice := ""
+	notice, tone := "", ""
+	if len(configs) > 0 {
+		notice, tone = "includes shared agent settings", "2"
+	}
 	for {
 		rows := make([]row, len(names))
 		for i, name := range names {
@@ -338,7 +364,7 @@ func (a *app) chooseExport() (string, error) {
 			}
 			rows[i] = row{pick: true, line: uiLine{{box + name, ""}}}
 		}
-		key, i, err := a.list(view{title: "export", keys: "[space] select  [a] all / none  [enter] export  [esc] cancel", notice: notice, rows: rows}, at)
+		key, i, err := a.list(view{title: "export", keys: "[space] select  [a] all / none  [enter] export  [esc] cancel", notice: notice, tone: tone, rows: rows}, at)
 		if err != nil {
 			return "", err
 		}
@@ -364,7 +390,7 @@ func (a *app) chooseExport() (string, error) {
 				}
 			}
 			memory := hasMemory && selected[len(sessions)]
-			if len(ids) > 0 || memory {
+			if len(ids) > 0 || memory || len(configs) > 0 {
 				return a.exportArchive("commander.zip", ids, memory)
 			}
 			notice = "select at least one item"
@@ -396,12 +422,18 @@ func (a *app) exportArchive(name string, ids []string, memory bool) (string, err
 	if err != nil {
 		return "", err
 	}
+	if len(ids) == 0 && !memory && len(payload.CodingConfigs) == 0 {
+		return "", errors.New("no sessions, memory or agent settings to export")
+	}
 	if err = writeArchive(path, payload, password, replace); err != nil {
 		return "", err
 	}
 	message := fmt.Sprintf("exported %s, %s", count(len(ids), "session"), count(len(payload.Accounts), "account"))
 	if memory {
 		message += ", memory"
+	}
+	if len(payload.CodingConfigs) > 0 {
+		message += ", agent settings"
 	}
 	return message + " to " + path, nil
 }
@@ -458,8 +490,8 @@ func (a *app) importChoices(p profileArchive, confirm func(string) bool) (import
 	for name := range p.Profile.Profiles {
 		names = append(names, name)
 	}
-	if len(names) == 0 && p.Memory == nil {
-		return selection, errors.New("the archive holds no session or memory")
+	if len(names) == 0 && p.Memory == nil && len(p.CodingConfigs) == 0 {
+		return selection, errors.New("the archive holds no session, memory or agent settings")
 	}
 	sort.Slice(names, func(i, j int) bool { return strings.ToLower(names[i]) < strings.ToLower(names[j]) })
 	archived := map[string]member{}
@@ -564,6 +596,9 @@ func (a *app) importArchive(path string) (string, error) {
 	message := fmt.Sprintf("imported %s, %s", count(len(selection.Sessions), "session"), count(len(selection.Accounts), "account"))
 	if p.Memory != nil {
 		message += ", memory"
+	}
+	if len(p.CodingConfigs) > 0 {
+		message += ", agent settings"
 	}
 	if len(selection.Accounts) > 0 {
 		admin := a.admin()

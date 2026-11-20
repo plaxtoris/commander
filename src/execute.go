@@ -390,7 +390,7 @@ func (a *app) accountRuntime(m member) (string, map[string]string, func() error,
 		return fail(err)
 	}
 	local := newStorage(root)
-	files, err := local.install(m.Service, selected)
+	files, err := encodeLogins(m.Service, selected)
 	if err == nil {
 		for name, data := range files {
 			path := filepath.Join(root, ".secrets", name)
@@ -436,11 +436,7 @@ func (a *app) accountRuntime(m member) (string, map[string]string, func() error,
 			return err
 		}
 		merged := mergeCredentialState(m.Service, current, updated)
-		encodedRoot, err := os.MkdirTemp(root, "encode-")
-		if err != nil {
-			return err
-		}
-		encoded, err := newStorage(encodedRoot).install(m.Service, merged)
+		encoded, err := encodeLogins(m.Service, merged)
 		if err != nil {
 			return err
 		}

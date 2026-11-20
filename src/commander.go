@@ -147,6 +147,7 @@ Work
   commander exec -- confluence api PATH    calls a built in client API
 
 Installation
+  commander config codex|claude|pi [FILE|-] reads or replaces shared agent settings
   commander memory [write REVISION]        reads or updates shared preferences
   commander setup                          repairs used tools
   commander update                         updates Commander and used tools
@@ -223,6 +224,8 @@ func (a *app) command(args []string) error {
 	case "version", "--version":
 		fmt.Fprintln(a.out, "Commander", build, runtime.GOOS+"/"+runtime.GOARCH)
 		return nil
+	case "config":
+		return a.codingConfig(args[1:])
 	case "memory":
 		return a.memory(args[1:])
 	case "setup":

@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"os/signal"
@@ -12,9 +13,124 @@ import (
 	"strings"
 	"syscall"
 	"time"
+	"unicode/utf8"
 
+	"github.com/pelletier/go-toml/v2"
 	"golang.org/x/term"
 )
+
+const codingConfigFile = "coding-config.json"
+const maxAgentConfig = 128 << 10
+
+type codingConfigs map[string]string
+
+func agentSettings(data string) (map[string]json.RawMessage, error) {
+	settings := map[string]json.RawMessage{}
+	if data != "" && (json.Unmarshal([]byte(data), &settings) != nil || settings == nil) {
+		return nil, errors.New("expected a JSON object")
+	}
+	return settings, nil
+}
+
+func (c codingConfigs) validate() error {
+	for agent, data := range c {
+		if agentService(agent) == "" || len(data) == 0 || len(data) > maxAgentConfig || !utf8.ValidString(data) {
+			return errors.New("invalid coding agent configuration")
+		}
+		if agent == "codex" {
+			var settings map[string]any
+			if err := toml.Unmarshal([]byte(data), &settings); err != nil {
+				return errors.New("invalid codex TOML configuration")
+			}
+		} else if _, err := agentSettings(data); err != nil {
+			return fmt.Errorf("%s configuration: %w", agent, err)
+		}
+	}
+	return nil
+}
+
+func (s *storage) codingConfigs() (codingConfigs, error) {
+	configs := codingConfigs{}
+	data, err := s.read(codingConfigFile)
+	if err != nil {
+		return nil, err
+	}
+	if data != nil && (json.Unmarshal(data, &configs) != nil || configs == nil) {
+		return nil, errors.New("invalid saved coding agent configuration")
+	}
+	return configs, configs.validate()
+}
+
+func (a *app) codingConfig(args []string) error {
+	if len(args) < 1 || len(args) > 2 || agentService(args[0]) == "" {
+		return errors.New("usage: commander config codex|claude|pi [FILE|-]")
+	}
+	agent := args[0]
+	store := newStorage(a.root)
+	if len(args) == 1 {
+		configs, err := store.codingConfigs()
+		if err != nil {
+			return err
+		}
+		_, err = io.WriteString(a.out, configs[agent])
+		return err
+	}
+	var input io.Reader = a.in
+	if args[1] != "-" {
+		file, err := os.Open(args[1])
+		if err != nil {
+			return err
+		}
+		defer file.Close()
+		input = file
+	}
+	data, err := io.ReadAll(io.LimitReader(input, maxAgentConfig+1))
+	if err != nil {
+		return err
+	}
+	if len(data) > maxAgentConfig {
+		return errors.New("coding agent configuration exceeds 128 KiB")
+	}
+	value := string(data)
+	if value != "" {
+		if err = (codingConfigs{agent: value}).validate(); err != nil {
+			return err
+		}
+	}
+	dir := filepath.Join(a.root, ".secrets")
+	if err = noSymlinks(a.root, dir); err != nil {
+		return err
+	}
+	if err = os.MkdirAll(dir, 0700); err != nil {
+		return err
+	}
+	unlock, err := a.waitLock("coding-config")
+	if err != nil {
+		return err
+	}
+	defer unlock()
+	configs, err := store.codingConfigs()
+	if err != nil {
+		return err
+	}
+	if configs[agent] == value {
+		return nil
+	}
+	if value == "" {
+		delete(configs, agent)
+	} else {
+		configs[agent] = value
+	}
+	path := filepath.Join(dir, codingConfigFile)
+	if len(configs) != 0 {
+		return atomicWrite(path, encode(configs), 0600)
+	}
+	err = os.Remove(path)
+	if os.IsNotExist(err) {
+		return nil
+	}
+	return err
+}
 
 func (a *app) choose(title string, labels []string, selected int) (int, error) {
 	rows := make([]row, len(labels))
@@ -159,12 +275,22 @@ func (a *app) runAgent(m member, args []string) error {
 }
 
 func (a *app) codingCommand(m member, cwd, home string, extra []string) (*exec.Cmd, error) {
+	configs, err := newStorage(a.root).codingConfigs()
+	if err != nil {
+		return nil, err
+	}
+	config := configs[agents[m.Service]]
 	profile := home
 	context := a.codingContext(cwd)
 	var args []string
 	var key string
 	switch m.Service {
 	case "codex":
+		if config != "" {
+			if err := atomicWrite(filepath.Join(home, "config.toml"), []byte(config), 0600); err != nil {
+				return nil, err
+			}
+		}
 		if err := a.linkCodexLogin(m, home); err != nil {
 			return nil, err
 		}
@@ -187,7 +313,13 @@ func (a *app) codingCommand(m member, cwd, home string, extra []string) (*exec.C
 		if record.Type == "api" {
 			key = "ANTHROPIC_API_KEY=" + record.Key
 		}
-		args = []string{"--dangerously-skip-permissions", "--settings", `{"cleanupPeriodDays":0,"autoMemoryEnabled":false}`, "--append-system-prompt", context}
+		settings, err := agentSettings(config)
+		if err != nil {
+			return nil, err
+		}
+		settings["cleanupPeriodDays"] = json.RawMessage("0")
+		settings["autoMemoryEnabled"] = json.RawMessage("false")
+		args = []string{"--dangerously-skip-permissions", "--settings", strings.TrimSpace(string(encode(settings))), "--append-system-prompt", context}
 	case "litellm":
 		dir, err := a.codingDir(m)
 		if err != nil {
@@ -208,6 +340,20 @@ func (a *app) codingCommand(m member, cwd, home string, extra []string) (*exec.C
 		ids, err := endpoint.models()
 		if err != nil {
 			return nil, err
+		}
+		model := ids[0]
+		if config != "" {
+			settings, err := agentSettings(config)
+			if err != nil {
+				return nil, err
+			}
+			var preferred string
+			if json.Unmarshal(settings["defaultModel"], &preferred) == nil && contains(ids, preferred) {
+				model = preferred
+			}
+			if err = atomicWrite(filepath.Join(home, "settings.json"), []byte(config), 0600); err != nil {
+				return nil, err
+			}
 		}
 		caps := endpoint.reasoning()
 		models := make([]object, 0, len(ids))
@@ -235,7 +381,7 @@ func (a *app) codingCommand(m member, cwd, home string, extra []string) (*exec.C
 			endpoint.Key = "local"
 		}
 		key = "COMMANDER_ENDPOINT_KEY=" + endpoint.Key
-		args = []string{"--no-session", "--provider", provider, "--model", ids[0], "--models", provider + "/*", "--append-system-prompt", context}
+		args = []string{"--no-session", "--provider", provider, "--model", model, "--models", provider + "/*", "--append-system-prompt", context}
 	default:
 		return nil, errors.New("unknown coding account")
 	}

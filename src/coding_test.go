@@ -5,6 +5,7 @@ import (
 	"bytes"
 	"context"
 	"crypto/sha256"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -16,6 +17,125 @@ import (
 	"sync"
 	"testing"
 )
+
+func writeAgentConfig(t *testing.T, a *app, agent, data string) error {
+	t.Helper()
+	path := filepath.Join(t.TempDir(), "settings")
+	mustWrite(t, path, []byte(data))
+	return a.codingConfig([]string{agent, path})
+}
+
+func TestSharedAgentConfig(t *testing.T) {
+	a := testApp(t)
+	configs := codingConfigs{
+		"codex":  "model = \"shared-model\"\n",
+		"claude": `{"model":"shared-model","cleanupPeriodDays":30,"autoMemoryEnabled":true}`,
+		"pi":     `{"defaultModel":"shared-model"}`,
+	}
+
+	// Terminals updating different agents must preserve each other's settings.
+	var writers sync.WaitGroup
+	for agent, data := range configs {
+		writers.Go(func() {
+			if err := writeAgentConfig(t, a, agent, data); err != nil {
+				t.Error(err)
+			}
+		})
+	}
+	writers.Wait()
+	for agent, want := range configs {
+		terminal := *a
+		var out bytes.Buffer
+		terminal.out = &out
+		if err := terminal.codingConfig([]string{agent}); err != nil || out.String() != want {
+			t.Fatalf("%s settings = %q, want %q: %v", agent, out.String(), want, err)
+		}
+	}
+	if err := writeAgentConfig(t, a, "claude", `["invalid"]`); err == nil {
+		t.Fatal("accepted nonobject settings")
+	}
+
+	codex := member{Service: "codex", Account: "shared", Key: jsonKey("shared")}
+	claude := member{Service: "claude", Account: "shared", Key: jsonKey("shared")}
+	mustWrite(t, filepath.Join(a.root, ".secrets/coding/codex/shared/auth.json"), encode(object{"tokens": object{"access_token": "fixture"}}))
+	mustWrite(t, filepath.Join(a.root, ".secrets/coding/claude/shared/account.json"), encode(claudeAccount{Type: "native"}))
+	executableFixture(t, filepath.Join(a.packageDir("node"), "bin/node"), "exit 0")
+	executableFixture(t, filepath.Join(a.packageDir("claude"), packageEntries["claude"]), "exit 0")
+	sessions := []session{addSession(t, a, "first", codex, claude), addSession(t, a, "second", codex, claude)}
+	for _, s := range sessions {
+		home := t.TempDir()
+		writers.Go(func() {
+			scoped := *a
+			scoped.session = &s
+			cmd, err := scoped.codingCommand(codex, home, home, nil)
+			if err != nil {
+				t.Error(err)
+				return
+			}
+			data, err := os.ReadFile(filepath.Join(home, "config.toml"))
+			if err != nil || string(data) != configs["codex"] || !contains(cmd.Env, "COMMANDER_SESSION="+s.ID) {
+				t.Errorf("incorrect codex settings or scope: %v", err)
+			}
+			cmd, err = scoped.codingCommand(claude, home, home, nil)
+			if err != nil {
+				t.Error(err)
+				return
+			}
+			var settings object
+			err = json.Unmarshal([]byte(argument(cmd.Args, "--settings")), &settings)
+			if err != nil || settings["model"] != "shared-model" || settings["autoMemoryEnabled"] != false || settings["cleanupPeriodDays"] != float64(0) {
+				t.Errorf("incorrect claude settings: %v, %v", settings, err)
+			}
+		})
+	}
+	writers.Wait()
+
+	snapshot, err := a.exportSnapshot(nil, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	archive := filepath.Join(t.TempDir(), "settings.zip")
+	if err = writeArchive(archive, snapshot, "fixture-password", false); err != nil {
+		t.Fatal(err)
+	}
+	snapshot, err = readArchive(archive, "fixture-password")
+	if err != nil {
+		t.Fatal(err)
+	}
+	target := testApp(t)
+	if err = writeAgentConfig(t, target, "pi", `{"old":true}`); err != nil {
+		t.Fatal(err)
+	}
+	selection, err := target.importChoices(snapshot, func(string) bool { return false })
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err = target.importSelected(snapshot, selection); err != nil {
+		t.Fatal(err)
+	}
+	// Imports from older Commander versions have no settings to replace.
+	snapshot.CodingConfigs = nil
+	if err = target.importSelected(snapshot, selection); err != nil {
+		t.Fatal(err)
+	}
+	// A partial archive replaces only the agents it carries.
+	snapshot.CodingConfigs = codingConfigs{"pi": `{"defaultModel":"new-model"}`}
+	if err = target.importSelected(snapshot, selection); err != nil {
+		t.Fatal(err)
+	}
+	configs["pi"] = snapshot.CodingConfigs["pi"]
+	got, err := newStorage(target.root).codingConfigs()
+	if err != nil || !bytes.Equal(encode(got), encode(configs)) {
+		t.Fatalf("imported settings = %v, want %v: %v", got, configs, err)
+	}
+	if err = writeAgentConfig(t, target, "pi", ""); err != nil {
+		t.Fatal(err)
+	}
+	got, err = newStorage(target.root).codingConfigs()
+	if err != nil || len(got) != 2 || got["pi"] != "" {
+		t.Fatalf("settings after clear = %v: %v", got, err)
+	}
+}
 
 func TestCodingAccountIsolationAndArchive(t *testing.T) {
 	a := testApp(t)
@@ -242,7 +362,7 @@ func TestExistingEndpointRunsInPi(t *testing.T) {
 		}
 		switch r.URL.Path {
 		case "/v1/models":
-			fmt.Fprint(w, `{"data":[{"id":"test-model"}]}`)
+			fmt.Fprint(w, `{"data":[{"id":"test-model"},{"id":"z-preferred"}]}`)
 		default:
 			http.NotFound(w, r)
 		}
@@ -267,6 +387,23 @@ func TestExistingEndpointRunsInPi(t *testing.T) {
 	b, err := os.ReadFile(filepath.Join(tmp, "models.json"))
 	if err != nil || bytes.Contains(b, []byte("fixture")) || !bytes.Contains(b, []byte(server.URL)) {
 		t.Fatal("invalid pi profile", err)
+	}
+	for _, tc := range []struct{ configured, want string }{
+		{"z-preferred", "z-preferred"},
+		{"unavailable", "test-model"},
+	} {
+		settings := fmt.Sprintf(`{"defaultModel":%q,"defaultThinkingLevel":"high"}`, tc.configured)
+		if err = writeAgentConfig(t, a, "pi", settings); err != nil {
+			t.Fatal(err)
+		}
+		home := t.TempDir()
+		cmd, err = a.codingCommand(m, tmp, home, nil)
+		if err != nil || argument(cmd.Args, "--model") != tc.want {
+			t.Fatalf("configured %s, want %s: %v", tc.configured, tc.want, err)
+		}
+		if raw, err := os.ReadFile(filepath.Join(home, "settings.json")); err != nil || string(raw) != settings {
+			t.Fatalf("pi settings = %s: %v", raw, err)
+		}
 	}
 }
 

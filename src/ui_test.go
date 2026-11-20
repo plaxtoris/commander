@@ -220,6 +220,10 @@ func TestCompletePath(t *testing.T) {
 
 func TestInteractiveExportSelectsSessionsAndMemory(t *testing.T) {
 	a := testApp(t)
+	settings := "model = 'fixture-model'\n"
+	if err := writeAgentConfig(t, a, "codex", settings); err != nil {
+		t.Fatal(err)
+	}
 	mustWrite(t, filepath.Join(a.root, ".secrets", ".config", "hcloud", "cli.toml"), []byte("active_context = 'existing'\n[[contexts]]\nname = 'existing'\ntoken = 'fixture-secret'\n"))
 	memory := "* Keep replies concise.\n"
 	mustWrite(t, filepath.Join(a.root, "MEMORY.md"), []byte(memory))
@@ -232,6 +236,9 @@ func TestInteractiveExportSelectsSessionsAndMemory(t *testing.T) {
 	s.wait(t, "commander · session alpha")
 	s.send(t, "x")
 	s.wait(t, "[x] MEMORY.md")
+	if !strings.Contains(s.output, "includes shared agent settings") {
+		t.Fatal("export did not show that agent settings are included")
+	}
 	s.send(t, "\x1b[B ")
 	s.wait(t, "[ ] private")
 	s.send(t, "\r")
@@ -239,7 +246,7 @@ func TestInteractiveExportSelectsSessionsAndMemory(t *testing.T) {
 	s.send(t, "1234\r")
 	s.wait(t, "repeat archive password:")
 	s.send(t, "1234\r")
-	s.wait(t, "exported 2 sessions, 1 account, memory")
+	s.wait(t, "exported 2 sessions, 1 account, memory, agent settings")
 	s.send(t, "q")
 	if err := s.command.Wait(); err != nil {
 		t.Fatal(err)
@@ -248,7 +255,7 @@ func TestInteractiveExportSelectsSessionsAndMemory(t *testing.T) {
 		t.Fatal("export exposed login data")
 	}
 	p, err := readArchive(filepath.Join(a.root, "commander.zip"), "1234")
-	if err != nil || p.Memory == nil || *p.Memory != memory || len(p.Profile.Profiles) != 2 || len(p.Profile.Profiles["work"]) != 1 || len(p.Logins) != 1 {
+	if err != nil || p.Memory == nil || *p.Memory != memory || len(p.Profile.Profiles) != 2 || len(p.Profile.Profiles["work"]) != 1 || len(p.Logins) != 1 || p.CodingConfigs["codex"] != settings {
 		t.Fatal("archive does not hold the checked items", err)
 	}
 	if _, ok := p.Profile.Profiles["private"]; ok {
