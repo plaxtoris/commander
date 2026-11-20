@@ -23,7 +23,7 @@ chmod +x commander && ./commander
     github         alice
     repositories   acme/*
 
-  [enter] start  [e] edit  [m] more  [x] export  [i] import  [q] quit
+  [enter] start  [e] edit  [d] delete  [x] export  [i] import  [q] quit
 ```
 
 - **Start.** One agent account opens directly. With several, pick the login
@@ -33,9 +33,12 @@ chmod +x commander && ./commander
   Use space to select several agents. Open `accounts & repos` for GitHub
   logins, organizations and repositories. Agents run autonomously in this workspace.
 - **Edit.** Connect more accounts or change the scope. Choose a GitHub login
-  per repository or organization when several can reach it. Login issues show
-  on the session that needs attention.
-- **More.** Open a shell, check accounts, rename or delete a session.
+  per repository or organization when several can reach it. Changes save
+  immediately. Press `r` in the editor to rename the session.
+- **Startup.** Commander updates the installed tools and checks session accounts
+  in the background. Login issues show on the session that needs attention.
+- **Delete.** Press `d` on a session and confirm. To open a shell, run
+  `commander session shell NAME`.
 - **Transfer.** Press `x` to choose sessions and `MEMORY.md` for the encrypted
   `commander.zip` archive. Press `i` to import. The archive replaces local
   sessions with matching names and replaces `MEMORY.md` if included.

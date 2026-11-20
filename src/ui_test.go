@@ -73,21 +73,28 @@ func TestInteractiveRenameEditAndDelete(t *testing.T) {
 	addSession(t, a, "work", hMember("existing"))
 	s := openUI(t, a.root)
 	s.wait(t, "2 sessions")
+	s.send(t, "e")
+	s.wait(t, "[r] rename")
 	s.send(t, "r")
 	s.wait(t, "rename personal:")
 	s.send(t, "\x15private\r")
 	s.wait(t, "renamed to private")
-	s.send(t, "\x1b[Br")
+	s.send(t, " ")
+	s.wait(t, "[ ] existing")
+	if p, err := a.findSession("private"); err != nil || len(p.Accounts) != 0 {
+		t.Fatal("edit did not save immediately", p, err)
+	}
+	s.send(t, "\x1b")
+	s.wait(t, "[q] quit")
+	s.send(t, "\x1b[Be")
+	s.wait(t, "[r] rename")
+	s.send(t, "r")
 	s.wait(t, "rename work:")
 	s.send(t, "\x15Private\r")
 	s.wait(t, "session private already exists")
-	s.send(t, "\x1b[Ae")
-	s.wait(t, "[x] existing")
-	s.send(t, " \r")
-	s.wait(t, "private saved")
-	if p, err := a.findSession("private"); err != nil || len(p.Accounts) != 0 {
-		t.Fatal("edit did not save", p, err)
-	}
+	s.send(t, "\x1b")
+	s.wait(t, "[q] quit")
+	s.send(t, "\x1b[A")
 	s.send(t, "d")
 	s.wait(t, "delete session private?")
 	s.send(t, "y")
@@ -367,7 +374,7 @@ func TestInteractiveAccountPresentationAndResize(t *testing.T) {
 			s.send(t, "e")
 			s.wait(t, "+ add account")
 			frame := terminalControls.ReplaceAllString(s.output, "")
-			for _, want := range []string{"commander · Work Team", "hetzner", "[x] existing", "[x] Case.Sensitive", "! missing account", "[space] select"} {
+			for _, want := range []string{"commander · Work Team", "hetzner", "[x] existing", "[x] Case.Sensitive", "! missing account", "[space] toggle"} {
 				if !strings.Contains(frame, want) {
 					t.Fatalf("missing %q in edit view: %s", want, frame)
 				}
@@ -386,7 +393,7 @@ func TestInteractiveAccountPresentationAndResize(t *testing.T) {
 			}
 			start := len(s.output)
 			s.send(t, "\x1b[H")
-			s.wait(t, "[esc] cancel")
+			s.wait(t, "[esc] back")
 			for _, line := range strings.Split(terminalControls.ReplaceAllString(s.output[start:], ""), "\n") {
 				if utf8.RuneCountInString(strings.TrimRight(line, "\r")) > 44 {
 					t.Fatal("line exceeds narrow terminal", line)

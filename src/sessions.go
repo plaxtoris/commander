@@ -426,8 +426,7 @@ func (s session) summary() string {
 	return strings.Join(names, " · ")
 }
 
-// Selection flags replace a session's accounts or repositories. Without
-// flags, a terminal opens the selection screen.
+// Selection flags replace a session's accounts or repositories.
 func (a *app) selectionFlags(s *session, args []string) error {
 	for i := 0; i < len(args); i += 2 {
 		if i+1 >= len(args) {
@@ -446,12 +445,7 @@ func (a *app) selectionFlags(s *session, args []string) error {
 			return errors.New("use --accounts service=user,... and --repos owner/name,owner/*")
 		}
 	}
-	if len(args) > 0 || !a.terminal() {
-		return nil
-	}
-	accounts, repos, err := a.editSelection(s.Name, s.Accounts, s.Repositories, false)
-	s.Accounts, s.Repositories = accounts, repos
-	return err
+	return nil
 }
 
 func (a *app) sessionCommand(args []string) error {
@@ -484,7 +478,13 @@ func (a *app) sessionCommand(args []string) error {
 		if err := a.checkName(s.Name, ""); err != nil {
 			return err
 		}
-		if err := a.selectionFlags(&s, args[2:]); err != nil {
+		if len(args) == 2 && a.terminal() {
+			var err error
+			s.Accounts, s.Repositories, err = a.editSelection(s.Name, nil)
+			if err != nil {
+				return err
+			}
+		} else if err := a.selectionFlags(&s, args[2:]); err != nil {
 			return err
 		}
 		s, err := a.newSession(s.Name, s.Accounts, s.Repositories)
@@ -500,6 +500,10 @@ func (a *app) sessionCommand(args []string) error {
 	}
 	switch args[0] {
 	case "edit":
+		if len(args) == 2 && a.terminal() {
+			_, _, err = a.editSelection(s.Name, &s)
+			return err
+		}
 		before := s
 		if err = a.selectionFlags(&s, args[2:]); err != nil {
 			return err

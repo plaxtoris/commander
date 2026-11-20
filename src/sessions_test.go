@@ -302,8 +302,15 @@ func TestInteractiveRepositoriesFromOrganizations(t *testing.T) {
 		t.Fatal("showed an invalid owner or a token")
 	}
 	// alice, alice/*, acme/*, alice/tool: tick acme/* and untick alice/tool.
-	ui.send(t, "\x1b[B\x1b[B \x1b[B \r")
-	ui.wait(t, "work saved")
+	ui.send(t, "\x1b[B\x1b[B ")
+	ui.wait(t, "[x] acme/*")
+	ui.send(t, "\x1b[B ")
+	ui.wait(t, "[ ] alice/tool")
+	if current, err := a.readSession(s.ID); err != nil || !reflect.DeepEqual(current.Repositories, []string{"acme/*"}) {
+		t.Fatal("repository edit was not saved immediately", current.Repositories, err)
+	}
+	ui.send(t, "\x1b")
+	ui.wait(t, "[q] quit")
 	ui.send(t, "q")
 	if err := ui.command.Wait(); err != nil {
 		t.Fatal(err)
