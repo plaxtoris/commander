@@ -133,7 +133,7 @@ Sessions
   commander session shell NAME             opens a shell with its selection
   commander export                         selects sessions and memory for commander.zip
   commander export SESSION                 saves one session with its logins
-  commander import FILE.zip                adds the sessions and logins it holds
+  commander import [FILE.zip]              picks or opens an archive to import
   commander context                        shows the session scope and selectors
   commander overview [SESSION]             checks account status
 

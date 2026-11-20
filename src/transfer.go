@@ -267,8 +267,8 @@ func (a *app) importSelected(payload profileArchive, selection importSelection) 
 }
 
 func (a *app) transfer(args []string) error {
-	if len(args) > 2 || args[0] == "import" && len(args) != 2 {
-		return errors.New("usage: commander export [SESSION] or commander import FILE.zip")
+	if len(args) > 2 {
+		return errors.New("usage: commander export [SESSION] or commander import [FILE.zip]")
 	}
 	if !a.terminal() {
 		return errors.New("open a terminal to enter the archive password")
@@ -279,7 +279,11 @@ func (a *app) transfer(args []string) error {
 	var message string
 	var err error
 	if args[0] == "import" {
-		message, err = a.importArchive(args[1])
+		path := ""
+		if len(args) == 2 {
+			path = args[1]
+		}
+		message, err = a.importArchive(path)
 	} else if len(args) == 1 {
 		message, err = a.chooseExport()
 	} else {
@@ -491,10 +495,35 @@ func (a *app) importChoices(p profileArchive, confirm func(string) bool) (import
 	return selection, nil
 }
 
+func (a *app) chooseImportPath() (string, error) {
+	entries, err := os.ReadDir(a.root)
+	if err != nil {
+		return "", err
+	}
+	var names, labels []string
+	for _, entry := range entries {
+		name := entry.Name()
+		if entry.Type().IsRegular() && !strings.HasPrefix(name, ".") && strings.EqualFold(filepath.Ext(name), ".zip") {
+			names = append(names, name)
+			labels = append(labels, clean(name))
+		}
+	}
+	if len(names) > 0 {
+		i, err := a.choose("import", append(labels, "+ enter a path"), 0)
+		if err != nil {
+			return "", err
+		}
+		if i < len(names) {
+			return filepath.Join(a.root, names[i]), nil
+		}
+	}
+	return a.prompt("archive", "", completePath)
+}
+
 func (a *app) importArchive(path string) (string, error) {
 	var err error
 	if path == "" {
-		if path, err = a.prompt("archive", "", completePath); err != nil {
+		if path, err = a.chooseImportPath(); err != nil {
 			return "", err
 		}
 	}

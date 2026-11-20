@@ -152,6 +152,45 @@ func TestInteractiveImport(t *testing.T) {
 	}
 }
 
+func TestInteractiveImportPicksAnArchiveFromCommanderFolder(t *testing.T) {
+	a := testApp(t)
+	memory := "* Travel preference.\n"
+	payload, err := a.archiveSessions(nil, &memory)
+	if err != nil {
+		t.Fatal(err)
+	}
+	mustWrite(t, filepath.Join(a.root, "alpha.zip"), nil)
+	mustWrite(t, filepath.Join(a.root, "other.txt"), nil)
+	mustWrite(t, filepath.Join(a.root, "directory.zip", "child"), nil)
+	if err := writeArchive(filepath.Join(a.root, "travel.ZIP"), payload, "fixture password", false); err != nil {
+		t.Fatal(err)
+	}
+	s := openUI(t, a.root)
+	s.wait(t, "[q] quit")
+	s.send(t, "i")
+	s.wait(t, "+ enter a path")
+	if strings.Contains(s.output, "other.txt") || strings.Contains(s.output, "directory.zip") {
+		t.Fatal("picker listed an entry besides regular ZIP files")
+	}
+	s.send(t, "G\r")
+	s.wait(t, "archive:")
+	s.send(t, "\x1b")
+	s.wait(t, "[q] quit")
+	s.send(t, "i")
+	s.wait(t, "+ enter a path")
+	s.send(t, "\x1b[B\r")
+	s.wait(t, "archive password:")
+	s.send(t, "fixture password\r")
+	s.wait(t, "imported 0 sessions, 0 accounts, memory")
+	s.send(t, "q")
+	if err := s.command.Wait(); err != nil {
+		t.Fatal(err)
+	}
+	if got, err := os.ReadFile(filepath.Join(a.root, "MEMORY.md")); err != nil || string(got) != memory {
+		t.Fatal("picker did not import the chosen archive", err)
+	}
+}
+
 func TestCompletePath(t *testing.T) {
 	dir := t.TempDir()
 	t.Setenv("HOME", dir)

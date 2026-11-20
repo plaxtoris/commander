@@ -40,8 +40,9 @@ chmod +x commander && ./commander
 - **Delete.** Press `d` on a session and confirm. To open a shell, run
   `commander session shell NAME`.
 - **Transfer.** Press `x` to choose sessions and `MEMORY.md` for the encrypted
-  `commander.zip` archive. Press `i` to import. The archive replaces local
-  sessions with matching names and replaces `MEMORY.md` if included.
+  `commander.zip` archive. Press `i` to choose a ZIP from the Commander folder
+  or enter a path. The archive replaces local sessions with matching names
+  and replaces `MEMORY.md` if included.
   After importing a Claude subscription on a different machine, sign in again
   through Claude Code.
 - **Portable.** Commander installs the official CLIs on demand in its tools
