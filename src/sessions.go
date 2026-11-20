@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"crypto/rand"
 	"encoding/hex"
 	"encoding/json"
@@ -14,6 +15,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"syscall"
 )
 
 // Sessions are named account and repository selections without credentials.
@@ -519,7 +521,7 @@ func (a *app) sessionShell(s session) error {
 		return err
 	}
 	defer unlock()
-	if err = scoped.sessionWrappers(s); err != nil {
+	if err = scoped.sessionWrappers(); err != nil {
 		return err
 	}
 	a.rememberSession(s.ID)
@@ -600,23 +602,53 @@ func (a *app) admin() *app {
 	return &admin
 }
 
-func (a *app) sessionWrappers(s session) error {
-	p, err := a.sessionPath(s.ID)
-	if err != nil {
+func (a *app) sessionBin() string { return filepath.Join(a.root, ".sessions", "bin") }
+
+func sessionTools() []string {
+	return append(append([]string{}, managedTools...), "dockerhub", "confluence")
+}
+
+func (a *app) wrapper(tool, selector string) []byte {
+	return []byte("#!/bin/sh\nexec " + quote(filepath.Join(a.root, "commander")) + " --session " + selector + " exec -- " + quote(tool) + " \"$@\"\n")
+}
+
+func (a *app) sessionWrappers() error {
+	bin := a.sessionBin()
+	if err := noSymlinks(a.root, bin); err != nil {
 		return err
 	}
-	bin := filepath.Join(p, "bin")
-	if err = noSymlinks(a.root, bin); err != nil {
+	if err := os.MkdirAll(bin, 0700); err != nil {
 		return err
 	}
-	if err = os.MkdirAll(bin, 0700); err != nil {
-		return err
-	}
-	for _, tool := range append(append([]string{}, managedTools...), "dockerhub", "confluence") {
-		body := "#!/bin/sh\nexec " + quote(filepath.Join(a.root, "commander")) + " --session " + quote(s.ID) + " exec -- " + quote(tool) + " \"$@\"\n"
-		if err = writeGenerated(filepath.Join(bin, tool), []byte(body), 0700); err != nil {
+	for _, tool := range sessionTools() {
+		if err := writeGenerated(filepath.Join(bin, tool), a.wrapper(tool, `"${COMMANDER_SESSION:?open a Commander session first}"`), 0700); err != nil {
 			return err
 		}
 	}
 	return nil
+}
+
+// Older shells keep their original PATH until they exit.
+func (a *app) pruneSessionWrappers() {
+	sessions, _ := a.sessions()
+	for _, s := range sessions {
+		bin := filepath.Join(a.root, ".sessions", s.ID, "bin")
+		if info, err := os.Lstat(bin); err != nil || !info.IsDir() {
+			continue
+		}
+		unlock, err := a.sessionLock(s.ID, false, false)
+		if err != nil {
+			continue
+		}
+		for _, tool := range sessionTools() {
+			path := filepath.Join(bin, tool)
+			if info, err := os.Lstat(path); err == nil && info.Mode().IsRegular() {
+				if data, err := os.ReadFile(path); err == nil && bytes.Equal(data, a.wrapper(tool, quote(s.ID))) {
+					os.Remove(path)
+				}
+			}
+		}
+		syscall.Rmdir(bin)
+		unlock()
+	}
 }

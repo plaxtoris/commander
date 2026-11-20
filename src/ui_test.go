@@ -110,11 +110,15 @@ func TestInteractiveImport(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	memory := "* Imported preference.\n"
+	payload.Memory = &memory
 	archive := filepath.Join(t.TempDir(), "commander.zip")
 	if err := writeArchive(archive, payload, "fixture password", false); err != nil {
 		t.Fatal(err)
 	}
 	a := testApp(t)
+	old := addSession(t, a, "imported", ghMember("old"))
+	mustWrite(t, filepath.Join(a.root, "MEMORY.md"), []byte("* Local preference.\n"))
 	s := openUI(t, a.root)
 	s.wait(t, "[q] quit")
 	s.send(t, "i")
@@ -130,8 +134,14 @@ func TestInteractiveImport(t *testing.T) {
 	if err := s.command.Wait(); err != nil {
 		t.Fatal(err)
 	}
-	if imported, err := a.findSession("imported"); err != nil || len(imported.Accounts) != 2 {
+	if imported, err := a.findSession("imported"); err != nil || len(imported.Accounts) != 2 || imported.ID == old.ID {
 		t.Fatal(imported, err)
+	}
+	if _, err := os.Stat(filepath.Join(a.root, ".sessions", old.ID)); !os.IsNotExist(err) {
+		t.Fatal("old session state remains", err)
+	}
+	if got, err := os.ReadFile(filepath.Join(a.root, "MEMORY.md")); err != nil || string(got) != memory {
+		t.Fatal("memory was not replaced", err)
 	}
 }
 
@@ -162,38 +172,28 @@ func TestCompletePath(t *testing.T) {
 	}
 }
 
-func TestInteractiveExportStartsAtLastSession(t *testing.T) {
+func TestInteractiveExportSelectsSessionsAndMemory(t *testing.T) {
 	a := testApp(t)
 	mustWrite(t, filepath.Join(a.root, ".secrets", ".config", "hcloud", "cli.toml"), []byte("active_context = 'existing'\n[[contexts]]\nname = 'existing'\ntoken = 'fixture-secret'\n"))
-	mustWrite(t, filepath.Join(a.root, "MEMORY.md"), []byte("* Keep replies concise.\n"))
+	memory := "* Keep replies concise.\n"
+	mustWrite(t, filepath.Join(a.root, "MEMORY.md"), []byte(memory))
 	alpha := addSession(t, a, "alpha")
+	addSession(t, a, "private")
 	work := addSession(t, a, "work", hMember("existing"))
 	a.rememberSession(work.ID)
 	t.Setenv("COMMANDER_UI_SESSION", alpha.ID)
 	s := openUI(t, a.root)
 	s.wait(t, "commander · session alpha")
 	s.send(t, "x")
-	s.wait(t, "archive password:")
-	s.send(t, "abc\r")
-	s.wait(t, "use at least 4 characters")
-	s.send(t, "x")
+	s.wait(t, "[x] MEMORY.md")
+	s.send(t, "\x1b[B ")
+	s.wait(t, "[ ] private")
+	s.send(t, "\r")
 	s.wait(t, "archive password:")
 	s.send(t, "1234\r")
 	s.wait(t, "repeat archive password:")
 	s.send(t, "1234\r")
-	s.wait(t, "exported work with 1 account")
-	s.send(t, "x")
-	s.wait(t, "replace work.zip?")
-	s.send(t, "n")
-	s.wait(t, "[q] quit")
-	s.send(t, "x")
-	s.wait(t, "replace work.zip?")
-	s.send(t, "y")
-	s.wait(t, "archive password:")
-	s.send(t, "5678\r")
-	s.wait(t, "repeat archive password:")
-	s.send(t, "5678\r")
-	s.wait(t, "exported work with 1 account")
+	s.wait(t, "exported 2 sessions, 1 account, memory")
 	s.send(t, "q")
 	if err := s.command.Wait(); err != nil {
 		t.Fatal(err)
@@ -201,9 +201,12 @@ func TestInteractiveExportStartsAtLastSession(t *testing.T) {
 	if strings.Contains(s.output, "fixture-secret") {
 		t.Fatal("export exposed login data")
 	}
-	p, err := readArchive(filepath.Join(a.root, "work.zip"), "5678")
-	if err != nil || p.Memory != nil || len(p.Profile.Profiles) != 1 || len(p.Profile.Profiles["work"]) != 1 || len(p.Logins) != 1 {
-		t.Fatal("archive does not hold exactly the last session", err)
+	p, err := readArchive(filepath.Join(a.root, "commander.zip"), "1234")
+	if err != nil || p.Memory == nil || *p.Memory != memory || len(p.Profile.Profiles) != 2 || len(p.Profile.Profiles["work"]) != 1 || len(p.Logins) != 1 {
+		t.Fatal("archive does not hold the checked items", err)
+	}
+	if _, ok := p.Profile.Profiles["private"]; ok {
+		t.Fatal("archive holds an unchecked session")
 	}
 }
 

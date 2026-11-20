@@ -678,7 +678,7 @@ func (s *storage) install(service string, incoming object) (map[string][]byte, e
 	return files, nil
 }
 
-func (s *storage) publish(files map[string][]byte) error {
+func (s *storage) publish(files map[string][]byte, retired ...string) error {
 	paths := []string{}
 	for name := range files {
 		paths = append(paths, name)
@@ -687,7 +687,7 @@ func (s *storage) publish(files map[string][]byte) error {
 	for _, name := range paths {
 		path := filepath.ToSlash(name)
 		login, private := strings.CutPrefix(path, ".secrets/")
-		if !sessionFile.MatchString(path) && !(private && (nativeFiles[login] || codingFile(login))) {
+		if path != "MEMORY.md" && !sessionFile.MatchString(path) && !(private && (nativeFiles[login] || codingFile(login))) {
 			return errFormat
 		}
 		if err := noSymlinks(s.root, filepath.Join(s.root, name)); err != nil {
@@ -714,6 +714,7 @@ func (s *storage) publish(files map[string][]byte) error {
 		}
 	}
 	changed := []string{}
+	moved := []string{}
 	rollback := func() {
 		for i := len(changed) - 1; i >= 0; i-- {
 			name := changed[i]
@@ -722,8 +723,30 @@ func (s *storage) publish(files map[string][]byte) error {
 				atomicWrite(path, before, 0600)
 			} else {
 				os.Remove(path)
+				if sessionFile.MatchString(filepath.ToSlash(name)) {
+					os.Remove(filepath.Dir(path))
+				}
 			}
 		}
+		for _, dir := range moved {
+			os.Rename(filepath.Join(stage, filepath.Base(dir)), dir)
+		}
+	}
+	for _, id := range retired {
+		if !sessionID.MatchString(id) {
+			rollback()
+			return errFormat
+		}
+		dir := filepath.Join(s.root, ".sessions", id)
+		if err = noSymlinks(s.root, dir); err != nil {
+			rollback()
+			return err
+		}
+		if err = os.Rename(dir, filepath.Join(stage, id)); err != nil {
+			rollback()
+			return err
+		}
+		moved = append(moved, dir)
 	}
 	for i, name := range paths {
 		path := filepath.Join(s.root, name)

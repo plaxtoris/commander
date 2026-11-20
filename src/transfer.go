@@ -10,8 +10,7 @@ import (
 	"strings"
 )
 
-// An import selection names archive accounts and sessions. Replace holds
-// account IDs and "session:NAME" keys whose existing data may be replaced.
+// Replace holds the account IDs whose existing login may be replaced.
 type importSelection struct {
 	Accounts []member
 	Sessions []string
@@ -63,6 +62,11 @@ func normalizeArchive(p profileArchive) (profileArchive, error) {
 	if p.Format != "commander-profile" || p.Version != 2 || p.Profile.Active != nil {
 		return p, errFormat
 	}
+	if p.Memory != nil {
+		if err := validateMemory([]byte(*p.Memory)); err != nil {
+			return p, err
+		}
+	}
 	if err := validateSelections(p.Profile); err != nil {
 		return p, err
 	}
@@ -88,12 +92,27 @@ func normalizeArchive(p profileArchive) (profileArchive, error) {
 	return p, nil
 }
 
-// A session archive holds one session with the logins of its accounts.
 func (a *app) sessionArchive(s session) (profileArchive, error) {
-	p := profileArchive{Format: "commander-profile", Version: 2, Accounts: s.Accounts, Profile: selections{Version: 1, Profiles: map[string][]member{s.Name: s.Accounts}, Scopes: map[string][]string{s.Name: s.Repositories}}, Logins: map[string]object{}}
+	return a.archiveSessions([]session{s}, nil)
+}
+
+func (a *app) archiveSessions(sessions []session, memory *string) (profileArchive, error) {
+	p := profileArchive{
+		Format: "commander-profile", Version: 2, Accounts: []member{}, Memory: memory,
+		Profile: selections{Version: 1, Profiles: map[string][]member{}, Scopes: map[string][]string{}},
+		Logins:  map[string]object{},
+	}
 	grouped := map[string][]member{}
-	for _, m := range s.Accounts {
-		grouped[m.Service] = append(grouped[m.Service], m)
+	seen := map[string]bool{}
+	for _, s := range sessions {
+		p.Profile.Profiles[s.Name], p.Profile.Scopes[s.Name] = s.Accounts, s.Repositories
+		for _, m := range s.Accounts {
+			if !seen[m.id()] {
+				seen[m.id()] = true
+				p.Accounts = append(p.Accounts, m)
+				grouped[m.Service] = append(grouped[m.Service], m)
+			}
+		}
 	}
 	store := newStorage(a.root)
 	for service, members := range grouped {
@@ -185,54 +204,71 @@ func (a *app) importSelected(payload profileArchive, selection importSelection) 
 			files[filepath.Join(".secrets", name)] = data
 		}
 	}
-	if len(selection.Sessions) > 0 {
-		existing, err := a.sessions()
+	if p.Memory != nil {
+		unlock, err := a.waitLock("memory")
 		if err != nil {
 			return err
 		}
-		taken := map[string]bool{}
-		for _, name := range selection.Sessions {
-			members, ok := p.Profile.Profiles[name]
-			if !ok {
-				return errors.New("session was not in the archive")
-			}
-			if taken[strings.ToLower(name)] {
-				return errors.New("the archive names two sessions " + name)
-			}
-			taken[strings.ToLower(name)] = true
-			s := session{Name: name, Accounts: members, Repositories: p.Profile.Scopes[name]}
-			for _, old := range existing {
-				if strings.EqualFold(old.Name, name) {
-					if !selection.Replace["session:"+name] {
-						return errors.New("session " + old.Name + " already exists")
-					}
-					s.ID, s.Name = old.ID, old.Name
-					break
-				}
-			}
-			if s.ID == "" {
-				if s.ID, err = newSessionID(); err != nil {
-					return err
-				}
-			}
-			if err = s.validate(); err != nil {
-				return err
-			}
-			path := filepath.Join(".sessions", s.ID, "session.json")
-			before, err := os.ReadFile(filepath.Join(a.root, path))
-			if err != nil && !os.IsNotExist(err) {
-				return err
-			}
-			store.originals[path] = before
-			files[path] = encode(s)
+		defer unlock()
+		path := filepath.Join(a.root, "MEMORY.md")
+		if err = noSymlinks(a.root, path); err != nil {
+			return err
 		}
+		if store.originals["MEMORY.md"], err = os.ReadFile(path); err != nil && !os.IsNotExist(err) {
+			return err
+		}
+		files["MEMORY.md"] = []byte(*p.Memory)
 	}
-	return store.publish(files)
+	existing, err := a.sessions()
+	if err != nil {
+		return err
+	}
+	taken := map[string]bool{}
+	var retired []session
+	for _, name := range selection.Sessions {
+		members, ok := p.Profile.Profiles[name]
+		if !ok || taken[strings.ToLower(name)] {
+			return errFormat
+		}
+		taken[strings.ToLower(name)] = true
+		id, err := newSessionID()
+		if err != nil {
+			return err
+		}
+		s := session{ID: id, Name: name, Accounts: members, Repositories: p.Profile.Scopes[name]}
+		if err = s.validate(); err != nil {
+			return err
+		}
+		for _, old := range existing {
+			if strings.EqualFold(old.Name, name) {
+				unlock, err := a.sessionLock(old.ID, false, false)
+				if err != nil {
+					return fmt.Errorf("session %s is in use; close it and retry import", old.Name)
+				}
+				defer unlock()
+				retired = append(retired, old)
+			}
+		}
+		files[filepath.Join(".sessions", s.ID, "session.json")] = encode(s)
+	}
+	var remove []string
+	for _, old := range retired {
+		scoped := *a
+		scoped.session = &old
+		if err = scoped.removeSessionContainers(); err != nil {
+			return err
+		}
+		if err = scoped.stopBridge(); err != nil {
+			return err
+		}
+		remove = append(remove, old.ID)
+	}
+	return store.publish(files, remove...)
 }
 
 func (a *app) transfer(args []string) error {
-	if len(args) != 2 {
-		return errors.New("usage: commander export SESSION or commander import FILE.zip")
+	if len(args) > 2 || args[0] == "import" && len(args) != 2 {
+		return errors.New("usage: commander export [SESSION] or commander import FILE.zip")
 	}
 	if !a.terminal() {
 		return errors.New("open a terminal to enter the archive password")
@@ -244,10 +280,12 @@ func (a *app) transfer(args []string) error {
 	var err error
 	if args[0] == "import" {
 		message, err = a.importArchive(args[1])
+	} else if len(args) == 1 {
+		message, err = a.chooseExport()
 	} else {
 		var s session
 		if s, err = a.findSession(args[1]); err == nil {
-			message, err = a.exportArchive(s)
+			message, err = a.exportArchive(s.Name+".zip", []string{s.ID}, false)
 		}
 	}
 	a.clear()
@@ -257,10 +295,81 @@ func (a *app) transfer(args []string) error {
 	return err
 }
 
-// Export writes one session with its logins to SESSION.zip in the current
-// folder. Memory and logins outside the session stay local.
-func (a *app) exportArchive(s session) (string, error) {
-	path, err := filepath.Abs(strings.ReplaceAll(s.Name, string(os.PathSeparator), "_") + ".zip")
+func (a *app) chooseExport() (string, error) {
+	sessions, err := a.sessions()
+	if err != nil {
+		return "", err
+	}
+	names := make([]string, 0, len(sessions)+1)
+	for _, s := range sessions {
+		names = append(names, s.Name)
+	}
+	memoryPath := filepath.Join(a.root, "MEMORY.md")
+	if err = noSymlinks(a.root, memoryPath); err != nil {
+		return "", err
+	}
+	_, err = os.Stat(memoryPath)
+	hasMemory := err == nil
+	if err != nil && !os.IsNotExist(err) {
+		return "", err
+	}
+	if hasMemory {
+		names = append(names, "MEMORY.md")
+	}
+	if len(names) == 0 {
+		return "", errors.New("no sessions or memory to export")
+	}
+	selected := make([]bool, len(names))
+	for i := range selected {
+		selected[i] = true
+	}
+	at := 0
+	notice := ""
+	for {
+		rows := make([]row, len(names))
+		for i, name := range names {
+			box := "[ ] "
+			if selected[i] {
+				box = "[x] "
+			}
+			rows[i] = row{pick: true, line: uiLine{{box + name, ""}}}
+		}
+		key, i, err := a.list(view{title: "export", keys: "[space] select  [a] all / none  [enter] export  [esc] cancel", notice: notice, rows: rows}, at)
+		if err != nil {
+			return "", err
+		}
+		at = i
+		switch key {
+		case "esc", "q":
+			return "", errCancelled
+		case "space":
+			selected[i] = !selected[i]
+		case "a":
+			all := true
+			for _, on := range selected {
+				all = all && on
+			}
+			for i := range selected {
+				selected[i] = !all
+			}
+		case "enter":
+			var ids []string
+			for i, s := range sessions {
+				if selected[i] {
+					ids = append(ids, s.ID)
+				}
+			}
+			memory := hasMemory && selected[len(sessions)]
+			if len(ids) > 0 || memory {
+				return a.exportArchive("commander.zip", ids, memory)
+			}
+			notice = "select at least one item"
+		}
+	}
+}
+
+func (a *app) exportArchive(name string, ids []string, memory bool) (string, error) {
+	path, err := filepath.Abs(name)
 	if err != nil {
 		return "", err
 	}
@@ -279,55 +388,82 @@ func (a *app) exportArchive(s session) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	unlock, err := a.lock("native")
-	if err != nil {
-		return "", err
-	}
-	payload, err := a.sessionArchive(s)
-	unlock()
+	payload, err := a.exportSnapshot(ids, memory)
 	if err != nil {
 		return "", err
 	}
 	if err = writeArchive(path, payload, password, replace); err != nil {
 		return "", err
 	}
-	return fmt.Sprintf("exported %s with %s to %s", s.Name, count(len(s.Accounts), "account"), path), nil
+	message := fmt.Sprintf("exported %s, %s", count(len(ids), "session"), count(len(payload.Accounts), "account"))
+	if memory {
+		message += ", memory"
+	}
+	return message + " to " + path, nil
 }
 
-// importChoices selects every archive session with the archived logins it
-// uses. Existing sessions and different saved logins are replaced only after
-// confirm agrees. Logins outside the sessions and memory of older archives
-// are ignored.
+// Share the native lock with running tools and serialize the short snapshot
+// with credential refreshes that write more than one file.
+func (a *app) exportSnapshot(ids []string, includeMemory bool) (profileArchive, error) {
+	path := filepath.Join(a.root, ".secrets", ".native.lock")
+	if err := noSymlinks(a.root, path); err != nil {
+		return profileArchive{}, err
+	}
+	unlock, err := fileLock(path, true, false)
+	if err != nil {
+		return profileArchive{}, fmt.Errorf("saved logins are being updated; retry export: %w", err)
+	}
+	defer unlock()
+	release, err := a.credentialLock("write")
+	if err != nil {
+		return profileArchive{}, err
+	}
+	defer release()
+	sessions := make([]session, 0, len(ids))
+	releaseSessions, err := a.waitLock("sessions")
+	if err != nil {
+		return profileArchive{}, err
+	}
+	defer releaseSessions()
+	for _, id := range ids {
+		s, err := a.readSession(id)
+		if err != nil {
+			return profileArchive{}, err
+		}
+		sessions = append(sessions, s)
+	}
+	var memory *string
+	if includeMemory {
+		path := filepath.Join(a.root, "MEMORY.md")
+		if err = noSymlinks(a.root, path); err != nil {
+			return profileArchive{}, err
+		}
+		data, err := os.ReadFile(path)
+		if err != nil {
+			return profileArchive{}, err
+		}
+		text := string(data)
+		memory = &text
+	}
+	return a.archiveSessions(sessions, memory)
+}
+
 func (a *app) importChoices(p profileArchive, confirm func(string) bool) (importSelection, error) {
 	selection := importSelection{Replace: map[string]bool{}}
 	names := []string{}
 	for name := range p.Profile.Profiles {
 		names = append(names, name)
 	}
-	if len(names) == 0 {
-		return selection, errors.New("the archive holds no session")
+	if len(names) == 0 && p.Memory == nil {
+		return selection, errors.New("the archive holds no session or memory")
 	}
 	sort.Slice(names, func(i, j int) bool { return strings.ToLower(names[i]) < strings.ToLower(names[j]) })
-	existing, err := a.sessions()
-	if err != nil {
-		return selection, err
-	}
 	archived := map[string]member{}
 	for _, m := range p.Accounts {
 		archived[m.id()] = m
 	}
 	store, chosen := newStorage(a.root), map[string]bool{}
 	for _, name := range names {
-		skip := false
-		for _, s := range existing {
-			if strings.EqualFold(s.Name, name) {
-				skip = !confirm("replace session " + s.Name + "?")
-				selection.Replace["session:"+name] = !skip
-			}
-		}
-		if skip {
-			continue
-		}
 		selection.Sessions = append(selection.Sessions, name)
 		for _, used := range p.Profile.Profiles[name] {
 			m, ok := archived[used.id()]
@@ -351,9 +487,6 @@ func (a *app) importChoices(p profileArchive, confirm func(string) bool) (import
 			}
 			selection.Accounts = append(selection.Accounts, m)
 		}
-	}
-	if len(selection.Sessions) == 0 {
-		return selection, errCancelled
 	}
 	return selection, nil
 }
@@ -400,6 +533,9 @@ func (a *app) importArchive(path string) (string, error) {
 		return "", err
 	}
 	message := fmt.Sprintf("imported %s, %s", count(len(selection.Sessions), "session"), count(len(selection.Accounts), "account"))
+	if p.Memory != nil {
+		message += ", memory"
+	}
 	if len(selection.Accounts) > 0 {
 		admin := a.admin()
 		if _, err = admin.run("git", []string{"--version"}, true, nil); err != nil {

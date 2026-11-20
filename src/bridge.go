@@ -301,7 +301,7 @@ func (a *app) bridgeRequest(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	defer unlock()
-	if err = scoped.sessionWrappers(current); err != nil {
+	if err = scoped.sessionWrappers(); err != nil {
 		http.Error(w, "session unavailable", 500)
 		return
 	}

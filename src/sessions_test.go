@@ -117,10 +117,10 @@ func TestSessionEnvironmentDoesNotExposeGlobalStores(t *testing.T) {
 	if env["COMMANDER_SESSION"] != s.ID {
 		t.Fatal("session identity missing")
 	}
-	if err = a.sessionWrappers(s); err != nil {
+	if err = a.sessionWrappers(); err != nil {
 		t.Fatal(err)
 	}
-	if _, err = os.Stat(filepath.Join(a.root, ".sessions", s.ID, "bin", "gh")); err != nil {
+	if _, err = os.Stat(filepath.Join(a.sessionBin(), "gh")); err != nil {
 		t.Fatal(err)
 	}
 }
@@ -379,5 +379,38 @@ func TestLastSessionNeverChangesActiveSessions(t *testing.T) {
 	mustWrite(t, filepath.Join(a.root, ".sessions", "last"), []byte("../escape\n"))
 	if a.lastSession() != "" {
 		t.Fatal("accepted an invalid last session")
+	}
+}
+
+func TestPruneSessionWrappersPreservesActiveShells(t *testing.T) {
+	a := testApp(t)
+	active := addSession(t, a, "active")
+	idle := addSession(t, a, "idle")
+	legacy := func(s session) string {
+		return filepath.Join(a.root, ".sessions", s.ID, "bin", "gh")
+	}
+	for _, s := range []session{active, idle} {
+		mustWrite(t, legacy(s), a.wrapper("gh", quote(s.ID)))
+	}
+	custom := filepath.Join(filepath.Dir(legacy(idle)), "custom")
+	mustWrite(t, custom, []byte("keep"))
+	unlock, err := a.sessionLock(active.ID, true, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	a.pruneSessionWrappers()
+	unlock()
+	if _, err = os.Stat(legacy(active)); err != nil {
+		t.Fatal(err)
+	}
+	if _, err = os.Stat(legacy(idle)); !os.IsNotExist(err) {
+		t.Fatal("obsolete wrapper remains", err)
+	}
+	if _, err = os.Stat(custom); err != nil {
+		t.Fatal(err)
+	}
+	a.pruneSessionWrappers()
+	if _, err = os.Stat(filepath.Dir(legacy(active))); !os.IsNotExist(err) {
+		t.Fatal("obsolete wrapper directory remains", err)
 	}
 }

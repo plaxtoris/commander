@@ -23,7 +23,7 @@ chmod +x commander && ./commander
     github         alice
     repositories   acme/*
 
-  [enter] start  [e] edit  [m] more  [q] quit
+  [enter] start  [e] edit  [m] more  [x] export  [i] import  [q] quit
 ```
 
 - **Start.** One agent account opens directly. With several, pick the login
@@ -35,9 +35,12 @@ chmod +x commander && ./commander
 - **Edit.** Connect more accounts or change the scope. Choose a GitHub login
   per repository or organization when several can reach it. Login issues show
   on the session that needs attention.
-- **More.** Open a shell, check accounts, rename, import, export or delete a
-  session. Exports are encrypted. After importing a Claude subscription on a
-  different machine, sign in again through Claude Code.
+- **More.** Open a shell, check accounts, rename or delete a session.
+- **Transfer.** Press `x` to choose sessions and `MEMORY.md` for the encrypted
+  `commander.zip` archive. Press `i` to import. The archive replaces local
+  sessions with matching names and replaces `MEMORY.md` if included.
+  After importing a Claude subscription on a different machine, sign in again
+  through Claude Code.
 - **Portable.** Commander installs the official CLIs on demand in its tools
   directory and checks for updates on startup. Pi lives in `tools/pi/`.
 

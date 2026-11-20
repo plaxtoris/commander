@@ -103,7 +103,7 @@ func (a *app) code(s session) error {
 	if err != nil {
 		return err
 	}
-	if err = scoped.sessionWrappers(current); err != nil {
+	if err = scoped.sessionWrappers(); err != nil {
 		return err
 	}
 	a.rememberSession(s.ID)

@@ -99,8 +99,8 @@ func TestProfileArchiveRoundTripAllServices(t *testing.T) {
 	if info.Mode().Perm() != 0600 {
 		t.Fatal("archive permissions", info.Mode())
 	}
-	if _, err = target.importPayload(restored, ""); err == nil {
-		t.Fatal("overwrote existing session")
+	if _, err = target.importPayload(restored, ""); err != nil {
+		t.Fatal("could not replace existing session", err)
 	}
 }
 

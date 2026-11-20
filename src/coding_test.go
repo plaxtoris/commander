@@ -204,7 +204,7 @@ read -r line
 	ui.send(t, "exit\n")
 	ui.wait(t, "[q] quit")
 	ui.send(t, "m")
-	ui.wait(t, "export session")
+	ui.wait(t, "delete session")
 	ui.send(t, "\x1b")
 	ui.wait(t, "[q] quit")
 	ui.send(t, "q")

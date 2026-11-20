@@ -302,7 +302,7 @@ func (a *app) execute(tool string, args []string) error {
 		return err
 	}
 	defer unlock()
-	if err = a.sessionWrappers(*a.session); err != nil {
+	if err = a.sessionWrappers(); err != nil {
 		return err
 	}
 	if scopedAgent {

@@ -23,6 +23,11 @@ type containerProject struct {
 	Account   string `json:"account,omitempty"`
 }
 
+func containerProjectID(project string) string {
+	sum := sha256.Sum256([]byte(project))
+	return fmt.Sprintf("%x", sum[:12])
+}
+
 func (a *app) containerFile(id string) (string, error) {
 	if a.session == nil {
 		return "", errNoSession
@@ -73,6 +78,12 @@ func (a *app) up(project string) error {
 		return err
 	}
 	defer unlock()
+	id := containerProjectID(project)
+	projectUnlock, err := a.credentialLock("container:" + a.session.ID + ":" + id)
+	if err != nil {
+		return err
+	}
+	defer projectUnlock()
 	origin, err := a.gitAt(project, "config", "remote.origin.url")
 	if err != nil {
 		return err
@@ -91,13 +102,6 @@ func (a *app) up(project string) error {
 			return err
 		}
 	}
-	sum := sha256.Sum256([]byte(project))
-	id := fmt.Sprintf("%x", sum[:12])
-	projectUnlock, err := a.credentialLock("container:" + a.session.ID + ":" + id)
-	if err != nil {
-		return err
-	}
-	defer projectUnlock()
 	record := containerProject{ID: id, Project: project, Account: a.account}
 	path, err := a.containerFile(id)
 	if err != nil {

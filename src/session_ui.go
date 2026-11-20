@@ -7,7 +7,7 @@ import (
 	"strings"
 )
 
-const homeKeys = "[enter] start  [e] edit  [m] more  [q] quit"
+const homeKeys = "[enter] start  [e] edit  [m] more  [x] export  [i] import  [q] quit"
 const editKeys = "[space] select  [enter] save  [m] more  [esc] cancel"
 
 type menuAction struct{ key, label string }
@@ -83,7 +83,7 @@ func (a *app) menu() error {
 			}
 			rows = append(rows, r)
 		}
-		rows = append(rows, row{pick: true, line: uiLine{{"+ new session", "36"}}, keys: "[enter] create  [i] import  [q] quit"})
+		rows = append(rows, row{pick: true, line: uiLine{{"+ new session", "36"}}, keys: "[enter] create  [x] export  [i] import  [q] quit"})
 		info := count(len(all), "session")
 		// Keep input raw across automatic redraws, including keys typed while
 		// the refreshed session rows are being built. Actions restore it below.
@@ -108,7 +108,7 @@ func (a *app) menu() error {
 			s = all[i]
 		}
 		if key == "m" && picked {
-			key, err = admin.actions(s.Name, []menuAction{{"s", "open shell"}, {"c", "check accounts"}, {"r", "rename session"}, {"x", "export session"}, {"i", "import session"}, {"d", "delete session"}})
+			key, err = admin.actions(s.Name, []menuAction{{"s", "open shell"}, {"c", "check accounts"}, {"r", "rename session"}, {"d", "delete session"}})
 			if errors.Is(err, errCancelled) {
 				continue
 			}
@@ -127,6 +127,8 @@ func (a *app) menu() error {
 			return nil
 		case key == "i":
 			notice, err = admin.importArchive("")
+		case key == "x":
+			notice, err = admin.chooseExport()
 		case key == "n" || key == "enter" && !picked:
 			s, err = admin.createSession()
 			if err == nil {
@@ -139,8 +141,6 @@ func (a *app) menu() error {
 				}
 			}
 		case !picked:
-		case key == "x":
-			notice, err = admin.exportArchive(s)
 		case key == "enter":
 			err = admin.code(s)
 			focus = s.ID

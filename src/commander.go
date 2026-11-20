@@ -131,7 +131,8 @@ Sessions
   commander session rename NAME NEW        keeps open shells, tasks and containers
   commander session delete NAME            removes it and its containers
   commander session shell NAME             opens a shell with its selection
-  commander export SESSION                 saves it with its logins as SESSION.zip
+  commander export                         selects sessions and memory for commander.zip
+  commander export SESSION                 saves one session with its logins
   commander import FILE.zip                adds the sessions and logins it holds
   commander context                        shows the session scope and selectors
   commander overview [SESSION]             checks account status
@@ -292,6 +293,8 @@ func (a *app) ensure() error {
 	if err := os.MkdirAll(a.root, 0755); err != nil {
 		return err
 	}
+	// Older installations may have an empty Claude project directory.
+	syscall.Rmdir(filepath.Join(a.root, ".claude"))
 	for _, name := range []string{".secrets", ".sessions", "tools", "workspaces"} {
 		path := filepath.Join(a.root, name)
 		if err := noSymlinks(a.root, path); err != nil {
@@ -333,6 +336,7 @@ func (a *app) ensure() error {
 }
 
 func (a *app) refreshAgentInstructions() error {
+	a.pruneSessionWrappers()
 	path := filepath.Join(a.root, "AGENTS.md")
 	if err := noSymlinks(a.root, path); err != nil {
 		return err
@@ -468,7 +472,7 @@ func (a *app) environment(tool string, extra map[string]string) []string {
 	env["GIT_CONFIG_COUNT"] = strconv.Itoa(count)
 	env["PATH"] = strings.Join([]string{filepath.Join(a.root, "tools", "node", "bin"), filepath.Join(a.packageDir("m365"), "node_modules", ".bin"), filepath.Join(a.packageDir("devcontainer"), "node_modules", ".bin"), filepath.Join(a.root, "tools", "gh", "bin"), filepath.Join(a.root, "tools", "hcloud"), filepath.Join(a.root, "tools", "docker"), env["PATH"]}, string(os.PathListSeparator))
 	if a.session != nil {
-		env["PATH"] = filepath.Join(a.root, ".sessions", a.session.ID, "bin") + string(os.PathListSeparator) + env["PATH"]
+		env["PATH"] = a.sessionBin() + string(os.PathListSeparator) + env["PATH"]
 		selector := ""
 		if a.account != "" {
 			selector = " --account " + quote(a.account)

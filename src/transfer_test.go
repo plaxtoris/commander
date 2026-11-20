@@ -61,29 +61,30 @@ func TestSessionArchiveHoldsOnlyItsSessionAndLogins(t *testing.T) {
 	if err != nil || !reflect.DeepEqual(imported.Repositories, []string{"company/*"}) || len(imported.Accounts) != 2 || imported.Accounts[1].id() != work.Accounts[1].id() {
 		t.Fatal("session was not imported with its repositories", imported, err)
 	}
-	asked := []string{}
-	if _, err = target.importChoices(payload, func(q string) bool { asked = append(asked, q); return false }); err != errCancelled || !reflect.DeepEqual(asked, []string{"replace session work?"}) {
-		t.Fatal("replaced a session without confirmation", asked, err)
-	}
-	if selection, err = target.importChoices(payload, func(string) bool { return true }); err != nil {
+	legacy := filepath.Join(target.root, ".sessions", imported.ID, "bin", "old-wrapper")
+	mustWrite(t, legacy, []byte("old session data"))
+	if selection, err = target.importChoices(payload, func(q string) bool { t.Fatal("asked about session collision", q); return false }); err != nil {
 		t.Fatal(err)
 	}
 	if err = target.importSelected(payload, selection); err != nil {
 		t.Fatal(err)
 	}
-	if replaced, err := target.findSession("work"); err != nil || replaced.ID != imported.ID {
-		t.Fatal("replacing a session changed its ID", err)
+	if replaced, err := target.findSession("work"); err != nil || replaced.ID == imported.ID {
+		t.Fatal("session was not recreated", err)
+	}
+	if _, err = os.Stat(filepath.Dir(filepath.Dir(legacy))); !os.IsNotExist(err) {
+		t.Fatal("old session state remains", err)
 	}
 }
 
-func TestOlderArchiveImportsOnlySessionsWithTheirLogins(t *testing.T) {
+func TestOlderArchiveImportsMemoryAndOnlySessionLogins(t *testing.T) {
 	source := testApp(t)
 	members := fixtureLogins(t, source)
 	payload, err := source.sessionArchive(session{Name: "work", Accounts: members, Repositories: []string{}})
 	if err != nil {
 		t.Fatal(err)
 	}
-	// Older archives could hold loose accounts and memory beside sessions.
+	// Older archives could hold loose accounts beside sessions.
 	memory := "* Old preference.\n"
 	payload.Profile.Profiles["work"], payload.Memory = members[:1], &memory
 	target := testApp(t)
@@ -97,10 +98,11 @@ func TestOlderArchiveImportsOnlySessionsWithTheirLogins(t *testing.T) {
 	if state, _ := newStorage(target.root).state("hetzner"); len(state) != 0 {
 		t.Fatal("imported a loose account")
 	}
-	if _, err = os.Stat(filepath.Join(target.root, "MEMORY.md")); !os.IsNotExist(err) {
-		t.Fatal("imported memory", err)
+	if got, err := os.ReadFile(filepath.Join(target.root, "MEMORY.md")); err != nil || string(got) != memory {
+		t.Fatal("memory was not restored", err)
 	}
 	delete(payload.Profile.Profiles, "work")
+	payload.Memory = nil
 	if _, err = target.importChoices(payload, func(string) bool { return true }); err == nil {
 		t.Fatal("accepted an archive without a session")
 	}
@@ -141,14 +143,9 @@ func TestImportConflictsKeepNativeDefaults(t *testing.T) {
 	if target.importSelected(payload, importSelection{Accounts: members[:1]}) == nil {
 		t.Fatal("silently replaced credentials")
 	}
-	asked := []string{}
-	selection, err = target.importChoices(payload, func(q string) bool { asked = append(asked, q); return q != "replace session work?" })
-	if err != errCancelled || len(asked) != 1 {
-		t.Fatal("a declined session still imported its logins", asked, err)
-	}
-	asked = nil
+	var asked []string
 	selection, err = target.importChoices(payload, func(q string) bool { asked = append(asked, q); return true })
-	if err != nil || len(asked) != 2 || !selection.Replace[members[0].id()] {
+	if err != nil || len(asked) != 1 || !selection.Replace[members[0].id()] {
 		t.Fatal("login replacement was not confirmed", asked, err)
 	}
 	if err = target.importSelected(payload, selection); err != nil {
@@ -158,5 +155,30 @@ func TestImportConflictsKeepNativeDefaults(t *testing.T) {
 	entry := obj(got["github.com"])
 	if entry["user"] != "other" || entry["oauth_token"] != "other-secret" {
 		t.Fatal("replacement changed another account")
+	}
+}
+
+func TestExportSnapshotWithAnotherSessionRunning(t *testing.T) {
+	a := testApp(t)
+	members := fixtureLogins(t, a)
+	useSession(t, a, "running", members[0])
+	work := addSession(t, a, "exported", members[3])
+	unlockSession, err := a.sessionLock(a.session.ID, true, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer unlockSession()
+	unlockNative, err := fileLock(filepath.Join(a.root, ".secrets", ".native.lock"), true, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer unlockNative()
+
+	payload, err := a.exportSnapshot([]string{work.ID}, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(payload.Accounts, work.Accounts) || len(payload.Profile.Profiles) != 1 {
+		t.Fatal("export captured the wrong session")
 	}
 }

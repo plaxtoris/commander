@@ -384,6 +384,11 @@ func (a *app) cleanupTask(t task) error {
 			return errors.New("task changed after integration; new work was preserved")
 		}
 	}
+	unlock, err := a.credentialLock("container:" + a.session.ID + ":" + containerProjectID(t.Path))
+	if err != nil {
+		return err
+	}
+	defer unlock()
 	if err := a.removeTaskContainers(t); err != nil {
 		return err
 	}
@@ -429,17 +434,23 @@ func (a *app) cleanupTask(t task) error {
 }
 
 func (a *app) removeTaskContainers(t task) error {
-	if !a.toolUsed("docker") {
-		return nil
+	if a.toolUsed("docker") {
+		data, err := a.run("docker", []string{"ps", "-aq", "--filter", "label=commander.task=" + a.session.ID + "/" + t.Name}, true, nil)
+		if err != nil {
+			return err
+		}
+		if ids := strings.Fields(string(data)); len(ids) > 0 {
+			if _, err = a.run("docker", append([]string{"rm", "-f"}, ids...), false, nil); err != nil {
+				return err
+			}
+		}
 	}
-	data, err := a.run("docker", []string{"ps", "-aq", "--filter", "label=commander.task=" + a.session.ID + "/" + t.Name}, true, nil)
+	path, err := a.containerFile(containerProjectID(t.Path))
 	if err != nil {
 		return err
 	}
-	ids := strings.Fields(string(data))
-	if len(ids) == 0 {
-		return nil
+	if err = os.Remove(path); err != nil && !os.IsNotExist(err) {
+		return err
 	}
-	_, err = a.run("docker", append([]string{"rm", "-f"}, ids...), false, nil)
-	return err
+	return nil
 }
