@@ -368,13 +368,7 @@ func (a *app) ask(question string) bool {
 }
 
 func (a *app) password(label string, confirm bool) (string, error) {
-	read := func(label string) ([]byte, error) {
-		fmt.Fprint(a.out, "\r\x1b[J  ", a.style(label+":", "1"), " ")
-		data, err := a.readHidden()
-		fmt.Fprint(a.out, "\r\n")
-		return data, err
-	}
-	data, err := read(label)
+	data, err := a.readHidden(label)
 	if errors.Is(err, errCancelled) || errors.Is(err, errTerminal) {
 		return "", err
 	}
@@ -389,7 +383,7 @@ func (a *app) password(label string, confirm bool) (string, error) {
 		if utf8.RuneCount(data) < 4 {
 			return "", errors.New("use at least 4 characters for the password")
 		}
-		second, err := read("repeat " + label)
+		second, err := a.readHidden("repeat " + label)
 		if err != nil || string(second) != value {
 			return "", errors.New("passwords do not match")
 		}
@@ -397,12 +391,14 @@ func (a *app) password(label string, confirm bool) (string, error) {
 	return value, nil
 }
 
-func (a *app) readHidden() ([]byte, error) {
+func (a *app) readHidden(label string) ([]byte, error) {
 	restore, err := a.raw()
 	if err != nil {
 		return nil, err
 	}
 	defer restore()
+	fmt.Fprint(a.out, "\r\x1b[J  ", a.style(label+":", "1"), " ")
+	defer fmt.Fprint(a.out, "\r\n")
 	value := []byte{}
 	one := make([]byte, 1)
 	for {

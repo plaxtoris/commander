@@ -235,9 +235,7 @@ func (a *app) connectCoding(service, label string) (member, error) {
 		if err != nil {
 			return member{}, err
 		}
-		fmt.Fprint(a.out, "  api key (enter for none): ")
-		secret, err := a.readHidden()
-		fmt.Fprintln(a.out)
+		secret, err := a.readHidden("api key (enter for none)")
 		if err != nil {
 			return member{}, err
 		}
@@ -287,9 +285,7 @@ func (a *app) connectCoding(service, label string) (member, error) {
 				return m, nil
 			}
 		} else {
-			fmt.Fprint(a.out, "  api key: ")
-			key, err := a.readHidden()
-			fmt.Fprintln(a.out)
+			key, err := a.readHidden("api key")
 			if err != nil {
 				return member{}, err
 			}
