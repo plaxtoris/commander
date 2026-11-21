@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -84,19 +85,28 @@ func (a *app) codingConfig(args []string) error {
 		defer file.Close()
 		input = file
 	}
-	data, err := io.ReadAll(io.LimitReader(input, maxAgentConfig+1))
+	value, err := readAgentConfig(input)
 	if err != nil {
 		return err
 	}
-	if len(data) > maxAgentConfig {
-		return errors.New("coding agent configuration exceeds 128 KiB")
+	return a.saveAgentConfig(agent, value, nil)
+}
+
+func readAgentConfig(input io.Reader) (string, error) {
+	data, err := io.ReadAll(io.LimitReader(input, maxAgentConfig+1))
+	if err == nil && len(data) > maxAgentConfig {
+		err = errors.New("coding agent configuration exceeds 128 KiB")
 	}
-	value := string(data)
+	return string(data), err
+}
+
+func (a *app) saveAgentConfig(agent, value string, previous *string) error {
 	if value != "" {
-		if err = (codingConfigs{agent: value}).validate(); err != nil {
+		if err := (codingConfigs{agent: value}).validate(); err != nil {
 			return err
 		}
 	}
+	var err error
 	dir := filepath.Join(a.root, ".secrets")
 	if err = noSymlinks(a.root, dir); err != nil {
 		return err
@@ -109,12 +119,15 @@ func (a *app) codingConfig(args []string) error {
 		return err
 	}
 	defer unlock()
-	configs, err := store.codingConfigs()
+	configs, err := newStorage(a.root).codingConfigs()
 	if err != nil {
 		return err
 	}
 	if configs[agent] == value {
 		return nil
+	}
+	if previous != nil && configs[agent] != *previous {
+		return fmt.Errorf("%s settings changed while the agent was running; reapply your latest changes", agent)
 	}
 	if value == "" {
 		delete(configs, agent)
@@ -249,7 +262,29 @@ func (a *app) runAgent(m member, args []string) error {
 		return err
 	}
 	defer release()
-	cmd, err := a.codingCommand(m, cwd, home, args)
+	configs, err := newStorage(a.root).codingConfigs()
+	if err != nil {
+		return err
+	}
+	agent := agents[m.Service]
+	config := configs[agent]
+	cmd, err := a.codingCommand(m, cwd, home, args, config)
+	if err != nil {
+		return err
+	}
+	path := filepath.Join(home, "settings.json")
+	switch agent {
+	case "codex":
+		path = filepath.Join(home, "config.toml")
+	case "claude":
+		for _, env := range cmd.Env {
+			if dir, ok := strings.CutPrefix(env, "CLAUDE_CONFIG_DIR="); ok {
+				path = filepath.Join(dir, "settings.json")
+				break
+			}
+		}
+	}
+	before, err := a.readNativeSettings(path)
 	if err != nil {
 		return err
 	}
@@ -264,22 +299,91 @@ func (a *app) runAgent(m member, args []string) error {
 			defer term.Restore(int(a.in.Fd()), state)
 		}
 	}
-	err = cmd.Run()
+	if err = cmd.Start(); err != nil {
+		return err
+	}
+	err = cmd.Wait()
+	saveErr := a.collectAgentConfig(agent, path, before, config)
 	var exit *exec.ExitError
 	if len(args) == 0 && a.terminal() && errors.As(err, &exit) {
 		if exit.ExitCode() == 130 || exit.Sys().(syscall.WaitStatus).Signal() == syscall.SIGINT {
-			return nil
+			err = nil
 		}
 	}
-	return err
+	return errors.Join(err, saveErr)
 }
 
-func (a *app) codingCommand(m member, cwd, home string, extra []string) (*exec.Cmd, error) {
-	configs, err := newStorage(a.root).codingConfigs()
-	if err != nil {
-		return nil, err
+func (a *app) readNativeSettings(path string) (string, error) {
+	if err := noSymlinks(a.root, path); err != nil {
+		return "", err
 	}
-	config := configs[agents[m.Service]]
+	info, err := os.Stat(path)
+	if os.IsNotExist(err) {
+		return "", nil
+	}
+	if err != nil {
+		return "", err
+	}
+	if !info.Mode().IsRegular() {
+		return "", errors.New("expected a regular agent settings file")
+	}
+	file, err := os.Open(path)
+	if err != nil {
+		return "", err
+	}
+	defer file.Close()
+	return readAgentConfig(file)
+}
+
+func (a *app) collectAgentConfig(agent, path, before, shared string) error {
+	after, err := a.readNativeSettings(path)
+	if err != nil || after == before {
+		return err
+	}
+	if agent == "claude" {
+		after, err = applyClaudeSettings(shared, before, after)
+		if err != nil {
+			return err
+		}
+	}
+	return a.saveAgentConfig(agent, after, &shared)
+}
+
+// Claude writes user settings in its account profile. Carry over only the
+// preferences it changed during the run.
+func applyClaudeSettings(shared, before, after string) (string, error) {
+	settings, err := agentSettings(shared)
+	if err != nil {
+		return "", err
+	}
+	old, err := agentSettings(before)
+	if err != nil {
+		return "", err
+	}
+	current, err := agentSettings(after)
+	if err != nil {
+		return "", err
+	}
+	changed := false
+	for key, value := range current {
+		if !bytes.Equal(old[key], value) {
+			settings[key] = value
+			changed = true
+		}
+	}
+	for key := range old {
+		if _, ok := current[key]; !ok {
+			delete(settings, key)
+			changed = true
+		}
+	}
+	if !changed {
+		return shared, nil
+	}
+	return string(encode(settings)), nil
+}
+
+func (a *app) codingCommand(m member, cwd, home string, extra []string, config string) (*exec.Cmd, error) {
 	profile := home
 	context := a.codingContext(cwd)
 	var args []string
@@ -319,7 +423,7 @@ func (a *app) codingCommand(m member, cwd, home string, extra []string) (*exec.C
 		}
 		settings["cleanupPeriodDays"] = json.RawMessage("0")
 		settings["autoMemoryEnabled"] = json.RawMessage("false")
-		args = []string{"--dangerously-skip-permissions", "--settings", strings.TrimSpace(string(encode(settings))), "--append-system-prompt", context}
+		args = []string{"--dangerously-skip-permissions", "--setting-sources", "project,local", "--settings", strings.TrimSpace(string(encode(settings))), "--append-system-prompt", context}
 	case "litellm":
 		dir, err := a.codingDir(m)
 		if err != nil {

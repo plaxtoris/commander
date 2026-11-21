@@ -58,8 +58,17 @@ or `commander config pi settings.json` to set defaults for all sessions. Omit
 the file to print the saved settings. Use `-` to read from standard input. An
 empty file clears the saved settings for that agent.
 
-New agent launches pick up the saved settings. Commander continues to select
-the login from the current session. For Pi, set `defaultModel` to a model ID.
+Commander stores these preferences in `.secrets/coding-config.json` in its
+installation directory. New launches load the shared settings. When an agent
+exits, Commander saves changes it made to its native settings for future
+launches. If another session or the config command has already changed that
+agent's shared settings, Commander keeps the newer version and reports a
+conflict. Logins are selected from the current session. Claude loads its
+shared user preferences alongside project settings. To adopt settings from
+an existing Claude account profile, import its user settings with
+`commander config claude FILE`.
+
+For Pi, set `defaultModel` to a model ID.
 Commander uses the first model from the selected endpoint if it cannot find that
 ID.
 

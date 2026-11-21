@@ -67,7 +67,7 @@ func TestSharedAgentConfig(t *testing.T) {
 		writers.Go(func() {
 			scoped := *a
 			scoped.session = &s
-			cmd, err := scoped.codingCommand(codex, home, home, nil)
+			cmd, err := scoped.codingCommand(codex, home, home, nil, configs["codex"])
 			if err != nil {
 				t.Error(err)
 				return
@@ -76,14 +76,14 @@ func TestSharedAgentConfig(t *testing.T) {
 			if err != nil || string(data) != configs["codex"] || !contains(cmd.Env, "COMMANDER_SESSION="+s.ID) {
 				t.Errorf("incorrect codex settings or scope: %v", err)
 			}
-			cmd, err = scoped.codingCommand(claude, home, home, nil)
+			cmd, err = scoped.codingCommand(claude, home, home, nil, configs["claude"])
 			if err != nil {
 				t.Error(err)
 				return
 			}
 			var settings object
 			err = json.Unmarshal([]byte(argument(cmd.Args, "--settings")), &settings)
-			if err != nil || settings["model"] != "shared-model" || settings["autoMemoryEnabled"] != false || settings["cleanupPeriodDays"] != float64(0) {
+			if err != nil || settings["model"] != "shared-model" || settings["autoMemoryEnabled"] != false || settings["cleanupPeriodDays"] != float64(0) || argument(cmd.Args, "--setting-sources") != "project,local" {
 				t.Errorf("incorrect claude settings: %v, %v", settings, err)
 			}
 		})
@@ -134,6 +134,91 @@ func TestSharedAgentConfig(t *testing.T) {
 	got, err = newStorage(target.root).codingConfigs()
 	if err != nil || len(got) != 2 || got["pi"] != "" {
 		t.Fatalf("settings after clear = %v: %v", got, err)
+	}
+}
+
+func TestNativeSettingsFollowAgentAcrossSessions(t *testing.T) {
+	a := testApp(t)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		fmt.Fprint(w, `{"data":[{"id":"fixture"}]}`)
+	}))
+	defer server.Close()
+	executableFixture(t, filepath.Join(a.packageDir("node"), "bin/node"), `exec /bin/sh "$@"`)
+	mustWrite(t, filepath.Join(a.packageDir("node"), ".commander-version"), []byte(a.catalog.Archives["node"].SHA256))
+
+	for _, tc := range []struct {
+		service, agent, path, settings string
+	}{
+		{"codex", "codex", "$CODEX_HOME/config.toml", `model = "fixture"`},
+		{"claude", "claude", "$CLAUDE_CONFIG_DIR/settings.json", strings.TrimSpace(string(encode(object{"model": "fixture"})))},
+		{"litellm", "pi", "$PI_CODING_AGENT_DIR/settings.json", `{"defaultModel":"fixture"}`},
+	} {
+		t.Run(tc.agent, func(t *testing.T) {
+			verify := fmt.Sprintf(`test "$(cat "%s")" = '%s'`, tc.path, tc.settings)
+			if tc.agent == "claude" {
+				verify = `test ! -e "$CLAUDE_CONFIG_DIR/settings.json"
+	for arg in "$@"; do
+		case "$arg" in *'"model": "fixture"'*) exit 0;; esac
+	done
+	exit 1`
+			}
+			script := fmt.Sprintf(`set -eu
+if [ "$PWD" = "$COMMANDER_HOME/workspaces/%s-first" ]; then
+	printf '%%s\n' '%s' > "%s.new"
+	/bin/mv "%s.new" "%s"
+else
+	%s
+fi`, tc.agent, tc.settings, tc.path, tc.path, tc.path, verify)
+			executableFixture(t, filepath.Join(a.packageDir(tc.agent), packageEntries[tc.agent]), script)
+			if tc.agent == "pi" {
+				executableFixture(t, filepath.Join(a.packageDir("pi"), "pi"), "exit 0")
+			}
+			mustWrite(t, filepath.Join(a.packageDir(tc.agent), ".commander-version"), []byte(a.catalog.Packages[tc.agent]))
+
+			for _, name := range []string{"first", "second"} {
+				m := member{Service: tc.service, Account: name, Key: jsonKey(name)}
+				dir, err := a.codingDir(m)
+				if err != nil {
+					t.Fatal(err)
+				}
+				switch tc.agent {
+				case "codex":
+					mustWrite(t, filepath.Join(dir, "auth.json"), []byte(`{"tokens":{"access_token":"fixture"}}`))
+				case "claude":
+					mustWrite(t, filepath.Join(dir, "account.json"), encode(claudeAccount{Type: "native"}))
+				case "pi":
+					mustWrite(t, filepath.Join(dir, "endpoint.json"), encode(endpointLogin{URL: server.URL, Key: "fixture"}))
+				}
+				scoped := *a
+				s := addSession(t, a, tc.agent+"-"+name, m)
+				scoped.session = &s
+				if err := scoped.runAgent(m, nil); err != nil {
+					t.Fatalf("%s session: %v", name, err)
+				}
+			}
+			configs, err := newStorage(a.root).codingConfigs()
+			if err != nil || strings.TrimSpace(configs[tc.agent]) != tc.settings {
+				t.Fatalf("settings = %q: %v", configs[tc.agent], err)
+			}
+		})
+	}
+}
+
+func TestNativeSettingsKeepNewerSharedConfig(t *testing.T) {
+	a := testApp(t)
+	old := "model = 'old'\n"
+	newer := "model = 'newer'\n"
+	if err := writeAgentConfig(t, a, "codex", newer); err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(a.root, "config.toml")
+	mustWrite(t, path, []byte("model = 'stale edit'\n"))
+	if err := a.collectAgentConfig("codex", path, old, old); err == nil {
+		t.Fatal("accepted a stale settings update")
+	}
+	configs, err := newStorage(a.root).codingConfigs()
+	if err != nil || configs["codex"] != newer {
+		t.Fatalf("settings = %q: %v", configs["codex"], err)
 	}
 }
 
@@ -260,12 +345,12 @@ func TestClaudeSubscriptionStaysInNativeClient(t *testing.T) {
 	bin := filepath.Join(a.packageDir("claude"), packageEntries["claude"])
 	executableFixture(t, bin, "exit 0")
 	temp := t.TempDir()
-	cmd, err := a.codingCommand(m, temp, temp, nil)
+	cmd, err := a.codingCommand(m, temp, temp, nil, "")
 	if err != nil || cmd.Path != bin || !contains(cmd.Env, "CLAUDE_CONFIG_DIR="+filepath.Join(dir, "native")) || !contains(cmd.Args, "--dangerously-skip-permissions") {
 		t.Fatal("subscription must launch its own native client", err)
 	}
 	mustWrite(t, marker, encode(claudeAccount{Type: "api", Key: "test-key"}))
-	cmd, err = a.codingCommand(m, temp, temp, nil)
+	cmd, err = a.codingCommand(m, temp, temp, nil, "")
 	if err != nil || cmd.Path != bin || !contains(cmd.Env, "ANTHROPIC_API_KEY=test-key") || !contains(cmd.Env, "CLAUDE_CONFIG_DIR="+filepath.Join(dir, "api")) {
 		t.Fatal("API key must launch an isolated native client", err)
 	}
@@ -380,7 +465,7 @@ func TestExistingEndpointRunsInPi(t *testing.T) {
 	}
 	executableFixture(t, filepath.Join(a.packageDir("node"), "bin/node"), "exit 0")
 	tmp := t.TempDir()
-	cmd, err := a.codingCommand(m, tmp, tmp, nil)
+	cmd, err := a.codingCommand(m, tmp, tmp, nil, "")
 	if err != nil || !contains(cmd.Args, "--no-session") || argument(cmd.Args, "--provider") != "openai-compatible" || argument(cmd.Args, "--model") != "test-model" || !contains(cmd.Env, "COMMANDER_ENDPOINT_KEY=fixture") {
 		t.Fatal("incorrect pi command", err)
 	}
@@ -397,7 +482,7 @@ func TestExistingEndpointRunsInPi(t *testing.T) {
 			t.Fatal(err)
 		}
 		home := t.TempDir()
-		cmd, err = a.codingCommand(m, tmp, home, nil)
+		cmd, err = a.codingCommand(m, tmp, home, nil, settings)
 		if err != nil || argument(cmd.Args, "--model") != tc.want {
 			t.Fatalf("configured %s, want %s: %v", tc.configured, tc.want, err)
 		}
