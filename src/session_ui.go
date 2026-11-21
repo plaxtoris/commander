@@ -8,7 +8,7 @@ import (
 	"strings"
 )
 
-const homeKeys = "[enter] start  [e] edit  [d] delete  [x] export  [i] import  [q] quit"
+const homeKeys = "[enter] start  [e] edit  [d] delete  [c] check  [x] export  [i] import  [q] quit"
 const editKeys = "[space] toggle  [r] rename  [esc] back"
 
 type menuAction struct{ key, label string }
@@ -45,10 +45,10 @@ func (a *app) menu() error {
 		if err != nil {
 			return err
 		}
-		if check {
-			checking, check = admin.checkHealth(all), false
-		}
 		states := admin.health()
+		if check {
+			checking, check = admin.checkHealth(all, states), false
+		}
 		names := 0
 		for _, s := range all {
 			names = max(names, min(24, textWidth(s.Name)))
@@ -60,7 +60,7 @@ func (a *app) menu() error {
 			r := row{pick: true, line: uiLine{{pad(s.Name, names), "1"}, {"   " + used, "2"}}}
 			issues := healthIssues(s, states)
 			if len(issues) > 0 {
-				r.line = append(r.line, uiSpan{"  ! " + attentionLabel(len(issues)), "33"})
+				r.line = append(r.line, uiSpan{"  !", "33"})
 			}
 			r.detail = func(width int) []uiLine {
 				groups := s.groups()
@@ -84,7 +84,16 @@ func (a *app) menu() error {
 			}
 			rows = append(rows, r)
 		}
-		rows = append(rows, row{pick: true, line: uiLine{{"+ new session", "36"}}, keys: "[enter] create  [x] export  [i] import  [q] quit"})
+		rows = append(rows, row{pick: true, line: uiLine{{"+ new session", "36"}}, keys: "[enter] create  [c] check  [x] export  [i] import  [q] quit"})
+		issues := accountIssues(all, states)
+		keys := homeKeys
+		if len(issues) > 0 {
+			keys = "[l] account issues  " + keys
+			rows[len(all)].keys = "[l] account issues  " + rows[len(all)].keys
+			if notice == "" {
+				notice, tone = attentionLabel(len(issues)), "33"
+			}
+		}
 		info := count(len(all), "session")
 		if checking != nil {
 			info += " · checking accounts…"
@@ -97,7 +106,7 @@ func (a *app) menu() error {
 				return err
 			}
 		}
-		key, i, err := admin.list(view{title: title, info: info, keys: homeKeys, notice: notice, tone: tone, rows: rows, refresh: checking}, at)
+		key, i, err := admin.list(view{title: title, info: info, keys: keys, notice: notice, tone: tone, rows: rows, refresh: checking}, at)
 		if err != nil {
 			return err
 		}
@@ -121,7 +130,13 @@ func (a *app) menu() error {
 			notice, err = admin.importArchive("")
 		case key == "x":
 			notice, err = admin.chooseExport()
-		case key == "n" || key == "enter" && !picked:
+		case key == "c":
+			if checking == nil {
+				checking = admin.checkHealth(all, nil)
+			}
+		case key == "l" && len(issues) > 0:
+			notice, err = admin.reviewAccountIssues(all, issues)
+		case key == "n" || key == "enter" && i == len(all):
 			s, err = admin.createSession()
 			if err == nil {
 				notice, focus = s.Name+" created", s.ID
@@ -156,6 +171,57 @@ func (a *app) menu() error {
 				notice = ""
 			}
 		}
+	}
+}
+
+func (a *app) reviewAccountIssues(all []session, issues []accountIssue) (string, error) {
+	rows := make([]row, len(issues))
+	for i, issue := range issues {
+		keys := "[enter] check again  [esc] back"
+		if issue.canRepair() {
+			keys = "[enter] sign in again  [c] check again  [esc] back"
+		} else if issue.State == "Missing account" {
+			keys = "[enter] edit accounts  [c] check again  [esc] back"
+		}
+		status, tone := statusLabel(issue.State)
+		line := append(uiLine{{serviceName(issue.Service) + "  ", "2"}}, issue.item()...)
+		rows[i] = row{pick: true, line: append(line, uiSpan{"  " + status, tone}),
+			keys: keys,
+			detail: func(width int) []uiLine {
+				return uiLine{{"sessions  " + strings.Join(issue.sessions, ", "), "2"}}.wrap(width)
+			}}
+	}
+	at := 0
+	for {
+		key, i, err := a.list(view{title: "account issues", rows: rows}, at)
+		if err != nil || key == "esc" || key == "q" {
+			return "", err
+		}
+		at = i
+		if key != "enter" && key != "c" {
+			continue
+		}
+		issue := issues[i]
+		current := a.resolve([]member{issue.member})[0]
+		name, _ := issue.display()
+		if ready(current.State) {
+			return name + " connected", nil
+		}
+		if key == "enter" && current.State == issue.State {
+			if issue.canRepair() {
+				if err := a.reconnect(issue.member); err != nil {
+					return "", err
+				}
+				return name + " connected", nil
+			}
+			if issue.State == "Missing account" {
+				target := all[issue.first]
+				_, _, err := a.editSelection(target.Name, &target, issue.id())
+				a.resolve([]member{issue.member})
+				return "", err
+			}
+		}
+		return "", errors.New(name + " · " + strings.ToLower(current.State))
 	}
 }
 
@@ -370,7 +436,7 @@ selection:
 					rowKeys = "[d] delete login  " + rowKeys
 				}
 				rendered := row{indent: 2, pick: true, line: line, keys: rowKeys}
-				if r.Service == "github" || codingService(r.Service) {
+				if r.canReconnect() {
 					rendered.keys = "[l] sign in again  " + rendered.keys
 				}
 				if len(focus) > 0 && focus[0] == r.id() {
@@ -469,19 +535,9 @@ selection:
 			if err != nil && !errors.Is(err, errCancelled) {
 				notice = err.Error()
 			}
-		case key == "l" && t.login >= 0 && (logins[t.login].Service == "github" || codingService(logins[t.login].Service)):
+		case key == "l" && t.login >= 0 && logins[t.login].canReconnect():
 			r := logins[t.login]
-			a.clear()
-			if codingService(r.Service) {
-				var done func()
-				done, err = a.lock("native")
-				if err == nil {
-					_, err = a.connectCoding(r.Service, r.Account)
-					done()
-				}
-			} else {
-				err = a.reconnectGitHub(r.member)
-			}
+			err = a.reconnect(r.member)
 			if err == nil {
 				name, _ := r.display()
 				notice, tone = name+" connected", "32"
@@ -709,6 +765,35 @@ func (a *app) addLogin(agentsOnly bool) ([]member, error) {
 		}
 	}
 	return added, nil
+}
+
+func (m member) canReconnect() bool {
+	return m.Service == "github" || codingService(m.Service) || tokenService(m.Service)
+}
+
+func (r account) canRepair() bool {
+	return r.canReconnect() && (r.State == "Sign in again" || r.State == "Missing account")
+}
+
+func (a *app) reconnect(m member) error {
+	a.clear()
+	if m.Service == "github" {
+		return a.reconnectGitHub(m)
+	}
+	unlock, err := a.lock("native")
+	if err != nil {
+		return err
+	}
+	defer unlock()
+	if tokenService(m.Service) {
+		err = a.loginToken(m.Service, &m)
+	} else {
+		_, err = a.connectCoding(m.Service, m.Account)
+	}
+	if err == nil {
+		a.rememberHealth([]account{{member: m, State: "Ready"}})
+	}
+	return err
 }
 
 func loginMatchesRemoval(m, removed member) bool {

@@ -16,6 +16,7 @@ import (
 	"strconv"
 	"strings"
 	"syscall"
+	"time"
 )
 
 // Sessions are named account and repository selections without credentials.
@@ -580,6 +581,9 @@ func (a *app) logins(only ...string) ([]account, map[string]string) {
 	admin := a.admin()
 	rows := []account{}
 	failed := map[string]string{}
+	states := a.health()
+	checked := time.Now().UTC()
+	var verified []account
 	for _, service := range services {
 		if len(only) > 0 && !contains(only, service) || !codingService(service) && !tokenService(service) && !a.toolUsed(serviceTools[service]) {
 			continue
@@ -589,9 +593,19 @@ func (a *app) logins(only ...string) ([]account, map[string]string) {
 			failed[service] = serviceFailure(err)
 			continue
 		}
+		// Listing a saved token does not verify it with the provider.
+		if tokenService(service) || service == "claude" {
+			for i, r := range found {
+				if h, ok := states[r.id()]; ok {
+					found[i].State = h.State
+				}
+			}
+		} else {
+			verified = append(verified, found...)
+		}
 		rows = append(rows, found...)
-		a.rememberHealth(found)
 	}
+	a.rememberHealthAt(verified, checked)
 	return rows, failed
 }
 

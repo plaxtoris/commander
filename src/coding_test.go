@@ -90,7 +90,9 @@ func TestSharedAgentConfig(t *testing.T) {
 	}
 	writers.Wait()
 
-	snapshot, err := a.exportSnapshot(nil, false)
+	memory := "* Use clear labels.\n"
+	mustWrite(t, filepath.Join(a.root, "MEMORY.md"), []byte(memory))
+	snapshot, err := a.exportSnapshot([]string{sessions[0].ID, sessions[1].ID}, true)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -112,6 +114,15 @@ func TestSharedAgentConfig(t *testing.T) {
 	}
 	if err = target.importSelected(snapshot, selection); err != nil {
 		t.Fatal(err)
+	}
+	for _, original := range sessions {
+		restored, err := target.findSession(original.Name)
+		if err != nil || len(restored.Accounts) != 2 || restored.Accounts[0].id() != original.Accounts[0].id() || restored.Accounts[1].id() != original.Accounts[1].id() {
+			t.Fatalf("imported session %s: %v", original.Name, err)
+		}
+	}
+	if got, err := os.ReadFile(filepath.Join(target.root, "MEMORY.md")); err != nil || string(got) != memory {
+		t.Fatal("round trip lost memory", err)
 	}
 	// Imports from older Commander versions have no settings to replace.
 	snapshot.CodingConfigs = nil
@@ -346,7 +357,7 @@ func TestClaudeSubscriptionStaysInNativeClient(t *testing.T) {
 	executableFixture(t, bin, "exit 0")
 	temp := t.TempDir()
 	cmd, err := a.codingCommand(m, temp, temp, nil, "")
-	if err != nil || cmd.Path != bin || !contains(cmd.Env, "CLAUDE_CONFIG_DIR="+filepath.Join(dir, "native")) || !contains(cmd.Args, "--dangerously-skip-permissions") {
+	if err != nil || cmd.Path != bin || !contains(cmd.Env, "CLAUDE_CONFIG_DIR="+filepath.Join(dir, "native")) || os.Geteuid() == 0 && argument(cmd.Args, "--permission-mode") != "auto" || os.Geteuid() != 0 && !contains(cmd.Args, "--dangerously-skip-permissions") {
 		t.Fatal("subscription must launch its own native client", err)
 	}
 	mustWrite(t, marker, encode(claudeAccount{Type: "api", Key: "test-key"}))
@@ -466,7 +477,7 @@ func TestExistingEndpointRunsInPi(t *testing.T) {
 	executableFixture(t, filepath.Join(a.packageDir("node"), "bin/node"), "exit 0")
 	tmp := t.TempDir()
 	cmd, err := a.codingCommand(m, tmp, tmp, nil, "")
-	if err != nil || !contains(cmd.Args, "--no-session") || argument(cmd.Args, "--provider") != "openai-compatible" || argument(cmd.Args, "--model") != "test-model" || !contains(cmd.Env, "COMMANDER_ENDPOINT_KEY=fixture") {
+	if err != nil || !contains(cmd.Args, "--approve") || !contains(cmd.Args, "--no-session") || argument(cmd.Args, "--provider") != "openai-compatible" || argument(cmd.Args, "--model") != "test-model" || !contains(cmd.Env, "COMMANDER_ENDPOINT_KEY=fixture") {
 		t.Fatal("incorrect pi command", err)
 	}
 	b, err := os.ReadFile(filepath.Join(tmp, "models.json"))

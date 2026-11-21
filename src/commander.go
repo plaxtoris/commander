@@ -136,7 +136,7 @@ Sessions
   commander session delete NAME            removes it and its containers
   commander session shell NAME             opens a shell with its selection
   commander export                         selects sessions and memory for commander.zip
-  commander export SESSION                 saves one session with its logins
+  commander export SESSION                 saves a session, its logins, memory and agent settings
   commander import [FILE.zip]              picks or opens an archive to import
   commander context                        shows the session scope and selectors
   commander overview [SESSION]             checks account status

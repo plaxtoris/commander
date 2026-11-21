@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -12,6 +13,7 @@ import (
 	"sort"
 	"strings"
 	"syscall"
+	"time"
 )
 
 var codingLabel = regexp.MustCompile(`^[a-z0-9][a-z0-9._-]{0,31}$`)
@@ -143,6 +145,50 @@ func (a *app) readClaudeAccount(m member) (claudeAccount, string, error) {
 	return account, filepath.Join(dir, account.Type), nil
 }
 
+// A portable subscription record survives import even when Claude needs a
+// fresh browser login on this machine. Let its native client report that state.
+func (a *app) claudeHealth(m member) string {
+	unlock, err := a.nativeLoginLock(m, true)
+	if err != nil {
+		return "Could not check"
+	}
+	defer unlock()
+	record, profile, err := a.readClaudeAccount(m)
+	if err != nil {
+		return "Could not check"
+	}
+	if record.Type == "api" {
+		return "Ready"
+	}
+	if err = noSymlinks(a.root, profile); err != nil {
+		return "Could not check"
+	}
+	if _, err = os.Stat(profile); os.IsNotExist(err) {
+		return "Sign in again"
+	}
+	path, args, err := a.toolCommand("claude", []string{"auth", "status", "--json"})
+	if err != nil {
+		return "Tool not ready"
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, path, args...)
+	cmd.Dir, cmd.Env = profile, a.codingEnv(m, profile, profile)
+	data, err := cmd.Output()
+	var status struct {
+		LoggedIn *bool `json:"loggedIn"`
+	}
+	if json.Unmarshal(data, &status) == nil && status.LoggedIn != nil {
+		if !*status.LoggedIn {
+			return "Sign in again"
+		}
+		if err == nil {
+			return "Ready"
+		}
+	}
+	return "Could not check"
+}
+
 type endpointLogin struct {
 	URL string `json:"url"`
 	Key string `json:"key"`
@@ -207,13 +253,15 @@ func (a *app) connectCoding(service, label string) (member, error) {
 			return member{}, err
 		}
 		defer unlock()
-	} else {
-		if _, err = os.Stat(dir); err == nil {
-			return member{}, errors.New("name already in use")
-		} else if !os.IsNotExist(err) {
-			return member{}, err
-		}
 	}
+	_, err = os.Stat(dir)
+	if err != nil && !os.IsNotExist(err) {
+		return member{}, err
+	}
+	if err == nil && !reconnect {
+		return member{}, errors.New("name already in use")
+	}
+	existingDir := err == nil
 	// Prepare the official client before starting its login.
 	if service != "litellm" {
 		unlock, err := a.prepareAgent(service)
@@ -251,7 +299,9 @@ func (a *app) connectCoding(service, label string) (member, error) {
 		}
 	} else if service == "claude" {
 		var record claudeAccount
-		if reconnect {
+		_, err = os.Stat(filepath.Join(dir, credentialFiles[service]))
+		existingRecord := !os.IsNotExist(err)
+		if existingRecord {
 			record, _, err = a.readClaudeAccount(m)
 		} else {
 			var pick int
@@ -263,7 +313,7 @@ func (a *app) connectCoding(service, label string) (member, error) {
 		}
 		if record.Type == "native" {
 			profile := filepath.Join(stage, "native")
-			if reconnect {
+			if existingDir {
 				profile = filepath.Join(dir, "native")
 			}
 			if err = noSymlinks(a.root, profile); err != nil {
@@ -281,7 +331,7 @@ func (a *app) connectCoding(service, label string) (member, error) {
 			if err = cmd.Run(); err != nil {
 				return member{}, errors.New("claude sign in did not finish")
 			}
-			if reconnect {
+			if existingRecord {
 				return m, nil
 			}
 		} else {
@@ -314,7 +364,7 @@ func (a *app) connectCoding(service, label string) (member, error) {
 			return member{}, errors.New("sign in did not save a local subscription login")
 		}
 	}
-	if reconnect {
+	if existingDir {
 		return m, os.Rename(filepath.Join(stage, credentialFiles[service]), filepath.Join(dir, credentialFiles[service]))
 	}
 	return m, os.Rename(stage, dir)

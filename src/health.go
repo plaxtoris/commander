@@ -72,16 +72,48 @@ func healthIssues(s session, states map[string]accountHealth) []account {
 	return rows
 }
 
-func (a *app) checkHealth(all []session) <-chan struct{} {
-	done := make(chan struct{})
+type accountIssue struct {
+	account
+	first    int
+	sessions []string
+}
+
+func accountIssues(all []session, states map[string]accountHealth) []accountIssue {
+	var issues []accountIssue
+	index := map[string]int{}
+	for n, s := range all {
+		for _, r := range healthIssues(s, states) {
+			id := r.id()
+			i, exists := index[id]
+			if !exists {
+				i = len(issues)
+				index[id] = i
+				issues = append(issues, accountIssue{account: r, first: n})
+			}
+			issues[i].sessions = append(issues[i].sessions, s.Name)
+		}
+	}
+	return issues
+}
+
+// Only background startup checks reuse recent successes. Explicit checks
+// and commands that verify identity go straight to the provider.
+func (a *app) checkHealth(all []session, recent map[string]accountHealth) <-chan struct{} {
 	members, seen := []member{}, map[string]bool{}
 	for _, s := range all {
 		for _, m := range s.Accounts {
-			if !seen[m.id()] {
-				members, seen[m.id()] = append(members, m), true
+			id := m.id()
+			h := recent[id]
+			age := time.Since(h.Checked)
+			if !seen[id] && !(ready(h.State) && age >= 0 && age < 2*time.Minute) {
+				members, seen[id] = append(members, m), true
 			}
 		}
 	}
+	if len(members) == 0 {
+		return nil
+	}
+	done := make(chan struct{})
 	go func() {
 		defer close(done)
 		a.resolve(members)

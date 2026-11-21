@@ -181,12 +181,12 @@ func validateSelections(p selections) error {
 }
 
 func (a *app) accounts(service string) ([]account, error) {
+	nativeUnlock, err := a.installationLock("native", true, true)
+	if err != nil {
+		return nil, err
+	}
+	defer nativeUnlock()
 	if service == "github" {
-		nativeUnlock, err := a.installationLock("native", true, true)
-		if err != nil {
-			return nil, err
-		}
-		defer nativeUnlock()
 		// Status can rotate tokens too, so it shares the runtime refresh lock.
 		unlock, err := a.credentialLock("github")
 		if err != nil {
@@ -305,13 +305,14 @@ func serviceFailure(err error) string {
 	if errors.As(err, &preparation) {
 		return "Tool not ready"
 	}
-	return "Check login"
+	return "Could not check"
 }
 
 func (a *app) resolve(members []member) []account {
 	checked := time.Now().UTC()
 	admin := a.admin()
 	found := map[string]account{}
+	tokens := map[string]tokenLogin{}
 	queried := map[string]bool{}
 	failed := map[string]string{}
 	for _, m := range members {
@@ -319,6 +320,19 @@ func (a *app) resolve(members []member) []account {
 			continue
 		}
 		queried[m.Service] = true
+		if tokenService(m.Service) {
+			records, err := a.tokenLogins(m.Service)
+			if err != nil {
+				failed[m.Service] = serviceFailure(err)
+			}
+			for _, record := range records {
+				member := record.member(m.Service)
+				id := member.id()
+				found[id] = account{member: member, State: "Ready"}
+				tokens[id] = record
+			}
+			continue
+		}
 		rows, err := admin.accounts(m.Service)
 		if err != nil {
 			failed[m.Service] = serviceFailure(err)
@@ -336,13 +350,22 @@ func (a *app) resolve(members []member) []account {
 			state = failed[m.Service]
 		} else if ok {
 			state = r.State
-			if tokenService(m.Service) {
-				records, err := a.tokenLogins(m.Service)
-				if err == nil {
-					_, err = records[m.selector()].verify(m.Service)
-				}
-				if err != nil {
-					state = "Check login"
+			if m.Service == "claude" {
+				state = admin.claudeHealth(m)
+			}
+			if token, ok := tokens[m.id()]; ok {
+				if _, err := token.verify(m.Service); err != nil {
+					state = "Could not check"
+					switch {
+					case errors.Is(err, serviceError(401)):
+						state = "Sign in again"
+					case errors.Is(err, serviceError(403)):
+						state = "Check permissions"
+					case errors.Is(err, serviceError(429)):
+						state = "Rate limited"
+					case errors.Is(err, errTokenIdentity):
+						state = "Check identity"
+					}
 				}
 			}
 			if r.Account != m.Account || tokenService(m.Service) && r.Context != m.Context {
@@ -467,7 +490,7 @@ func (a *app) officeOrganization() error {
 
 func (a *app) login(service string) error {
 	if tokenService(service) {
-		return a.loginToken(service)
+		return a.loginToken(service, nil)
 	}
 	switch service {
 	case "github":
@@ -524,7 +547,7 @@ func (a *app) login(service string) error {
 		}) >= 0 {
 			return errors.New("use letters, digits, dots, underscores or dashes for the project name")
 		}
-		rows, err := a.accounts(service)
+		rows, err := a.queryAccounts(service)
 		if err != nil {
 			return err
 		}

@@ -1,14 +1,24 @@
 # Commander
 
-This folder is a Commander installation with native tools, accounts, sessions
-and projects. Commander regenerates this file. Tools install on demand, so
-unused ones are normal. Run `./commander help` for every command. Reply in the
-language of the user's current prompt unless asked otherwise; the language of
-these instructions or of memory does not decide it. Complete clear tasks
-independently and verify the result. Reuse existing code and keep the
-implementation and interface simple. Ask when ambiguity or material risk
-requires the user’s judgment.
-From session workspaces use the absolute Commander path in COMMANDER_HOME.
+Commander manages the tools, accounts and projects for this installation.
+Use the absolute Commander path in COMMANDER_HOME from session workspaces.
+Reply in the language of the current request unless the user asks otherwise.
+
+## Working style
+
+Complete clear tasks through implementation and verification. Make routine,
+reversible decisions yourself. Ask when the user's choice changes the goal,
+when scope or authority is unclear, or before irreversible actions.
+
+Reuse existing code and keep one source of truth. Group related behavior in
+a small, clear file structure. Add a dependency, file or abstraction only
+when it earns its place. Remove obsolete code within the scope of the task.
+Measure slow paths and avoid repeated work. Check common workflows, failure
+paths and concurrency where shared state can change.
+
+Make the next action easy to find. Use short labels, show status beside the
+item it concerns and let users recover where the problem occurs. Test the
+interface through its normal entry point, including small terminals when relevant.
 
 ## Memory
 

@@ -95,10 +95,6 @@ func normalizeArchive(p profileArchive) (profileArchive, error) {
 	return p, nil
 }
 
-func (a *app) sessionArchive(s session) (profileArchive, error) {
-	return a.archiveSessions([]session{s}, nil)
-}
-
 func (a *app) archiveSessions(sessions []session, memory *string) (profileArchive, error) {
 	p := profileArchive{
 		Format: "commander-profile", Version: 2, Accounts: []member{}, Memory: memory,
@@ -305,7 +301,7 @@ func (a *app) transfer(args []string) error {
 	} else {
 		var s session
 		if s, err = a.findSession(args[1]); err == nil {
-			message, err = a.exportArchive(s.Name+".zip", []string{s.ID}, false)
+			message, err = a.exportArchive(s.Name+".zip", []string{s.ID}, true)
 		}
 	}
 	a.clear()
@@ -422,14 +418,14 @@ func (a *app) exportArchive(name string, ids []string, memory bool) (string, err
 	if err != nil {
 		return "", err
 	}
-	if len(ids) == 0 && !memory && len(payload.CodingConfigs) == 0 {
+	if len(ids) == 0 && payload.Memory == nil && len(payload.CodingConfigs) == 0 {
 		return "", errors.New("no sessions, memory or agent settings to export")
 	}
 	if err = writeArchive(path, payload, password, replace); err != nil {
 		return "", err
 	}
 	message := fmt.Sprintf("exported %s, %s", count(len(ids), "session"), count(len(payload.Accounts), "account"))
-	if memory {
+	if payload.Memory != nil {
 		message += ", memory"
 	}
 	if len(payload.CodingConfigs) > 0 {
@@ -471,11 +467,12 @@ func (a *app) exportSnapshot(ids []string, includeMemory bool) (profileArchive, 
 			return profileArchive{}, err
 		}
 		data, err := os.ReadFile(path)
-		if err != nil {
+		if err == nil {
+			text := string(data)
+			memory = &text
+		} else if !os.IsNotExist(err) {
 			return profileArchive{}, err
 		}
-		text := string(data)
-		memory = &text
 	}
 	return a.archiveSessions(sessions, memory)
 }

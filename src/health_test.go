@@ -2,7 +2,10 @@ package main
 
 import (
 	"bytes"
+	"encoding/json"
 	"errors"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -131,16 +134,15 @@ func TestInteractiveReconnectFromSessionWarning(t *testing.T) {
 	a := testApp(t)
 	m := ghMember("alice")
 	addSession(t, a, "work", m)
+	addSession(t, a, "shared", m)
 	mustWrite(t, filepath.Join(a.root, "tools", ".requested", "gh"), nil)
 	t.Setenv("COMMANDER_UI_GITHUB_EXPIRED", "1")
 	s := openUI(t, a.root)
 	s.wait(t, "1 account needs attention")
 	s.send(t, "l")
-	s.wait(t, "[l] sign in again")
-	s.send(t, "l")
+	s.wait(t, "sessions  shared, work")
+	s.send(t, "\r")
 	s.wait(t, "alice connected")
-	s.send(t, "\x1b")
-	s.wait(t, "[q] quit")
 	start := strings.LastIndex(s.output, "commander")
 	if strings.Contains(s.output[start:], "needs attention") {
 		t.Fatal("home retained the warning after reconnect", s.output[start:])
@@ -151,5 +153,125 @@ func TestInteractiveReconnectFromSessionWarning(t *testing.T) {
 	}
 	if !ready(a.health()[m.id()].State) {
 		t.Fatal("reconnect was not remembered")
+	}
+}
+
+func TestStartupHealthReusesOnlyRecentSuccess(t *testing.T) {
+	a := testApp(t)
+	m := ghMember("alice")
+	sessions := []session{{Name: "one", Accounts: []member{m}}, {Name: "two", Accounts: []member{m}}}
+	calls := 0
+	a.run = func(string, []string, bool, map[string]string) ([]byte, error) {
+		calls++
+		return []byte(`{"hosts":{"github.com":[{"login":"alice","state":"success"}]}}`), nil
+	}
+	for _, tc := range []struct {
+		state string
+		age   time.Duration
+		check bool
+	}{
+		{"Ready", time.Second, false},
+		{"Ready", time.Hour, true},
+		{"Ready", -time.Hour, true},
+		{"Sign in again", time.Second, true},
+	} {
+		before := calls
+		done := a.checkHealth(sessions, map[string]accountHealth{m.id(): {State: tc.state, Checked: time.Now().Add(-tc.age)}})
+		if tc.check {
+			if done == nil {
+				t.Fatal("missing check", tc)
+			}
+			<-done
+			if calls != before+1 {
+				t.Fatal("expected one provider query", tc, calls)
+			}
+		} else if done != nil || calls != before {
+			t.Fatal("repeated a fresh check", tc)
+		}
+	}
+	<-a.checkHealth(sessions, nil)
+	if calls != 4 {
+		t.Fatal("explicit check skipped", calls)
+	}
+}
+
+func TestTokenHealthAndListing(t *testing.T) {
+	a := testApp(t)
+	token := tokenFixture("dockerhub", "alice")
+	saveTokenFixture(t, a, "dockerhub", token)
+	for code, want := range map[int]string{401: "Sign in again", 403: "Check permissions", 429: "Rate limited", 503: "Could not check"} {
+		t.Run(want, func(t *testing.T) {
+			useServiceFixture(t, func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(code) })
+			rows := a.resolve([]member{token.member("dockerhub")})
+			if rows[0].State != want || rows[0].canRepair() != (code == 401) {
+				t.Fatalf("HTTP %d: %s", code, rows[0].State)
+			}
+			listed, _ := a.logins("dockerhub")
+			if len(listed) != 1 || listed[0].State != want || a.health()[listed[0].id()].State != want {
+				t.Fatal("opening accounts lost the provider status")
+			}
+		})
+	}
+}
+
+func TestClaudeHealthAfterTransfer(t *testing.T) {
+	a := testApp(t)
+	m := member{Service: "claude", Account: "work", Key: jsonKey("work")}
+	dir, err := a.codingDir(m)
+	if err != nil {
+		t.Fatal(err)
+	}
+	mustWrite(t, filepath.Join(dir, "account.json"), encode(claudeAccount{Type: "native"}))
+	if got := a.claudeHealth(m); got != "Sign in again" {
+		t.Fatal(got)
+	}
+	if err = os.Mkdir(filepath.Join(dir, "native"), 0700); err != nil {
+		t.Fatal(err)
+	}
+	for _, tc := range []struct{ script, want string }{
+		{`echo '{"loggedIn":false}'; exit 1`, "Sign in again"},
+		{`echo '{"loggedIn":true}'`, "Ready"},
+		{`exit 1`, "Could not check"},
+	} {
+		executableFixture(t, filepath.Join(a.packageDir("claude"), packageEntries["claude"]), tc.script)
+		if got := a.claudeHealth(m); got != tc.want {
+			t.Fatal(got, tc.want)
+		}
+	}
+}
+
+func TestRepairSharedTokenFromHome(t *testing.T) {
+	a := testApp(t)
+	token := tokenFixture("dockerhub", "alice")
+	other := tokenFixture("dockerhub", "bob")
+	saveTokenFixture(t, a, "dockerhub", token, other)
+	m := token.member("dockerhub")
+	addSession(t, a, "work", m)
+	addSession(t, a, "other", m)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var login struct{ Identifier, Secret string }
+		if json.NewDecoder(r.Body).Decode(&login) != nil || login.Identifier != "alice" || login.Secret != "fixture-new" {
+			w.WriteHeader(401)
+			return
+		}
+		w.Write([]byte(`{"access_token":"fixture-bearer"}`))
+	}))
+	defer server.Close()
+	t.Setenv("COMMANDER_UI_SERVICE_URL", server.URL)
+	s := openUI(t, a.root)
+	s.wait(t, "1 account needs attention")
+	s.send(t, "l")
+	s.wait(t, "[enter] sign in again")
+	s.send(t, "\r")
+	s.wait(t, "api token:")
+	s.send(t, "fixture-new\n")
+	s.wait(t, "alice connected")
+	s.send(t, "q")
+	if err := s.command.Wait(); err != nil {
+		t.Fatal(err)
+	}
+	records, err := a.tokenLogins("dockerhub")
+	if err != nil || records["alice"].Token != "fixture-new" || records["bob"] != other || strings.Contains(s.output, "fixture-new") {
+		t.Fatal("repair changed the wrong login or echoed the token", err)
 	}
 }

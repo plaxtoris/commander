@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -8,7 +9,11 @@ import (
 	"testing"
 )
 
-func TestSessionArchiveHoldsOnlyItsSessionAndLogins(t *testing.T) {
+func (a *app) sessionArchive(s session) (profileArchive, error) {
+	return a.archiveSessions([]session{s}, nil)
+}
+
+func TestSessionExportIncludesSharedMemoryAndOnlySelectedLogins(t *testing.T) {
 	source := testApp(t)
 	members := fixtureLogins(t, source)
 	work, err := source.newSession("work", []member{members[0], members[3]}, []string{"company/*"})
@@ -17,12 +22,12 @@ func TestSessionArchiveHoldsOnlyItsSessionAndLogins(t *testing.T) {
 	}
 	addSession(t, source, "private", members...)
 	mustWrite(t, filepath.Join(source.root, "MEMORY.md"), []byte("* Keep replies concise.\n"))
-	payload, err := source.sessionArchive(work)
+	payload, err := source.exportSnapshot([]string{work.ID}, true)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if payload.Memory != nil || len(payload.Profile.Profiles) != 1 || len(payload.Logins) != 2 || !reflect.DeepEqual(payload.Accounts, work.Accounts) {
-		t.Fatal("archive holds more than its session")
+	if payload.Memory == nil || *payload.Memory != "* Keep replies concise.\n" || len(payload.Profile.Profiles) != 1 || len(payload.Logins) != 2 || !bytes.Equal(encode(payload.Accounts), encode(work.Accounts)) {
+		t.Fatal("archive lost shared memory or changed the session selection")
 	}
 	stale := session{Name: "stale", Accounts: []member{members[0], ghMember("gone")}, Repositories: []string{}}
 	if _, err = source.sessionArchive(stale); err == nil || !strings.Contains(err.Error(), "gone @ github.com has no saved login") {

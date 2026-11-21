@@ -423,7 +423,11 @@ func (a *app) codingCommand(m member, cwd, home string, extra []string, config s
 		}
 		settings["cleanupPeriodDays"] = json.RawMessage("0")
 		settings["autoMemoryEnabled"] = json.RawMessage("false")
-		args = []string{"--dangerously-skip-permissions", "--setting-sources", "project,local", "--settings", strings.TrimSpace(string(encode(settings))), "--append-system-prompt", context}
+		args = []string{"--dangerously-skip-permissions"}
+		if os.Geteuid() == 0 {
+			args = []string{"--permission-mode", "auto"}
+		}
+		args = append(args, "--setting-sources", "project,local", "--settings", strings.TrimSpace(string(encode(settings))), "--append-system-prompt", context)
 	case "litellm":
 		dir, err := a.codingDir(m)
 		if err != nil {
@@ -485,7 +489,7 @@ func (a *app) codingCommand(m member, cwd, home string, extra []string, config s
 			endpoint.Key = "local"
 		}
 		key = "COMMANDER_ENDPOINT_KEY=" + endpoint.Key
-		args = []string{"--no-session", "--provider", provider, "--model", model, "--models", provider + "/*", "--append-system-prompt", context}
+		args = []string{"--approve", "--no-session", "--provider", provider, "--model", model, "--models", provider + "/*", "--append-system-prompt", context}
 	default:
 		return nil, errors.New("unknown coding account")
 	}

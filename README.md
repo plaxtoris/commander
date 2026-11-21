@@ -31,18 +31,25 @@ chmod +x commander && ./commander
   keyboard shortcuts belong to the native agent. Exiting returns to Commander.
 - **New session.** Name it, highlight an agent account and press enter to start.
   Use space to select several agents. Open `accounts & repos` for GitHub
-  logins, organizations and repositories. Agents run autonomously in this workspace.
+  logins, organizations and repositories. Codex starts with approvals and sandboxing disabled. Pi trusts project files
+  for the run. Claude uses bypass permissions as a regular user and requests
+  auto mode under root, where its CLI rejects bypass permissions.
 - **Edit.** Connect more accounts or change the scope. Choose a GitHub login
   per repository or organization when several can reach it. Changes save
   immediately. Press `r` in the editor to rename the session.
 - **Startup.** Commander updates the installed tools and checks session accounts
-  in the background. Login issues show on the session that needs attention.
+  in the background. Press `l` on the home screen to jump to a problem account.
+  Its detail lists the sessions using it. Press enter to sign in again for a
+  rejected login or retry an inconclusive check. For a missing provider account
+  with no direct reconnect, enter opens the session editor. Press `c` on the
+  home screen to check all session accounts.
 - **Delete.** Press `d` on a session and confirm. To open a shell, run
   `commander session shell NAME`.
 - **Transfer.** Press `x` to choose sessions and `MEMORY.md` for the encrypted
   `commander.zip` archive. Press `i` to choose a ZIP from the Commander folder
   or enter a path. The archive replaces local sessions with matching names
   and replaces `MEMORY.md` if included.
+  `commander export SESSION` also includes existing memory and shared agent settings.
   After importing a Claude subscription on a different machine, sign in again
   through Claude Code.
 - **Portable.** Commander installs the official CLIs on demand in its tools

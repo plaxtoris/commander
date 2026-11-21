@@ -180,6 +180,8 @@ func (c tokenLogin) authorization() string {
 	return "Basic " + base64.StdEncoding.EncodeToString([]byte(c.User+":"+c.Token))
 }
 
+var errTokenIdentity = errors.New("account identity changed; reconnect this account")
+
 func (c tokenLogin) verify(service string) (string, error) {
 	if service == "dockerhub" {
 		// Docker authenticates the username/PAT pair before issuing a bearer token.
@@ -200,15 +202,18 @@ func (c tokenLogin) verify(service string) (string, error) {
 		return "", err
 	}
 	if identity != c.Identity {
-		return "", errors.New("account identity changed; reconnect this account")
+		return "", errTokenIdentity
 	}
 	return c.authorization(), nil
 }
 
-func (a *app) loginToken(service string) error {
+func (a *app) loginToken(service string, selected *member) error {
 	c := tokenLogin{}
 	var err error
-	if service == "confluence" {
+	if selected != nil {
+		c.User, c.Site = selected.Account, selected.Context
+		fmt.Fprintln(a.out, selected.label())
+	} else if service == "confluence" {
 		site, e := a.prompt("confluence url", "", nil)
 		if e != nil {
 			return e
@@ -217,18 +222,21 @@ func (a *app) loginToken(service string) error {
 		if err != nil {
 			return err
 		}
-		c.API = c.Site + "/wiki"
 		c.User, err = a.prompt("atlassian email", "", nil)
-		if err != nil {
-			return err
-		}
-		fmt.Fprintln(a.out, "create a token at https://id.atlassian.com/manage-profile/security/api-tokens")
 	} else {
 		c.User, err = a.prompt("dockerhub username", "", nil)
-		if err != nil {
-			return err
-		}
 		c.User = strings.ToLower(c.User)
+	}
+	if err != nil {
+		return err
+	}
+	if selected != nil && c.member(service).id() != selected.id() {
+		return errors.New("check the selected account identity")
+	}
+	if service == "confluence" {
+		c.API = c.Site + "/wiki"
+		fmt.Fprintln(a.out, "create a token at https://id.atlassian.com/manage-profile/security/api-tokens")
+	} else {
 		fmt.Fprintln(a.out, "create a personal token at https://app.docker.com/settings/personal-access-tokens")
 	}
 	c.Token, err = a.password("api token", false)
