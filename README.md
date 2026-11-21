@@ -4,7 +4,9 @@ One folder for your accounts, tools and repositories, ready for any coding agent
 
 Choose a session and press enter to open Codex, Claude Code or Pi in its
 workspace. Each session defines the accounts and repositories available to the
-agent. Every launch starts a fresh conversation.
+agent. Agents can read any public Git repository, such as Claude plugins, but
+push only to the session repositories. Every launch starts a fresh conversation
+and Claude removes transcripts after one day.
 
 ```sh
 mkdir -p ~/commander && cd ~/commander

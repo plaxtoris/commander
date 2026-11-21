@@ -83,7 +83,7 @@ func TestSharedAgentConfig(t *testing.T) {
 			}
 			var settings object
 			err = json.Unmarshal([]byte(argument(cmd.Args, "--settings")), &settings)
-			if err != nil || settings["model"] != "shared-model" || settings["autoMemoryEnabled"] != false || settings["cleanupPeriodDays"] != float64(0) || argument(cmd.Args, "--setting-sources") != "project,local" {
+			if err != nil || settings["model"] != "shared-model" || settings["autoMemoryEnabled"] != false || settings["cleanupPeriodDays"] != float64(1) || argument(cmd.Args, "--setting-sources") != "project,local" {
 				t.Errorf("incorrect claude settings: %v, %v", settings, err)
 			}
 		})

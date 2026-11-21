@@ -41,92 +41,65 @@ func (a *app) checkGit(args []string) error {
 		command = value
 		break
 	}
-	if !contains([]string{"clone", "fetch", "pull", "push", "ls-remote"}, command) {
+	// Reading public repositories is always allowed and runs without a login,
+	// because the credential helper only answers for selected repositories.
+	if command != "push" {
 		return nil
 	}
-	remote := ""
-	all := false
-	multiple := false
-	positions := []string{}
+	// Git prefers the positional repository over --repo, so check both.
+	remotes := []string{}
+	positional := false
 	for len(args) > 0 {
 		value := args[0]
 		args = args[1:]
-		if value == "--all" {
-			all = true
+		if repo, ok := strings.CutPrefix(value, "--repo="); ok {
+			remotes = append(remotes, repo)
+			continue
 		}
-		if value == "--multiple" {
-			multiple = true
-		}
-		if strings.HasPrefix(value, "--repo=") {
-			remote = strings.TrimPrefix(value, "--repo=")
-		}
-		if contains([]string{"--depth", "--filter", "--branch", "-b", "--reference", "--reference-if-able", "--shallow-since", "--shallow-exclude", "--upload-pack", "--receive-pack", "--repo"}, value) {
+		if contains([]string{"--repo", "--receive-pack", "--exec", "-o", "--push-option"}, value) {
 			if len(args) == 0 {
 				return errors.New("Git option needs a value")
 			}
 			if value == "--repo" {
-				remote = args[0]
+				remotes = append(remotes, args[0])
 			}
 			args = args[1:]
 			continue
 		}
-		if !strings.HasPrefix(value, "-") {
-			positions = append(positions, value)
+		if !positional && !strings.HasPrefix(value, "-") {
+			positional = true
+			remotes = append(remotes, value)
 		}
 	}
-	if remote == "" && len(positions) > 0 {
-		remote = positions[0]
-	}
-	remotes := []string{}
-	if command == "clone" || command == "ls-remote" && remote != "" {
-		remotes = append(remotes, remote)
-	} else if all && command == "fetch" {
-		list, err := a.gitAt(dir, "remote")
-		if err != nil {
-			return err
-		}
-		remotes = strings.Fields(list)
-	} else if multiple && command == "fetch" {
-		remotes = positions
-	} else {
-		if remote == "" {
-			branch, _ := a.gitAt(dir, "branch", "--show-current")
-			keys := []string{"branch." + branch + ".remote"}
-			if command == "push" {
-				keys = append([]string{"branch." + branch + ".pushRemote", "remote.pushDefault"}, keys...)
-			}
-			for _, key := range keys {
-				if value, e := a.gitAt(dir, "config", key); e == nil && value != "" {
-					remote = value
-					break
-				}
-			}
-			if remote == "" {
-				remote = "origin"
+	if len(remotes) == 0 {
+		remote := "origin"
+		branch, _ := a.gitAt(dir, "branch", "--show-current")
+		for _, key := range []string{"branch." + branch + ".pushRemote", "remote.pushDefault", "branch." + branch + ".remote"} {
+			if value, e := a.gitAt(dir, "config", key); e == nil && value != "" {
+				remote = value
+				break
 			}
 		}
 		remotes = append(remotes, remote)
 	}
+	addresses := []string{}
 	for _, remote := range remotes {
-		addresses := []string{remote}
-		options := []string{"remote", "get-url", "--all"}
-		if command == "push" {
-			options = append(options, "--push")
+		if value, e := a.gitAt(dir, "remote", "get-url", "--all", "--push", remote); e == nil {
+			addresses = append(addresses, strings.Split(value, "\n")...)
+		} else {
+			addresses = append(addresses, remote)
 		}
-		if value, e := a.gitAt(dir, append(options, remote)...); e == nil {
-			addresses = strings.Split(value, "\n")
+	}
+	for _, address := range addresses {
+		repository := repositoryName(address)
+		if repository == "" {
+			if strings.HasPrefix(address, "/") || strings.HasPrefix(address, "./") || strings.HasPrefix(address, "../") || strings.HasPrefix(address, "file://") {
+				continue
+			}
+			return errors.New("Git remote is outside the session repository selection")
 		}
-		for _, address := range addresses {
-			repository := repositoryName(address)
-			if repository == "" {
-				if strings.HasPrefix(address, "/") || strings.HasPrefix(address, "./") || strings.HasPrefix(address, "../") || strings.HasPrefix(address, "file://") {
-					continue
-				}
-				return errors.New("Git remote is outside the session repository selection")
-			}
-			if a.session == nil || !a.session.allows(repository) {
-				return errors.New("Git repository is outside the session selection; start or edit a Commander session")
-			}
+		if a.session == nil || !a.session.allows(repository) {
+			return errors.New("Git push target is outside the session selection; start or edit a Commander session")
 		}
 	}
 	return nil

@@ -171,21 +171,21 @@ func TestRefreshedCredentialDoesNotChangeAnotherAccount(t *testing.T) {
 	}
 }
 
-func TestGitNetworkCommandsRespectRepositoryScope(t *testing.T) {
+func TestGitReadsAnyRepositoryAndPushesOnlyInScope(t *testing.T) {
 	a := testApp(t)
 	s, err := a.newSession("work", nil, []string{"company/app"})
 	if err != nil {
 		t.Fatal(err)
 	}
 	a.session = &s
-	for _, args := range [][]string{{"clone", "https://github.com/company/app.git"}, {"ls-remote", "git@github.com:company/app.git"}, {"status"}, {"clone", "/tmp/local.git"}} {
+	for _, args := range [][]string{{"clone", "https://github.com/company/app.git"}, {"clone", "--depth", "1", "https://github.com/public/plugins.git"}, {"ls-remote", "git@github.com:public/plugins.git"}, {"fetch", "https://example.com/plugins.git"}, {"status"}, {"push", "https://github.com/company/app.git", "main"}, {"push", "/tmp/local.git", "main"}} {
 		if err := a.checkGit(args); err != nil {
 			t.Fatal(args, err)
 		}
 	}
-	for _, args := range [][]string{{"clone", "https://github.com/private/app.git"}, {"clone", "git@github.com:private/app.git"}, {"ls-remote", "https://github.com/company/other.git"}} {
+	for _, args := range [][]string{{"push", "https://github.com/private/app.git", "main"}, {"push", "-o", "ci.skip", "git@github.com:private/app.git"}, {"push", "--repo=https://github.com/company/app.git", "https://github.com/private/app.git"}, {"push", "https://example.com/app.git"}} {
 		if a.checkGit(args) == nil {
-			t.Fatal("unselected remote accepted", args)
+			t.Fatal("unselected push target accepted", args)
 		}
 	}
 }
@@ -210,7 +210,7 @@ func TestGitChecksPushURLsAndDefaultRemote(t *testing.T) {
 	if err := a.checkGit([]string{"-C", dir, "push", "origin", "main"}); err != nil {
 		t.Fatal(err)
 	}
-	for _, args := range [][]string{{"-C", dir, "fetch", "--multiple", "origin", "private"}, {"-C", dir, "push", "--repo=private", "main"}} {
+	for _, args := range [][]string{{"-C", dir, "push", "--repo=private", "main"}, {"-C", dir, "push", "--repo", "origin", "private"}} {
 		if a.checkGit(args) == nil {
 			t.Fatal("unselected secondary remote accepted", args)
 		}

@@ -421,7 +421,7 @@ func (a *app) codingCommand(m member, cwd, home string, extra []string, config s
 		if err != nil {
 			return nil, err
 		}
-		settings["cleanupPeriodDays"] = json.RawMessage("0")
+		settings["cleanupPeriodDays"] = json.RawMessage("1")
 		settings["autoMemoryEnabled"] = json.RawMessage("false")
 		args = []string{"--dangerously-skip-permissions"}
 		if os.Geteuid() == 0 {
