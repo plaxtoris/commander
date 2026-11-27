@@ -453,19 +453,27 @@ func packageFilesReady(dir, name string) bool {
 	return err == nil && info.Mode().IsRegular()
 }
 
+// A running agent may keep using its installed version. Hold this lock only
+// for the final swap so that downloads never delay opening an installed agent.
+func (a *app) packageUpdateLock(name string) (func(), error) {
+	unlock, err := a.agentLock(name, false)
+	if errors.Is(err, unix.EWOULDBLOCK) && packageFilesReady(a.packageDir(name), name) {
+		return nil, nil
+	}
+	return unlock, err
+}
+
 func (a *app) installPackage(name string) error {
 	if a.packageReady(name) {
 		return nil
 	}
-	if agentService(name) != "" {
-		unlock, err := a.agentLock(name, false)
-		if errors.Is(err, unix.EWOULDBLOCK) && packageFilesReady(a.packageDir(name), name) {
-			return nil
-		}
-		if err != nil {
+	isAgent := agentService(name) != ""
+	if isAgent {
+		unlock, err := a.packageUpdateLock(name)
+		if err != nil || unlock == nil {
 			return err
 		}
-		defer unlock()
+		unlock()
 	}
 	dir := filepath.Join(a.root, "tools")
 	if err := noSymlinks(a.root, filepath.Join(dir, name)); err != nil {
@@ -503,6 +511,13 @@ exec "$dir/../node/bin/node" "$dir/node_modules/@earendil-works/pi-coding-agent/
 	}
 	if err = os.WriteFile(filepath.Join(stage, ".commander-version"), []byte(a.catalog.Packages[name]), 0644); err != nil {
 		return err
+	}
+	if isAgent {
+		unlock, err := a.packageUpdateLock(name)
+		if err != nil || unlock == nil {
+			return err
+		}
+		defer unlock()
 	}
 	return replaceDirectory(stage, filepath.Join(dir, name))
 }
@@ -570,16 +585,29 @@ func (a *app) toolUsed(tool string) bool {
 	return err == nil
 }
 
+func (a *app) dependenciesReady(names []string) bool {
+	for _, name := range names {
+		if !a.dependencyReady(name) {
+			return false
+		}
+	}
+	return true
+}
+
 func (a *app) prepareTool(tool string) error {
 	deps, managed := toolDependencies[tool]
 	if !managed {
 		return nil
 	}
-	ready := true
-	for _, name := range deps {
-		ready = ready && a.dependencyReady(name)
+	if a.dependenciesReady(deps) {
+		return nil
 	}
-	if ready {
+	// A background refresh may have installed a newer version since this menu
+	// opened. Use it without waiting for unrelated installations to finish.
+	scoped := *a
+	scoped.catalog = a.installedCatalog(a.catalog)
+	a = &scoped
+	if a.dependenciesReady(deps) {
 		return nil
 	}
 	if machine == "" {
@@ -594,9 +622,7 @@ func (a *app) prepareTool(tool string) error {
 	}
 	defer unlock()
 	// Another process may have finished a newer installation while we waited.
-	scoped := *a
-	scoped.catalog = a.installedCatalog(a.catalog)
-	a = &scoped
+	a.catalog = a.installedCatalog(a.catalog)
 	marker := filepath.Join(a.root, "tools", ".requested", tool)
 	if err = noSymlinks(a.root, marker); err != nil {
 		return err

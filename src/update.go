@@ -25,36 +25,92 @@ var releaseURL = "https://github.com/plaxtoris/commander/releases/download/lates
 var releaseAsset = "commander-" + machine
 var releaseCheckTimeout = 8 * time.Second
 
+const pendingRelease = ".update-ready"
+const updateInterval = time.Hour
+
 func (a *app) start() error {
-	// A restarted process prepares the new catalog immediately, without another
-	// self update check or an update loop if the rolling release changes again.
-	restarted := os.Getenv("COMMANDER_RESTARTED") == a.root
 	os.Unsetenv("COMMANDER_RESTARTED")
-	checked := restarted
-	if !restarted {
-		fmt.Fprintln(a.errOut, "updating…")
-		updated, err := a.update()
-		if err != nil {
-			fmt.Fprintln(a.errOut, "update skipped:", err)
-		} else if updated {
-			return a.restartCommander(nil)
-		} else {
-			checked = true
-		}
-	}
 	if err := a.ensure(); err != nil {
 		return err
+	}
+	if !a.localBuild {
+		applied, _ := a.applyPendingRelease()
+		// A second window may have launched the old inode just before the swap.
+		running, _ := os.Readlink("/proc/self/exe")
+		if applied || running == filepath.Join(a.root, "commander")+" (deleted)" {
+			return a.restartCommander(nil)
+		}
 	}
 	if err := a.refreshAgentInstructions(); err != nil {
 		return err
 	}
-	if checked {
+	done := make(chan struct{})
+	defer close(done)
+	delay := a.scheduleUpdate()
+	go func() {
+		timer := time.NewTimer(delay)
+		defer timer.Stop()
+		for {
+			select {
+			case <-done:
+				return
+			case <-timer.C:
+				timer.Reset(a.scheduleUpdate())
+			}
+		}
+	}()
+	return a.menu()
+}
+
+func (a *app) updateDelay() time.Duration {
+	info, err := os.Stat(filepath.Join(a.root, "tools", ".update-checked"))
+	if err == nil {
+		if age := time.Since(info.ModTime()); age >= 0 && age < updateInterval {
+			return updateInterval - age
+		}
+	}
+	return 0
+}
+
+// The worker can finish after the menu closes. It has no terminal or input.
+func (a *app) scheduleUpdate() time.Duration {
+	if delay := a.updateDelay(); delay > 0 {
+		return delay
+	}
+	cmd := exec.Command(filepath.Join(a.root, "commander"), a.scopedUpdateArgs([]string{"update-check"})...)
+	cmd.Env = append(os.Environ(), "COMMANDER_HOME="+a.root)
+	cmd.SysProcAttr = &syscall.SysProcAttr{Setsid: true}
+	if err := cmd.Start(); err == nil {
+		go cmd.Wait()
+	}
+	return updateInterval
+}
+
+func (a *app) backgroundUpdate() error {
+	unlock, err := a.installationLock("update", false, false)
+	if err != nil {
+		if errors.Is(err, syscall.EWOULDBLOCK) {
+			return nil
+		}
+		return err
+	}
+	if a.updateDelay() > 0 {
+		unlock()
+		return nil
+	}
+	err = a.markUpdateCheck()
+	if err == nil {
+		_, err = a.stageRelease()
+	}
+	unlock()
+	if err == nil {
 		a.cleanupAfterUpdate()
 	}
-	if err := a.refreshTools(); err != nil {
-		fmt.Fprintln(a.errOut, "tools need attention · retry with commander update")
-	}
-	return a.menu()
+	return errors.Join(err, a.refreshTools())
+}
+
+func (a *app) markUpdateCheck() error {
+	return atomicWrite(filepath.Join(a.root, "tools", ".update-checked"), nil, 0600)
 }
 
 func (a *app) cleanupAfterUpdate() {
@@ -137,7 +193,7 @@ func (a *app) pruneLegacyLocks() error {
 func legacyLockName(name string) bool {
 	switch name {
 	case ".coding-config.lock", ".health.lock", ".memory.lock", ".native.lock",
-		".sessions.lock", ".setup.lock", ".tool-refresh.lock", ".update.lock",
+		".sessions.lock", ".setup.lock", ".tool-refresh.lock", ".update.lock", ".update-ready.lock",
 		".claude-tool.lock", ".codex-tool.lock", ".pi-tool.lock":
 		return true
 	}
@@ -257,6 +313,16 @@ func (a *app) pruneRuntimeDirs(dir, boot string, unmarked bool, prefixes ...stri
 	return errors.Join(failures...)
 }
 
+func (a *app) scopedUpdateArgs(args []string) []string {
+	if a.account != "" {
+		args = append([]string{"--account", a.account}, args...)
+	}
+	if a.session != nil {
+		args = append([]string{"--session", a.session.ID}, args...)
+	}
+	return args
+}
+
 func (a *app) restartCommander(args []string) error {
 	path := filepath.Join(a.root, "commander")
 	env := []string{}
@@ -270,7 +336,7 @@ func (a *app) restartCommander(args []string) error {
 		env = append(env, "COMMANDER_RESTARTED="+a.root)
 	}
 	// Replace this process, preserving cwd, terminal, streams and exit status.
-	if err := syscall.Exec(path, append([]string{path}, args...), env); err != nil {
+	if err := syscall.Exec(path, append([]string{path}, a.scopedUpdateArgs(args)...), env); err != nil {
 		return fmt.Errorf("Commander was updated but could not restart; start ./commander again: %w", err)
 	}
 	return nil
@@ -312,21 +378,40 @@ func (a *app) verifyReleaseAccount(ctx context.Context) error {
 }
 
 func (a *app) update() (bool, error) {
+	if err := a.ensure(); err != nil {
+		return false, err
+	}
+	unlock, err := a.waitLock("update")
+	if err != nil {
+		return false, err
+	}
+	defer unlock()
+	if err := a.markUpdateCheck(); err != nil {
+		return false, err
+	}
+	// A window can activate the previous pending release while we fetch its
+	// successor. Recheck the latest release against the new installation.
+	for range 2 {
+		ready, err := a.stageRelease()
+		if err != nil || !ready {
+			return false, err
+		}
+		if applied, err := a.applyPendingRelease(); applied || err != nil {
+			return applied, err
+		}
+	}
+	return false, errors.New("installation changed during update; retry commander update")
+}
+
+// Download under the update lock. Publication and activation share only a
+// short local lock, so opening the menu never waits for the network.
+func (a *app) stageRelease() (bool, error) {
 	if a.localBuild {
-		// The next make build supplies Commander itself. Installed tools still update.
 		return false, nil
 	}
 	if machine == "" {
 		return false, errUnsupported
 	}
-	if err := a.ensure(); err != nil {
-		return false, err
-	}
-	unlock, err := a.lock("update")
-	if err != nil {
-		return false, err
-	}
-	defer unlock()
 	var stage string
 	defer func() {
 		if stage != "" {
@@ -398,18 +483,10 @@ func (a *app) update() (bool, error) {
 	if err != nil || len(decoded) != sha256.Size {
 		return false, errors.New("release checksum is missing or invalid")
 	}
-	destination := filepath.Join(a.root, "commander")
-	if err = noSymlinks(a.root, destination); err != nil {
-		return false, err
+	current, ready, err := a.releaseStatus(expected)
+	if err != nil || ready || current == expected {
+		return ready, err
 	}
-	current, err := fileChecksum(destination)
-	if err != nil && !os.IsNotExist(err) {
-		return false, err
-	}
-	if current == expected {
-		return false, nil
-	}
-
 	if stage == "" {
 		if err = createStage(); err != nil {
 			return false, err
@@ -443,9 +520,111 @@ func (a *app) update() (bool, error) {
 	if err = check.Run(); err != nil {
 		return false, errors.New("downloaded Commander could not run on this system")
 	}
-	if err = os.Rename(path, destination); err != nil {
+	if err = os.WriteFile(filepath.Join(stage, "checksums"), []byte(current+"\n"+expected), 0600); err != nil {
 		return false, err
 	}
-
+	publish, err := a.waitLock("update-ready")
+	if err != nil {
+		return false, err
+	}
+	defer publish()
+	if err = a.clearPendingRelease(); err != nil {
+		return false, err
+	}
+	if err = os.Rename(stage, filepath.Join(a.root, pendingRelease)); err != nil {
+		return false, err
+	}
 	return true, nil
+}
+
+// Called under the publication lock. Only remove files this updater creates.
+func (a *app) clearPendingRelease() error {
+	dir := filepath.Join(a.root, pendingRelease)
+	if err := noSymlinks(a.root, dir); err != nil {
+		return err
+	}
+	for _, path := range []string{filepath.Join(dir, releaseAsset), filepath.Join(dir, "checksums"), filepath.Join(dir, "SHA256SUMS"), dir} {
+		if err := os.Remove(path); err != nil && !os.IsNotExist(err) {
+			return err
+		}
+	}
+	return nil
+}
+
+func (a *app) releaseStatus(expected string) (current string, ready bool, err error) {
+	unlock, err := a.waitLock("update-ready")
+	if err != nil {
+		return "", false, err
+	}
+	defer unlock()
+	destination := filepath.Join(a.root, "commander")
+	if err := noSymlinks(a.root, destination); err != nil {
+		return "", false, err
+	}
+	current, err = fileChecksum(destination)
+	if err != nil && !os.IsNotExist(err) {
+		return "", false, err
+	}
+	if current == expected {
+		return current, false, a.clearPendingRelease()
+	}
+	dir := filepath.Join(a.root, pendingRelease)
+	path := filepath.Join(dir, releaseAsset)
+	metadata := filepath.Join(dir, "checksums")
+	for _, file := range []string{metadata, path} {
+		if err := noSymlinks(a.root, file); err != nil {
+			return "", false, err
+		}
+	}
+	if saved, _ := os.ReadFile(metadata); string(saved) == current+"\n"+expected {
+		sum, err := fileChecksum(path)
+		ready = err == nil && sum == expected
+	}
+	return current, ready, nil
+}
+
+func (a *app) applyPendingRelease() (bool, error) {
+	ready := filepath.Join(a.root, pendingRelease)
+	if _, err := os.Lstat(ready); os.IsNotExist(err) {
+		return false, nil
+	} else if err != nil {
+		return false, err
+	}
+	unlock, err := a.waitLock("update-ready")
+	if err != nil {
+		return false, err
+	}
+	defer unlock()
+	metadata := filepath.Join(ready, "checksums")
+	candidate := filepath.Join(ready, releaseAsset)
+	destination := filepath.Join(a.root, "commander")
+	for _, path := range []string{metadata, candidate, destination} {
+		if err := noSymlinks(a.root, path); err != nil {
+			return false, err
+		}
+	}
+	data, err := os.ReadFile(metadata)
+	if os.IsNotExist(err) {
+		return false, nil
+	}
+	if err != nil {
+		return false, err
+	}
+	before, expected, ok := strings.Cut(string(data), "\n")
+	current, err := fileChecksum(destination)
+	if err != nil && !os.IsNotExist(err) {
+		return false, err
+	}
+	if before != current {
+		// Another installation replaced the original binary after the download.
+		return false, a.clearPendingRelease()
+	}
+	got, err := fileChecksum(candidate)
+	if !ok || !checksum.MatchString(expected) || err != nil || got != expected {
+		return false, errors.Join(errors.New("staged release checksum did not match"), a.clearPendingRelease())
+	}
+	if err := os.Rename(candidate, destination); err != nil {
+		return false, err
+	}
+	return true, a.clearPendingRelease()
 }

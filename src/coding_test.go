@@ -16,6 +16,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 )
 
 func writeAgentConfig(t *testing.T, a *app, agent, data string) error {
@@ -501,6 +502,48 @@ func TestActiveAgentDefersPackageUpdate(t *testing.T) {
 	if b, err := os.ReadFile(filepath.Join(a.packageDir(tool), ".commander-version")); err != nil || string(b) != "0.0.1" {
 		t.Fatal("replaced a running agent", err)
 	}
+}
+
+func TestAgentCanStartDuringPackageDownload(t *testing.T) {
+	a := testApp(t)
+	const tool = "claude"
+	entry := packageEntries[tool]
+	executableFixture(t, filepath.Join(a.packageDir(tool), entry), "exit 0")
+	version := filepath.Join(a.packageDir(tool), ".commander-version")
+	mustWrite(t, version, []byte("0.0.1"))
+	downloading := filepath.Join(a.root, "downloading")
+	finish := filepath.Join(a.root, "finish")
+	executableFixture(t, filepath.Join(a.packageDir("node"), "bin/node"),
+		"touch "+quote(downloading)+"\nwhile ! test -e "+quote(finish)+"; do sleep 0.02; done\n"+
+			"mkdir -p \"$4/"+filepath.Dir(entry)+"\" && touch \"$4/"+entry+"\"")
+	installed := make(chan error, 1)
+	go func() { installed <- a.installPackage(tool) }()
+	defer func() {
+		mustWrite(t, finish, nil)
+		if err := <-installed; err != nil {
+			t.Fatal(err)
+		}
+	}()
+	deadline := time.Now().Add(3 * time.Second)
+	for {
+		if _, err := os.Stat(downloading); err == nil {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("download did not start")
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	running, err := a.installationLock(tool+"-tool", true, false)
+	if err != nil {
+		t.Fatal("download blocked agent launch", err)
+	}
+	t.Cleanup(running)
+	t.Cleanup(func() {
+		if data, err := os.ReadFile(version); err != nil || string(data) != "0.0.1" {
+			t.Error("replaced agent while running", err)
+		}
+	})
 }
 
 func TestExistingEndpointRunsInPi(t *testing.T) {

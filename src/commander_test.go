@@ -535,7 +535,14 @@ func TestUIHelper(t *testing.T) {
 		return nil, errors.New("unexpected native fixture operation")
 	}
 	if os.Getenv("COMMANDER_UI_UPDATE_URL") != "" {
-		err = a.command(nil)
+		var args []string
+		for i, arg := range os.Args {
+			if arg == "--" {
+				args = os.Args[i+1:]
+				break
+			}
+		}
+		err = a.command(args)
 	} else {
 		err = a.menu()
 	}

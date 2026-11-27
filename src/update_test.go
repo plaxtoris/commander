@@ -126,6 +126,64 @@ func TestUpdateValidation(t *testing.T) {
 	}
 }
 
+func TestStagedReleaseAcrossChecks(t *testing.T) {
+	for _, mode := range []string{"manual", "damaged", "replaced"} {
+		t.Run(mode, func(t *testing.T) {
+			a := testApp(t)
+			destination := filepath.Join(a.root, "commander")
+			original := []byte("original")
+			binary := []byte("#!/bin/sh\nexit 0\n")
+			mustWrite(t, destination, original)
+			var checks, downloads atomic.Int32
+			useRelease(t, func(w http.ResponseWriter, r *http.Request) {
+				if r.URL.Path == "/SHA256SUMS" {
+					checks.Add(1)
+					fmt.Fprintf(w, "%x  %s\n", sha256.Sum256(binary), releaseAsset)
+					return
+				}
+				downloads.Add(1)
+				w.Write(binary)
+			})
+			for range 2 {
+				if err := a.backgroundUpdate(); err != nil {
+					t.Fatal(err)
+				}
+			}
+			old := time.Now().Add(-updateInterval)
+			if err := os.Chtimes(filepath.Join(a.root, "tools", ".update-checked"), old, old); err != nil {
+				t.Fatal(err)
+			}
+			if err := a.backgroundUpdate(); err != nil || checks.Load() != 2 || downloads.Load() != 1 {
+				t.Fatal("unexpected hourly release traffic", checks.Load(), downloads.Load(), err)
+			}
+			switch mode {
+			case "manual":
+				if applied, err := a.update(); !applied || err != nil || checks.Load() != 3 || downloads.Load() != 1 {
+					t.Fatal("manual update did not use the verified download", applied, err)
+				}
+				original = binary
+			case "damaged":
+				mustWrite(t, filepath.Join(a.root, pendingRelease, releaseAsset), []byte("damaged"))
+				if applied, err := a.applyPendingRelease(); applied || err == nil {
+					t.Fatal("accepted damaged release")
+				}
+			case "replaced":
+				original = []byte("installed separately")
+				mustWrite(t, destination, original)
+				if applied, err := a.applyPendingRelease(); applied || err != nil {
+					t.Fatal("overwrote a newer installation", err)
+				}
+			}
+			if data, err := os.ReadFile(destination); err != nil || !bytes.Equal(data, original) {
+				t.Fatal("incorrect installed release", err)
+			}
+			if _, err := os.Lstat(filepath.Join(a.root, pendingRelease)); !os.IsNotExist(err) {
+				t.Fatal("left an obsolete pending release", err)
+			}
+		})
+	}
+}
+
 func TestUpdateCheckTimeout(t *testing.T) {
 	useRelease(t, func(w http.ResponseWriter, r *http.Request) { <-r.Context().Done() })
 	previous := releaseCheckTimeout
@@ -345,13 +403,40 @@ func TestUpdateCleanupRequiresSameHostAndAnEarlierBoot(t *testing.T) {
 	}
 }
 
+// Child processes use the same local release server as the menu fixture.
+func installUpdateWorker(t *testing.T, root string) []byte {
+	t.Helper()
+	exe, err := os.Executable()
+	if err != nil {
+		t.Fatal(err)
+	}
+	script := []byte("#!/bin/sh\n" + quote(exe) + " -test.run=^TestUIHelper$ -- \"$@\"\nprintf done > \"$COMMANDER_HOME/workspaces/worker-done\"\n")
+	path := filepath.Join(root, "commander")
+	mustWrite(t, path, script)
+	if err := os.Chmod(path, 0755); err != nil {
+		t.Fatal(err)
+	}
+	return script
+}
+
+func waitUpdateWorker(t *testing.T, root string) {
+	t.Helper()
+	until := time.Now().Add(12 * time.Second)
+	for time.Now().Before(until) {
+		if _, err := os.Stat(filepath.Join(root, "workspaces", "worker-done")); err == nil {
+			return
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	t.Fatal("background update did not finish")
+}
+
 func TestInteractiveStartupCurrentAndOffline(t *testing.T) {
 	for _, offline := range []bool{false, true} {
 		t.Run(fmt.Sprint(offline), func(t *testing.T) {
 			a := testApp(t)
 			addSession(t, a, "work")
-			binary := []byte("installed fixture")
-			mustWrite(t, filepath.Join(a.root, "commander"), binary)
+			binary := installUpdateWorker(t, a.root)
 			// Exercise setup and update after moving the portable installation.
 			moved := filepath.Join(t.TempDir(), "Commander moved")
 			if err := os.Rename(a.root, moved); err != nil {
@@ -369,28 +454,29 @@ func TestInteractiveStartupCurrentAndOffline(t *testing.T) {
 			defer server.Close()
 			t.Setenv("COMMANDER_UI_UPDATE_URL", server.URL+"/")
 			staging := filepath.Join(moved, ".update-15")
+			mustWrite(t, filepath.Join(staging, "download"), nil)
 			for i := 0; i < 2; i++ {
-				mustWrite(t, filepath.Join(staging, "download"), nil)
 				mustWrite(t, filepath.Join(moved, "AGENTS.md"), []byte("outdated instructions\n"))
 				s := openUI(t, moved)
 				s.wait(t, "[q] quit")
-				if offline && !strings.Contains(s.output, "update skipped:") {
-					t.Fatal("offline startup did not explain the skipped update")
-				}
-				if _, err := os.Stat(staging); (offline && err != nil) || (!offline && !os.IsNotExist(err)) {
-					t.Fatal("unexpected automatic cleanup result", err)
+				if strings.Contains(s.output, "updating…") || strings.Contains(s.output, "update skipped:") {
+					t.Fatal("background updates wrote to the menu", s.output)
 				}
 				s.send(t, "q")
 				if err := s.command.Wait(); err != nil {
 					t.Fatal(err)
+				}
+				waitUpdateWorker(t, moved)
+				if _, err := os.Stat(staging); (offline && err != nil) || (!offline && !os.IsNotExist(err)) {
+					t.Fatal("unexpected automatic cleanup result", err)
 				}
 				data, err := os.ReadFile(filepath.Join(moved, "AGENTS.md"))
 				if err != nil || string(data) != agentInstructions {
 					t.Fatal("startup did not refresh instructions after relocation", err)
 				}
 			}
-			if checks.Load() != 2 {
-				t.Fatal("did not check exactly once on each start", checks.Load())
+			if checks.Load() != 1 {
+				t.Fatal("repeated update check within one hour", checks.Load())
 			}
 		})
 	}

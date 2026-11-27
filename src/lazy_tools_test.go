@@ -319,8 +319,7 @@ func TestMenuSurvivesUsedToolDownloadFailure(t *testing.T) {
 	a := testApp(t)
 	preparedTools(t, a)
 	addSession(t, a, "work")
-	binary := []byte("installed fixture")
-	mustWrite(t, filepath.Join(a.root, "commander"), binary)
+	binary := installUpdateWorker(t, a.root)
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path == "/SHA256SUMS" {
 			fmt.Fprintf(w, "%x  %s\n", sha256.Sum256(binary), releaseAsset)
@@ -334,8 +333,9 @@ func TestMenuSurvivesUsedToolDownloadFailure(t *testing.T) {
 	t.Setenv("COMMANDER_UI_TOOL_SUM", strings.Repeat("a", 64))
 	s := openUI(t, a.root)
 	s.wait(t, "[q] quit")
-	if !strings.Contains(s.output, "tools need attention") {
-		t.Fatal("missing repair feedback")
+	waitUpdateWorker(t, a.root)
+	if strings.Contains(s.output, "tools need attention") {
+		t.Fatal("background worker wrote to the terminal")
 	}
 	s.send(t, "q")
 	if err := s.command.Wait(); err != nil {

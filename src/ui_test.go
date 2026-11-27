@@ -14,6 +14,7 @@ import (
 	"strings"
 	"sync/atomic"
 	"testing"
+	"time"
 	"unicode/utf8"
 
 	"github.com/creack/pty"
@@ -309,8 +310,7 @@ func TestInteractiveAutomaticUpdate(t *testing.T) {
 			a := testApp(t)
 			preparedTools(t, a)
 			addSession(t, a, "work")
-			original := []byte("original fixture executable")
-			mustWrite(t, filepath.Join(a.root, "commander"), original)
+			original := installUpdateWorker(t, a.root)
 			mustWrite(t, filepath.Join(a.root, "AGENTS.md"), []byte("outdated instructions\n"))
 			memory := "* Keep explanations simple.\n"
 			mustWrite(t, filepath.Join(a.root, "MEMORY.md"), []byte(memory))
@@ -328,10 +328,21 @@ func TestInteractiveAutomaticUpdate(t *testing.T) {
 				sum = sha256.Sum256([]byte("different fixture"))
 			}
 			var checks, installs atomic.Int32
+			release := make(chan struct{})
+			started := make(chan struct{}, 1)
 			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 				switch r.URL.Path {
 				case "/SHA256SUMS":
 					checks.Add(1)
+					select {
+					case started <- struct{}{}:
+					default:
+					}
+					select {
+					case <-release:
+					case <-r.Context().Done():
+						return
+					}
 					fmt.Fprintf(w, "%x  %s\n", sum, releaseAsset)
 				case "/" + releaseAsset:
 					w.Write(binary)
@@ -355,14 +366,34 @@ func TestInteractiveAutomaticUpdate(t *testing.T) {
 					t.Fatal("unexpected menu item", unwanted)
 				}
 			}
-			if !valid && !strings.Contains(s.output, "checksum did not match") {
-				t.Fatal("failed update was not reported", s.output)
+			select {
+			case <-started:
+			case <-time.After(4 * time.Second):
+				t.Fatal("update worker did not contact the release server")
+			}
+			other := openUI(t, a.root)
+			other.wait(t, "[q] quit")
+			other.send(t, "q")
+			if err := other.command.Wait(); err != nil {
+				t.Fatal(err)
 			}
 			s.send(t, "q")
 			if err := s.command.Wait(); err != nil {
 				t.Fatal(err)
 			}
+			close(release)
+			waitUpdateWorker(t, a.root)
 			after, err := os.ReadFile(filepath.Join(a.root, "commander"))
+			if err != nil || !bytes.Equal(after, original) {
+				t.Fatal("worker replaced the running version", err)
+			}
+			s = openUI(t, a.root)
+			s.wait(t, "[q] quit")
+			s.send(t, "q")
+			if err := s.command.Wait(); err != nil {
+				t.Fatal(err)
+			}
+			after, err = os.ReadFile(filepath.Join(a.root, "commander"))
 			want := original
 			if valid {
 				want = binary

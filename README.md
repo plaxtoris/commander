@@ -41,8 +41,13 @@ chmod +x commander && ./commander
 - **Edit.** Connect more accounts or change the scope. Choose a GitHub login
   per repository or organization when several can reach it. Changes save
   immediately. Press `r` in the editor to rename the session.
-- **Startup.** Commander updates the installed tools and checks session accounts
-  in the background. Press `l` on the home screen to jump to a problem account.
+- **Startup.** The menu opens immediately. Once an hour while Commander is open,
+  one window checks for updates on behalf of the whole installation. Downloads
+  finish in the background even if you close the menu. The next normal launch
+  activates a verified Commander release before showing the menu. Open chats
+  keep running. Use `commander update` to check and apply a release immediately.
+- **Accounts.** Commander checks session accounts in the background. Press
+  `l` on the home screen to jump to a problem account.
   Its detail lists the sessions using it. Press enter to sign in again for a
   rejected login or retry an inconclusive check. For a missing provider account
   with no direct reconnect, enter opens the session editor. Press `c` on the
@@ -57,7 +62,8 @@ chmod +x commander && ./commander
   After importing a Claude subscription on a different machine, sign in again
   through Claude Code.
 - **Portable.** Commander installs the official CLIs on demand in its tools
-  directory and checks for updates on startup. Pi lives in `tools/pi/`.
+  directory. The background check also refreshes installed tools. Active agent
+  updates wait until the agent is idle. Pi lives in `tools/pi/`.
 
 Linux and WSL on x86_64 and aarch64 (arm64). Project containers need Docker Engine
 or Docker Desktop.
@@ -112,7 +118,7 @@ for recovery. Session command wrappers are shared by all sessions.
 Open this repository in its development container and run `make test` and
 `make build`, which writes one binary per machine to `dist/`. Run
 `cd dist && ./commander` to try the build with its own sessions and logins.
-Installed tools update on startup. Rebuild to update Commander itself.
+Installed tools update in the background. Rebuild to update Commander itself.
 The source lives in `src/`. Agent guidance comes from `AGENTS.template.md`,
 the command reference from `commander.go` and tool pins from `tools.go`.
 Use synthetic login fixtures for tests.

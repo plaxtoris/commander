@@ -290,6 +290,8 @@ func (a *app) command(args []string) error {
 		}
 		a.cleanupAfterUpdate()
 		return a.refreshTools()
+	case "update-check":
+		return a.backgroundUpdate()
 	case "export", "import":
 		return a.transfer(args)
 	default:
@@ -322,7 +324,7 @@ func (a *app) ensure() error {
 		if name == "AGENTS.md" {
 			data = []byte(agentInstructions)
 		} else if name == ".gitignore" {
-			data = []byte("/.secrets/\n/.sessions/\n/tools/\n/workspaces/\n/MEMORY.md\n/commander\n/*.zip\n")
+			data = []byte("/.secrets/\n/.sessions/\n/tools/\n/workspaces/\n/MEMORY.md\n/commander\n/.update-*/\n/*.zip\n")
 		}
 		file, err := os.OpenFile(filepath.Join(a.root, name), os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0644)
 		if os.IsExist(err) {
