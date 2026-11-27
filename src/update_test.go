@@ -168,6 +168,16 @@ func TestStagedReleaseAcrossChecks(t *testing.T) {
 					t.Fatal("accepted damaged release")
 				}
 			case "replaced":
+				// Moving the installation to the other supported architecture
+				// also leaves a differently named asset in the pending directory.
+				other := "commander-aarch64"
+				if other == releaseAsset {
+					other = "commander-x86_64"
+				}
+				dir := filepath.Join(a.root, pendingRelease)
+				if err := os.Rename(filepath.Join(dir, releaseAsset), filepath.Join(dir, other)); err != nil {
+					t.Fatal(err)
+				}
 				original = []byte("installed separately")
 				mustWrite(t, destination, original)
 				if applied, err := a.applyPendingRelease(); applied || err != nil {

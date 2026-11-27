@@ -543,8 +543,9 @@ func (a *app) clearPendingRelease() error {
 	if err := noSymlinks(a.root, dir); err != nil {
 		return err
 	}
-	for _, path := range []string{filepath.Join(dir, releaseAsset), filepath.Join(dir, "checksums"), filepath.Join(dir, "SHA256SUMS"), dir} {
-		if err := os.Remove(path); err != nil && !os.IsNotExist(err) {
+	// A portable installation can still hold a download for its former machine.
+	for _, name := range []string{"commander-x86_64", "commander-aarch64", "checksums", "SHA256SUMS", ""} {
+		if err := os.Remove(filepath.Join(dir, name)); err != nil && !os.IsNotExist(err) {
 			return err
 		}
 	}
