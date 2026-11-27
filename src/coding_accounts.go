@@ -450,7 +450,7 @@ func (a *app) pickCodingAccount(sessionName string) (member, error) {
 }
 
 // Codex follows the auth.json link when replacing refreshed credentials. Its
-// native locks must also refer to the same account across fresh chat homes.
+// native locks must also refer to the same account across session profiles.
 func (a *app) linkCodexLogin(m member, home string) error {
 	dir, err := a.codingDir(m)
 	if err != nil {
@@ -466,8 +466,15 @@ func (a *app) linkCodexLogin(m member, home string) error {
 				return errors.New("codex login missing; reconnect it in edit")
 			}
 		}
-		if err = os.Symlink(target, filepath.Join(home, name)); err != nil {
+		link := filepath.Join(home, name)
+		relative, err := filepath.Rel(home, target)
+		if err != nil {
 			return err
+		}
+		if err = os.Symlink(relative, link); err != nil {
+			if existing, readErr := os.Readlink(link); !os.IsExist(err) || readErr != nil || existing != relative {
+				return err
+			}
 		}
 	}
 	return nil

@@ -250,8 +250,6 @@ func (a *app) runAgent(m member, args []string) error {
 		return err
 	}
 	defer unlock()
-	// Codex requires a private home outside the system temp directory for
-	// its command aliases. Use the same private run area as scoped tools.
 	home, err := a.privateRuntimeDir()
 	if err != nil {
 		return err
@@ -268,14 +266,23 @@ func (a *app) runAgent(m member, args []string) error {
 	}
 	agent := agents[m.Service]
 	config := configs[agent]
-	cmd, err := a.codingCommand(m, cwd, home, args, config)
+	profile := home
+	if agent == "codex" {
+		dir, err := a.openCodexProfile(m, config)
+		if err != nil {
+			return err
+		}
+		defer dir.Close()
+		profile = dir.Name()
+	}
+	cmd, err := a.codingCommand(m, cwd, home, profile, args, config)
 	if err != nil {
 		return err
 	}
 	path := filepath.Join(home, "settings.json")
 	switch agent {
 	case "codex":
-		path = filepath.Join(home, "config.toml")
+		path = filepath.Join(profile, "config.toml")
 	case "claude":
 		for _, env := range cmd.Env {
 			if dir, ok := strings.CutPrefix(env, "CLAUDE_CONFIG_DIR="); ok {
@@ -287,6 +294,11 @@ func (a *app) runAgent(m member, args []string) error {
 	before, err := a.readNativeSettings(path)
 	if err != nil {
 		return err
+	}
+	if agent == "codex" {
+		// An overlapping chat may still have an older settings file open.
+		// Compare against the settings this process actually started with.
+		config = before
 	}
 	cmd.Stdin, cmd.Stdout, cmd.Stderr = a.in, a.out, a.errOut
 	// Both processes share the foreground terminal. Let the native agent
@@ -383,25 +395,67 @@ func applyClaudeSettings(shared, before, after string) (string, error) {
 	return string(encode(settings)), nil
 }
 
-func (a *app) codingCommand(m member, cwd, home string, extra []string, config string) (*exec.Cmd, error) {
-	profile := home
+// Codex indexes conversations by their absolute rollout paths. Keep its native
+// profile at a stable path while each process gets its own temporary shell home.
+func (a *app) openCodexProfile(m member, config string) (*os.File, error) {
+	dir, err := a.sessionPath(a.session.ID)
+	if err != nil {
+		return nil, err
+	}
+	if !codingLabel.MatchString(m.selector()) {
+		return nil, errFormat
+	}
+	dir = filepath.Join(dir, "codex", m.selector())
+	if err = noSymlinks(a.root, dir); err != nil {
+		return nil, err
+	}
+	if err = os.MkdirAll(dir, 0700); err != nil {
+		return nil, err
+	}
+	profile, err := os.Open(dir)
+	if err != nil {
+		return nil, err
+	}
+	// Only the first process refreshes the shared settings. Another launch
+	// must not overwrite preferences being edited in an open chat.
+	fd := int(profile.Fd())
+	err = syscall.Flock(fd, syscall.LOCK_EX|syscall.LOCK_NB)
+	if err == nil {
+		path := filepath.Join(dir, "config.toml")
+		if config == "" {
+			err = os.Remove(path)
+			if os.IsNotExist(err) {
+				err = nil
+			}
+		} else {
+			err = atomicWrite(path, []byte(config), 0600)
+		}
+	} else if errors.Is(err, syscall.EWOULDBLOCK) {
+		err = nil
+	}
+	if err == nil {
+		err = syscall.Flock(fd, syscall.LOCK_SH)
+	}
+	if err != nil {
+		profile.Close()
+		return nil, err
+	}
+	return profile, nil
+}
+
+func (a *app) codingCommand(m member, cwd, home, profile string, extra []string, config string) (*exec.Cmd, error) {
 	context := a.codingContext(cwd)
 	var args []string
 	var key string
 	switch m.Service {
 	case "codex":
-		if config != "" {
-			if err := atomicWrite(filepath.Join(home, "config.toml"), []byte(config), 0600); err != nil {
-				return nil, err
-			}
-		}
-		if err := a.linkCodexLogin(m, home); err != nil {
+		if err := a.linkCodexLogin(m, profile); err != nil {
 			return nil, err
 		}
-		if err := atomicWrite(filepath.Join(home, "AGENTS.md"), []byte(context+"\n"), 0600); err != nil {
+		if err := atomicWrite(filepath.Join(profile, "AGENTS.md"), []byte(context+"\n"), 0600); err != nil {
 			return nil, err
 		}
-		args = []string{"--dangerously-bypass-approvals-and-sandbox", "-c", `cli_auth_credentials_store="file"`}
+		args = []string{"--dangerously-bypass-approvals-and-sandbox", "--no-daemon", "-c", `cli_auth_credentials_store="file"`}
 	case "claude":
 		record, native, err := a.readClaudeAccount(m)
 		if err != nil {
@@ -421,7 +475,9 @@ func (a *app) codingCommand(m member, cwd, home string, extra []string, config s
 		if err != nil {
 			return nil, err
 		}
-		settings["cleanupPeriodDays"] = json.RawMessage("1")
+		if _, set := settings["cleanupPeriodDays"]; !set {
+			settings["cleanupPeriodDays"] = json.RawMessage("36500")
+		}
 		settings["autoMemoryEnabled"] = json.RawMessage("false")
 		args = []string{"--dangerously-skip-permissions"}
 		if os.Geteuid() == 0 {
@@ -498,6 +554,9 @@ func (a *app) codingCommand(m member, cwd, home string, extra []string, config s
 		return nil, err
 	}
 	cmd.Env = a.codingEnv(m, profile, home)
+	if m.Service == "claude" {
+		cmd.Env = append(cmd.Env, "CLAUDE_CODE_PROJECT_DIR_NAME="+a.session.ID)
+	}
 	if key != "" {
 		cmd.Env = append(cmd.Env, key)
 	}

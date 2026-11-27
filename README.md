@@ -5,8 +5,10 @@ One folder for your accounts, tools and repositories, ready for any coding agent
 Choose a session and press enter to open Codex, Claude Code or Pi in its
 workspace. Each session defines the accounts and repositories available to the
 agent. Agents can read any public Git repository, such as Claude plugins, but
-push only to the session repositories. Every launch starts a fresh conversation
-and Claude removes transcripts after one day.
+push only to the session repositories. Each launch opens a new chat. In Codex
+or Claude Code, use `/resume` to reopen a local conversation from the same
+Commander session and agent account, even after a reboot. If you renamed the
+session, use `codex resume --all` in its shell to include the old workspace.
 
 ```sh
 mkdir -p ~/commander && cd ~/commander
@@ -76,6 +78,10 @@ conflict. Logins are selected from the current session. Claude loads its
 shared user preferences alongside project settings. To adopt settings from
 an existing Claude account profile, import its user settings with
 `commander config claude FILE`.
+
+Claude keeps inactive conversations for 36,500 days by default. Set
+`cleanupPeriodDays` in its shared settings to choose a shorter retention period.
+Chat history stays on this machine when you export a session.
 
 For Pi, set `defaultModel` to a model ID.
 Commander uses the first model from the selected endpoint if it cannot find that

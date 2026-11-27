@@ -67,23 +67,30 @@ func TestSharedAgentConfig(t *testing.T) {
 		writers.Go(func() {
 			scoped := *a
 			scoped.session = &s
-			cmd, err := scoped.codingCommand(codex, home, home, nil, configs["codex"])
+			dir, err := scoped.openCodexProfile(codex, configs["codex"])
 			if err != nil {
 				t.Error(err)
 				return
 			}
-			data, err := os.ReadFile(filepath.Join(home, "config.toml"))
+			defer dir.Close()
+			profile := dir.Name()
+			cmd, err := scoped.codingCommand(codex, home, home, profile, nil, configs["codex"])
+			if err != nil {
+				t.Error(err)
+				return
+			}
+			data, err := os.ReadFile(filepath.Join(profile, "config.toml"))
 			if err != nil || string(data) != configs["codex"] || !contains(cmd.Env, "COMMANDER_SESSION="+s.ID) {
 				t.Errorf("incorrect codex settings or scope: %v", err)
 			}
-			cmd, err = scoped.codingCommand(claude, home, home, nil, configs["claude"])
+			cmd, err = scoped.codingCommand(claude, home, home, home, nil, configs["claude"])
 			if err != nil {
 				t.Error(err)
 				return
 			}
 			var settings object
 			err = json.Unmarshal([]byte(argument(cmd.Args, "--settings")), &settings)
-			if err != nil || settings["model"] != "shared-model" || settings["autoMemoryEnabled"] != false || settings["cleanupPeriodDays"] != float64(1) || argument(cmd.Args, "--setting-sources") != "project,local" {
+			if err != nil || settings["model"] != "shared-model" || settings["autoMemoryEnabled"] != false || settings["cleanupPeriodDays"] != float64(30) || !contains(cmd.Env, "CLAUDE_CODE_PROJECT_DIR_NAME="+s.ID) || argument(cmd.Args, "--setting-sources") != "project,local" {
 				t.Errorf("incorrect claude settings: %v, %v", settings, err)
 			}
 		})
@@ -215,6 +222,41 @@ fi`, tc.agent, tc.settings, tc.path, tc.path, tc.path, verify)
 	}
 }
 
+func TestConcurrentCodexProfiles(t *testing.T) {
+	a := testApp(t)
+	m := member{Service: "codex", Account: "work", Key: jsonKey("work")}
+	useSession(t, a, "first", m)
+	open := func(config string) *os.File {
+		t.Helper()
+		dir, err := a.openCodexProfile(m, config)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return dir
+	}
+	first := open("model = 'first'")
+	path := filepath.Join(first.Name(), "config.toml")
+	edit := "model = 'edited'"
+	mustWrite(t, path, []byte(edit))
+	overlap := open("model = 'shared'")
+	if got, err := os.ReadFile(path); err != nil || string(got) != edit || first.Name() != overlap.Name() {
+		t.Fatal("overlapping launches must share history and preserve live edits", err)
+	}
+	first.Close()
+	overlap.Close()
+	reopened := open("")
+	defer reopened.Close()
+	if _, err := os.Stat(path); !os.IsNotExist(err) {
+		t.Fatal("closed profile retained cleared shared settings", err)
+	}
+	useSession(t, a, "second", m)
+	other := open("")
+	defer other.Close()
+	if other.Name() == reopened.Name() {
+		t.Fatal("different sessions shared a Codex profile")
+	}
+}
+
 func TestNativeSettingsKeepNewerSharedConfig(t *testing.T) {
 	a := testApp(t)
 	old := "model = 'old'\n"
@@ -260,8 +302,7 @@ func TestCodingAccountIsolationAndArchive(t *testing.T) {
 	if _, err = target.findSession(s.Name); err != nil {
 		t.Fatal(err)
 	}
-	// Parallel sessions sharing a login must get fresh histories and keep a
-	// credential that was refreshed or reconnected by another session.
+	// Parallel sessions must see credentials refreshed by another session.
 	first, second := t.TempDir(), t.TempDir()
 	for _, home := range []string{first, second} {
 		if err := a.linkCodexLogin(m, home); err != nil {
@@ -356,12 +397,18 @@ func TestClaudeSubscriptionStaysInNativeClient(t *testing.T) {
 	bin := filepath.Join(a.packageDir("claude"), packageEntries["claude"])
 	executableFixture(t, bin, "exit 0")
 	temp := t.TempDir()
-	cmd, err := a.codingCommand(m, temp, temp, nil, "")
+	cmd, err := a.codingCommand(m, temp, temp, temp, nil, "")
 	if err != nil || cmd.Path != bin || !contains(cmd.Env, "CLAUDE_CONFIG_DIR="+filepath.Join(dir, "native")) || os.Geteuid() == 0 && argument(cmd.Args, "--permission-mode") != "auto" || os.Geteuid() != 0 && !contains(cmd.Args, "--dangerously-skip-permissions") {
 		t.Fatal("subscription must launch its own native client", err)
 	}
+	var settings struct {
+		CleanupPeriodDays int `json:"cleanupPeriodDays"`
+	}
+	if err := json.Unmarshal([]byte(argument(cmd.Args, "--settings")), &settings); err != nil || settings.CleanupPeriodDays != 36500 {
+		t.Fatal("unexpected default transcript retention", settings, err)
+	}
 	mustWrite(t, marker, encode(claudeAccount{Type: "api", Key: "test-key"}))
-	cmd, err = a.codingCommand(m, temp, temp, nil, "")
+	cmd, err = a.codingCommand(m, temp, temp, temp, nil, "")
 	if err != nil || cmd.Path != bin || !contains(cmd.Env, "ANTHROPIC_API_KEY=test-key") || !contains(cmd.Env, "CLAUDE_CONFIG_DIR="+filepath.Join(dir, "api")) {
 		t.Fatal("API key must launch an isolated native client", err)
 	}
@@ -387,9 +434,14 @@ test -t 0 && test -t 1 && test -t 2
 test "$1" = "--dangerously-bypass-approvals-and-sandbox"
 test "$PWD" = "$COMMANDER_HOME/workspaces/demo"
 test -s "$CODEX_HOME/AGENTS.md"
-test ! -e "$CODEX_HOME/history"
-touch "$CODEX_HOME/history"
-printf 'native login %s\n' "$(basename "$(dirname "$(readlink "$CODEX_HOME/auth.json")")")"
+login=$(basename "$(dirname "$(readlink "$CODEX_HOME/auth.json")")")
+if test -e "$CODEX_HOME/sessions/saved"; then
+	test "$(cat "$CODEX_HOME/sessions/saved")" = "$login"
+	printf 'previous chat %s\n' "$login"
+fi
+mkdir -p "$CODEX_HOME/sessions"
+printf '%s\n' "$login" > "$CODEX_HOME/sessions/saved"
+printf 'native login %s\n' "$login"
 read -r line
 `
 	mustWrite(t, filepath.Join(a.packageDir("codex"), packageEntries["codex"]), []byte(fixture))
@@ -404,8 +456,9 @@ read -r line
 	ui.wait(t, "native login first")
 	ui.send(t, "exit\n")
 	ui.wait(t, "[q] quit")
-	// A single selected account launches immediately, even with other saved logins.
+	// A single selected account launches immediately and can resume its chat.
 	ui.send(t, "\r")
+	ui.wait(t, "previous chat first")
 	ui.wait(t, "native login first")
 	ui.send(t, "exit\n")
 	ui.wait(t, "[q] quit")
@@ -476,7 +529,7 @@ func TestExistingEndpointRunsInPi(t *testing.T) {
 	}
 	executableFixture(t, filepath.Join(a.packageDir("node"), "bin/node"), "exit 0")
 	tmp := t.TempDir()
-	cmd, err := a.codingCommand(m, tmp, tmp, nil, "")
+	cmd, err := a.codingCommand(m, tmp, tmp, tmp, nil, "")
 	if err != nil || !contains(cmd.Args, "--approve") || !contains(cmd.Args, "--no-session") || argument(cmd.Args, "--provider") != "openai-compatible" || argument(cmd.Args, "--model") != "test-model" || !contains(cmd.Env, "COMMANDER_ENDPOINT_KEY=fixture") {
 		t.Fatal("incorrect pi command", err)
 	}
@@ -493,7 +546,7 @@ func TestExistingEndpointRunsInPi(t *testing.T) {
 			t.Fatal(err)
 		}
 		home := t.TempDir()
-		cmd, err = a.codingCommand(m, tmp, home, nil, settings)
+		cmd, err = a.codingCommand(m, tmp, home, home, nil, settings)
 		if err != nil || argument(cmd.Args, "--model") != tc.want {
 			t.Fatalf("configured %s, want %s: %v", tc.configured, tc.want, err)
 		}
