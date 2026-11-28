@@ -10,7 +10,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"regexp"
-	"sort"
+	"strconv"
 	"strings"
 	"syscall"
 	"time"
@@ -198,37 +198,141 @@ func (e endpointLogin) valid() bool {
 	u, err := url.Parse(e.URL)
 	return err == nil && (u.Scheme == "https" || u.Scheme == "http") && u.Hostname() != "" && u.User == nil && u.RawQuery == "" && u.Fragment == "" && printable(e.URL, 2048) && printable(e.Key, 8192)
 }
-func (e endpointLogin) models() ([]string, error) {
-	auth := ""
-	if e.Key != "" {
-		auth = "Bearer " + e.Key
+
+func (e endpointLogin) authorization() string {
+	if e.Key == "" {
+		return ""
 	}
-	data, err := requestService("GET", strings.TrimRight(e.URL, "/")+"/models", auth, nil)
+	return "Bearer " + e.Key
+}
+
+type endpointModel struct {
+	ID            string `json:"id"`
+	Name          string `json:"name"`
+	Reasoning     bool   `json:"reasoning"`
+	ContextWindow int    `json:"contextWindow,omitempty"`
+	MaxTokens     int    `json:"maxTokens,omitempty"`
+}
+
+// llama.cpp reports the active slot in meta.n_ctx. An unloaded router preset
+// publishes its arguments while context_length can still be the training limit.
+func llamaSlotContext(runtime int, args []string) int {
+	if runtime > 0 {
+		return runtime
+	}
+	if limit := tokenArgument(args, "--kv-unified-per-slot"); limit > 0 {
+		return limit
+	}
+	ctx := tokenArgument(args, "--ctx-size", "-c", "-ctx")
+	slots := tokenArgument(args, "--parallel", "-np")
+	if slots > 1 && !contains(args, "--kv-unified") && !contains(args, "-kvu") {
+		return ctx / slots
+	}
+	return ctx
+}
+
+func tokenArgument(args []string, flags ...string) int {
+	value, err := strconv.ParseInt(argument(args, flags...), 10, 32)
+	if err != nil || value < 1 {
+		return 0
+	}
+	return int(value)
+}
+
+func (e endpointLogin) models() (map[string]*endpointModel, error) {
+	data, err := requestService("GET", strings.TrimRight(e.URL, "/")+"/models", e.authorization(), nil)
 	if err != nil {
 		return nil, err
 	}
-	var response struct {
-		Data []struct {
-			ID string `json:"id"`
-		} `json:"data"`
-	}
+	var response struct{ Data []json.RawMessage }
 	if json.Unmarshal(data, &response) != nil {
 		return nil, errors.New("invalid model list")
 	}
-	var ids []string
-	seen := map[string]bool{}
-	for _, m := range response.Data {
-		if m.ID != "" && printable(m.ID, 256) && !seen[m.ID] {
-			ids = append(ids, m.ID)
-			seen[m.ID] = true
+	models := map[string]*endpointModel{}
+	for _, entry := range response.Data {
+		var row struct {
+			ID          string
+			Owner       string `json:"owned_by"`
+			Context     int    `json:"context_length"`
+			MaxModelLen int    `json:"max_model_len"`
+			Output      int    `json:"max_output_tokens"`
+			Top         struct {
+				Context int `json:"context_length"`
+				Output  int `json:"max_completion_tokens"`
+			} `json:"top_provider"`
+			Meta struct {
+				Context int `json:"n_ctx"`
+			}
+			Status struct{ Args []string }
 		}
+		// Optional vendor metadata can be absent or malformed on a usable endpoint.
+		_ = json.Unmarshal(entry, &row)
+		if row.ID == "" || !printable(row.ID, 256) || models[row.ID] != nil {
+			continue
+		}
+		m := &endpointModel{ID: row.ID, Name: row.ID, ContextWindow: max(row.Context, 0), MaxTokens: max(row.Output, 0)}
+		if row.Top.Context > 0 {
+			m.ContextWindow = row.Top.Context
+		} else if row.MaxModelLen > 0 {
+			m.ContextWindow = row.MaxModelLen
+		}
+		if row.Top.Output > 0 {
+			m.MaxTokens = row.Top.Output
+		}
+		if row.Owner == "llamacpp" {
+			m.ContextWindow = llamaSlotContext(row.Meta.Context, row.Status.Args)
+			if m.MaxTokens == 0 {
+				m.MaxTokens = tokenArgument(row.Status.Args, "--n-predict", "--predict", "-n")
+				if m.MaxTokens == 0 {
+					m.MaxTokens = m.ContextWindow
+				}
+			}
+		}
+		models[m.ID] = m
 	}
-	if len(ids) == 0 {
+	if len(models) == 0 {
 		return nil, errors.New("endpoint has no models")
 	}
-	sort.Strings(ids)
-	return ids, nil
+	return models, nil
 }
+
+// LiteLLM exposes per-model capabilities when this key can read model info.
+// Model selection still works on endpoints implementing only the OpenAI API.
+func (e endpointLogin) applyModelInfo(models map[string]*endpointModel) {
+	ctx, cancel := context.WithTimeout(context.Background(), 750*time.Millisecond)
+	defer cancel()
+	data, err := requestServiceContext(ctx, "GET", strings.TrimSuffix(strings.TrimRight(e.URL, "/"), "/v1")+"/model/info", e.authorization(), nil)
+	if err != nil {
+		return
+	}
+	var info struct {
+		Data []struct {
+			Name string `json:"model_name"`
+			Info struct {
+				Context   int      `json:"max_input_tokens"`
+				Output    int      `json:"max_output_tokens"`
+				Reasoning bool     `json:"supports_reasoning"`
+				Params    []string `json:"supported_openai_params"`
+			} `json:"model_info"`
+		}
+	}
+	var fieldError *json.UnmarshalTypeError
+	if err := json.Unmarshal(data, &info); err != nil && !errors.As(err, &fieldError) {
+		return
+	}
+	for _, m := range info.Data {
+		if model := models[m.Name]; model != nil {
+			model.Reasoning = m.Info.Reasoning || contains(m.Info.Params, "reasoning_effort")
+			if m.Info.Context > 0 && (model.ContextWindow == 0 || m.Info.Context < model.ContextWindow) {
+				model.ContextWindow = m.Info.Context
+			}
+			if m.Info.Output > 0 && (model.MaxTokens == 0 || m.Info.Output < model.MaxTokens) {
+				model.MaxTokens = m.Info.Output
+			}
+		}
+	}
+}
+
 func (a *app) connectCoding(service, label string) (member, error) {
 	reconnect := label != ""
 	var err error

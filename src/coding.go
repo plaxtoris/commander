@@ -2,19 +2,19 @@ package main
 
 import (
 	"bytes"
-	"context"
 	_ "embed"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
+	"maps"
 	"os"
 	"os/exec"
 	"os/signal"
 	"path/filepath"
+	"slices"
 	"strings"
 	"syscall"
-	"time"
 	"unicode/utf8"
 
 	"github.com/pelletier/go-toml/v2"
@@ -511,10 +511,11 @@ func (a *app) codingCommand(m member, cwd, home, profile string, extra []string,
 		if json.Unmarshal(data, &endpoint) != nil || !endpoint.valid() {
 			return nil, errors.New("invalid endpoint account")
 		}
-		ids, err := endpoint.models()
+		catalog, err := endpoint.models()
 		if err != nil {
 			return nil, err
 		}
+		ids := slices.Sorted(maps.Keys(catalog))
 		model := ids[0]
 		settings, err := agentSettings(config)
 		if err != nil {
@@ -555,10 +556,14 @@ func (a *app) codingCommand(m member, cwd, home, profile string, extra []string,
 		if err = atomicWrite(filepath.Join(home, "settings.json"), encode(settings), 0600); err != nil {
 			return nil, err
 		}
-		caps := endpoint.reasoning()
-		models := make([]object, 0, len(ids))
+		endpoint.applyModelInfo(catalog)
+		models := make([]*endpointModel, 0, len(ids))
 		for _, id := range ids {
-			models = append(models, object{"id": id, "name": id, "reasoning": caps[id]})
+			m := catalog[id]
+			if m.ContextWindow > 0 && m.MaxTokens > m.ContextWindow {
+				m.MaxTokens = m.ContextWindow
+			}
+			models = append(models, m)
 		}
 		const provider = "openai-compatible"
 		config := object{"api": "openai-completions", "baseUrl": endpoint.URL, "apiKey": "$COMMANDER_ENDPOINT_KEY", "models": models}
@@ -657,35 +662,4 @@ func (a *app) codingContext(cwd string) string {
 		scope = "Work only on repositories matching this selection: " + strings.Join(a.session.Repositories, ", ") + "."
 	}
 	return fmt.Sprintf("Commander session %q. Your workspace is %s. %s Follow %s and use %s --session %s for Commander commands.", a.session.Name, cwd, scope, filepath.Join(a.root, "AGENTS.md"), quote(filepath.Join(a.root, "commander")), quote(a.session.Name))
-}
-
-// LiteLLM exposes per-model capabilities when this key can read model info.
-// Model selection still works on endpoints implementing only the OpenAI API.
-func (e endpointLogin) reasoning() map[string]bool {
-	caps := map[string]bool{}
-	auth := ""
-	if e.Key != "" {
-		auth = "Bearer " + e.Key
-	}
-	ctx, cancel := context.WithTimeout(context.Background(), 750*time.Millisecond)
-	defer cancel()
-	data, err := requestServiceContext(ctx, "GET", strings.TrimSuffix(strings.TrimRight(e.URL, "/"), "/v1")+"/model/info", auth, nil)
-	if err != nil {
-		return caps
-	}
-	var info struct {
-		Data []struct {
-			Name string `json:"model_name"`
-			Info struct {
-				Reasoning bool     `json:"supports_reasoning"`
-				Params    []string `json:"supported_openai_params"`
-			} `json:"model_info"`
-		}
-	}
-	if json.Unmarshal(data, &info) == nil {
-		for _, m := range info.Data {
-			caps[m.Name] = m.Info.Reasoning || contains(m.Info.Params, "reasoning_effort")
-		}
-	}
-	return caps
 }

@@ -555,7 +555,15 @@ func TestExistingEndpointRunsInPi(t *testing.T) {
 		}
 		switch r.URL.Path {
 		case "/v1/models":
-			fmt.Fprint(w, `{"data":[{"id":"test-model"},{"id":"z-preferred"}]}`)
+			fmt.Fprint(w, `{"data":[
+				{"id":"z-preferred","owned_by":"llamacpp","context_length":262144,"status":{"args":["--ctx-size","32768","--parallel","1"]}},
+				{"id":"test-model","context_length":"unknown"},
+				{"id":"z-active","owned_by":"llamacpp","context_length":262144,"meta":{"n_ctx":8192},"status":{"args":["--ctx-size","16384","--n-predict","1024"]}},
+				{"id":"z-openrouter","context_length":200000,"top_provider":{"context_length":131072,"max_completion_tokens":32768}},
+				{"id":"z-proxy"}, {"id":"z-vllm","max_model_len":4096,"max_output_tokens":8192},
+				{"id":"z-preferred"}]}`)
+		case "/model/info":
+			fmt.Fprint(w, `{"data":[{"model_name":"z-proxy","model_info":{"supports_reasoning":true,"max_input_tokens":64000,"max_output_tokens":8000}}]}`)
 		default:
 			http.NotFound(w, r)
 		}
@@ -580,6 +588,23 @@ func TestExistingEndpointRunsInPi(t *testing.T) {
 	b, err := os.ReadFile(filepath.Join(tmp, "models.json"))
 	if err != nil || bytes.Contains(b, []byte("fixture")) || !bytes.Contains(b, []byte(server.URL)) {
 		t.Fatal("invalid pi profile", err)
+	}
+	var registry struct {
+		Providers map[string]struct{ Models []endpointModel }
+	}
+	if err := json.Unmarshal(b, &registry); err != nil {
+		t.Fatal(err)
+	}
+	wantModels := []endpointModel{
+		{ID: "test-model", Name: "test-model"},
+		{ID: "z-active", Name: "z-active", ContextWindow: 8192, MaxTokens: 1024},
+		{ID: "z-openrouter", Name: "z-openrouter", ContextWindow: 131072, MaxTokens: 32768},
+		{ID: "z-preferred", Name: "z-preferred", ContextWindow: 32768, MaxTokens: 32768},
+		{ID: "z-proxy", Name: "z-proxy", Reasoning: true, ContextWindow: 64000, MaxTokens: 8000},
+		{ID: "z-vllm", Name: "z-vllm", ContextWindow: 4096, MaxTokens: 4096},
+	}
+	if got := registry.Providers["openai-compatible"].Models; !reflect.DeepEqual(got, wantModels) {
+		t.Fatalf("discovered models = %+v, want %+v", got, wantModels)
 	}
 	for _, tc := range []struct{ configured, want string }{
 		{"z-preferred", "z-preferred"},
@@ -614,6 +639,26 @@ func TestExistingEndpointRunsInPi(t *testing.T) {
 		}
 	}
 
+}
+
+func TestLlamaSlotContext(t *testing.T) {
+	for _, tc := range []struct {
+		runtime int
+		flags   string
+		want    int
+	}{
+		{4096, "--ctx-size 8192 --parallel 2", 4096},
+		{0, "--ctx-size 8192 --parallel 2", 4096},
+		{0, "-c=8192 -np 2 --kv-unified", 8192},
+		{0, "--ctx-size 8192 --parallel 2 --kv-unified-per-slot 1024", 1024},
+		{0, "--ctx-size=32768", 32768},
+		{0, "--ctx-size auto", 0},
+		{0, "-c 9999999999999999999999999999", 0},
+	} {
+		if got := llamaSlotContext(tc.runtime, strings.Fields(tc.flags)); got != tc.want {
+			t.Errorf("runtime %d, %s: got %d, want %d", tc.runtime, tc.flags, got, tc.want)
+		}
+	}
 }
 
 func TestPiSelectionEvents(t *testing.T) {

@@ -95,6 +95,10 @@ Pi remembers the last model and thinking level you chose in each Commander
 session, separately for each endpoint. Changes take effect immediately for the
 next chat. For a new session or an unavailable model, Commander uses the
 shared `defaultModel` if available, then the first model from the endpoint.
+Commander reads context and output limits from the endpoint's model catalog and
+optional LiteLLM model information. For llama.cpp it uses the configured serving
+window even when a model is unloaded. Endpoints that publish only model names use
+Pi's default limits.
 Commander includes `pi-token-speed` in its release. Every new Pi chat shows
 tokens per second in the status bar during a reply and the average when it
 finishes. Use `/tps` in Pi to customize the display.
