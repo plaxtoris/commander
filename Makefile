@@ -6,9 +6,11 @@ test:
 	$(GO) test ./...
 
 # Each binary is named for the machine that uname -m prints.
-compile = CGO_ENABLED=0 GOOS=linux GOARCH=$(1) $(GO) build -trimpath -ldflags="-s -w -X main.build=$$(git rev-parse HEAD)" -o dist/commander-$(2) ./src
+compile = CGO_ENABLED=0 GOOS=linux GOARCH=$(1) $(GO) build -trimpath -ldflags="-s -w -X main.build=$$(git rev-parse HEAD) -X main.buildVersion=$(stamp)" -o dist/commander-$(2) ./src
 
+build: stamp := $(shell TZ=Europe/Berlin date -d "$${BUILD_STARTED_AT:-now}" +v.%Y.%m.%d_%H:%M)
 build:
+	@test -n "$(stamp)"
 	$(call compile,amd64,x86_64)
 	$(call compile,arm64,aarch64)
 	ln -sfn commander-$$(uname -m) dist/commander

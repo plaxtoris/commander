@@ -130,6 +130,25 @@ func heading(title string) uiLine {
 	return line
 }
 
+// Use the existing divider for the build stamp, leaving the controls their full width.
+func buildDivider(width int) uiLine {
+	label := buildVersion
+	if len(label) > width && strings.HasPrefix(label, "v.") && len(label) == len("v.2006.01.02_15:04") {
+		label = label[4:] // A short year keeps the date and time on narrow terminals.
+	}
+	if gap := width - len(label); gap > 0 {
+		label = strings.Repeat("─", gap-1) + " " + label
+	}
+	return uiLine{{label, "2"}}
+}
+
+func (a *app) clearHeading(title string) {
+	a.clear()
+	columns, _ := a.dimensions()
+	width := max(1, min(120, columns-4))
+	fmt.Fprint(a.out, "  ", a.renderLine(heading(title), width), "\r\n  ", a.renderLine(buildDivider(width), width), "\r\n")
+}
+
 // List draws a full height screen with the key hints at the bottom and
 // returns the pressed key with the selected row. It handles movement itself.
 // The cursor stays at the hints, so a prompt can replace them.
@@ -173,7 +192,7 @@ func (a *app) list(v view, at int) (string, int, error) {
 			}
 			body = append(body, append(line, content...))
 		}
-		top := []uiLine{heading(v.title), {{strings.Repeat("─", limit), "2"}}, {}}
+		top := []uiLine{heading(v.title), buildDivider(limit), {}}
 		if v.notice != "" {
 			tone := v.tone
 			if tone == "" {

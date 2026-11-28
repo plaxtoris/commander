@@ -30,6 +30,9 @@ const piTokenSpeedVersion = "0.13.1"
 //go:embed pi-token-speed-*.tgz
 var piTokenSpeed []byte
 
+//go:embed pi-selection.js
+var piSelectionExtension []byte
+
 type codingConfigs map[string]string
 
 func agentSettings(data string) (map[string]json.RawMessage, error) {
@@ -453,7 +456,7 @@ func (a *app) openCodexProfile(m member, config string) (*os.File, error) {
 func (a *app) codingCommand(m member, cwd, home, profile string, extra []string, config string) (*exec.Cmd, error) {
 	context := a.codingContext(cwd)
 	var args []string
-	var key string
+	var env []string
 	switch m.Service {
 	case "codex":
 		if err := a.linkCodexLogin(m, profile); err != nil {
@@ -476,7 +479,7 @@ func (a *app) codingCommand(m member, cwd, home, profile string, extra []string,
 		}
 		profile = native
 		if record.Type == "api" {
-			key = "ANTHROPIC_API_KEY=" + record.Key
+			env = append(env, "ANTHROPIC_API_KEY="+record.Key)
 		}
 		settings, err := agentSettings(config)
 		if err != nil {
@@ -521,6 +524,31 @@ func (a *app) codingCommand(m member, cwd, home, profile string, extra []string,
 		if json.Unmarshal(settings["defaultModel"], &preferred) == nil && contains(ids, preferred) {
 			model = preferred
 		}
+		sessionDir, err := a.sessionPath(a.session.ID)
+		if err != nil {
+			return nil, err
+		}
+		selectionPath := filepath.Join(sessionDir, "pi", m.selector()+".json")
+		raw, err := a.readNativeSettings(selectionPath)
+		if err != nil {
+			return nil, err
+		}
+		var last struct{ Model, Thinking string }
+		var thinking string
+		if json.Unmarshal([]byte(raw), &last) == nil && contains(ids, last.Model) {
+			model = last.Model
+			thinking = last.Thinking
+		}
+		if err = os.MkdirAll(filepath.Dir(selectionPath), 0700); err != nil {
+			return nil, err
+		}
+		extension := filepath.Join(home, "extensions", "commander-selection.js")
+		if err = os.MkdirAll(filepath.Dir(extension), 0700); err != nil {
+			return nil, err
+		}
+		if err = os.WriteFile(extension, piSelectionExtension, 0600); err != nil {
+			return nil, err
+		}
 		if err = installPiTokenSpeed(home, settings); err != nil {
 			return nil, err
 		}
@@ -552,8 +580,15 @@ func (a *app) codingCommand(m member, cwd, home, profile string, extra []string,
 		if endpoint.Key == "" {
 			endpoint.Key = "local"
 		}
-		key = "COMMANDER_ENDPOINT_KEY=" + endpoint.Key
+		env = append(env, "COMMANDER_ENDPOINT_KEY="+endpoint.Key, "COMMANDER_PI_SELECTION="+selectionPath)
 		args = []string{"--approve", "--no-session", "--provider", provider, "--model", model, "--models", provider + "/*", "--append-system-prompt", context}
+		requestedModel, requestedThinking := argument(extra, "--model"), argument(extra, "--thinking")
+		if requestedModel != "" || requestedThinking != "" {
+			env = append(env, "COMMANDER_PI_EXPLICIT_SELECTION=1")
+		}
+		if requestedThinking == "" && (requestedModel == "" || requestedModel == model || requestedModel == provider+"/"+model) && thinking != "" && printable(thinking, 32) {
+			args = append(args, "--thinking", thinking)
+		}
 	default:
 		return nil, errors.New("unknown coding account")
 	}
@@ -561,12 +596,9 @@ func (a *app) codingCommand(m member, cwd, home, profile string, extra []string,
 	if err != nil {
 		return nil, err
 	}
-	cmd.Env = a.codingEnv(m, profile, home)
+	cmd.Env = append(a.codingEnv(m, profile, home), env...)
 	if m.Service == "claude" {
 		cmd.Env = append(cmd.Env, "CLAUDE_CODE_PROJECT_DIR_NAME="+a.session.ID)
-	}
-	if key != "" {
-		cmd.Env = append(cmd.Env, key)
 	}
 	cmd.Dir = cwd
 	return cmd, nil

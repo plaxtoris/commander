@@ -12,6 +12,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"reflect"
 	"strings"
@@ -600,6 +601,55 @@ func TestExistingEndpointRunsInPi(t *testing.T) {
 		if err != nil || json.Unmarshal(raw, &got) != nil || !reflect.DeepEqual(got, want) {
 			t.Fatalf("pi settings = %s: %v", raw, err)
 		}
+	}
+	choicePath := filepath.Join(a.root, ".sessions", s.ID, "pi", m.selector()+".json")
+	for _, tc := range []struct{ saved, model, thinking string }{
+		{`{"model":"test-model","thinking":"high"}`, "test-model", "high"},
+		{`{"model":"unavailable","thinking":"high"}`, "z-preferred", ""},
+	} {
+		mustWrite(t, choicePath, []byte(tc.saved))
+		home := t.TempDir()
+		cmd, err := a.codingCommand(m, tmp, home, home, nil, `{"defaultModel":"z-preferred"}`)
+		if err != nil || argument(cmd.Args, "--model") != tc.model || argument(cmd.Args, "--thinking") != tc.thinking || !contains(cmd.Env, "COMMANDER_PI_SELECTION="+choicePath) {
+			t.Fatalf("saved selection %s: %v", tc.saved, err)
+		}
+	}
+
+}
+
+func TestPiSelectionEvents(t *testing.T) {
+	node, err := exec.LookPath("node")
+	if err != nil {
+		t.Skip("Pi uses Node to load extensions")
+	}
+	dir := t.TempDir()
+	path := filepath.Join(dir, "choice.json")
+	mustWrite(t, filepath.Join(dir, "selection.mjs"), piSelectionExtension)
+	const script = `
+import register from "./selection.mjs";
+import { readFileSync } from "node:fs";
+import assert from "node:assert/strict";
+const handlers = {};
+let thinking = "medium";
+register({ on: (name, handler) => handlers[name] = handler, getThinkingLevel: () => thinking });
+const ctx = { model: { provider: "openai-compatible", id: "first" } };
+const saved = () => JSON.parse(readFileSync(process.env.COMMANDER_PI_SELECTION, "utf8"));
+handlers.session_start({ reason: "startup" }, ctx);
+assert.deepEqual(saved(), { model: "first", thinking: "medium" });
+ctx.model.id = "second";
+handlers.model_select({}, ctx);
+assert.equal(saved().model, "second");
+thinking = "low";
+handlers.thinking_level_select({}, ctx);
+ctx.model.id = "stale";
+handlers.session_start({ reason: "reload" }, ctx);
+handlers.session_start({ reason: "startup" }, ctx);
+assert.deepEqual(saved(), { model: "second", thinking: "low" });`
+	cmd := exec.Command(node, "--input-type=module", "-e", script)
+	cmd.Dir = dir
+	cmd.Env = []string{"COMMANDER_PI_SELECTION=" + path}
+	if out, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("Pi selection events: %s: %v", out, err)
 	}
 }
 

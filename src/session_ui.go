@@ -242,8 +242,8 @@ func (a *app) createSession() (session, error) {
 
 func (a *app) loading(title string) {
 	if a.terminal() {
-		a.clear()
-		a.out.Write([]byte("  " + a.renderLine(heading(title), 120) + "\r\n\r\n  " + a.style("loading accounts…", "2") + "\r\n"))
+		a.clearHeading(title)
+		a.out.Write([]byte("  " + a.style("loading accounts…", "2") + "\r\n"))
 	}
 }
 
@@ -719,8 +719,7 @@ func (a *app) addLogin(agentsOnly bool) ([]member, error) {
 		return nil, err
 	}
 	service, mode, _ := strings.Cut(action, " ")
-	a.clear()
-	a.out.Write([]byte("  " + a.renderLine(heading(serviceName(service)), 120) + "\n\n"))
+	a.clearHeading(serviceName(service))
 	unlock, err := a.lock("native")
 	if err != nil {
 		return nil, err
@@ -776,7 +775,7 @@ func (r account) canRepair() bool {
 }
 
 func (a *app) reconnect(m member) error {
-	a.clear()
+	a.clearHeading(serviceName(m.Service))
 	if m.Service == "github" {
 		return a.reconnectGitHub(m)
 	}

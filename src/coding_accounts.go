@@ -445,7 +445,7 @@ func (a *app) pickCodingAccount(sessionName string) (member, error) {
 		return member{}, err
 	}
 	defer unlock()
-	admin.clear()
+	admin.clearHeading(serviceName(m.Service))
 	return admin.connectCoding(m.Service, "")
 }
 

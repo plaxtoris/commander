@@ -22,6 +22,7 @@ import (
 )
 
 var build = "development"
+var buildVersion = "dev"
 
 func main() {
 	syscall.Umask(0077)

@@ -20,6 +20,25 @@ import (
 	"github.com/creack/pty"
 )
 
+func TestBuildDivider(t *testing.T) {
+	original := buildVersion
+	buildVersion = "v.2026.11.28_10:12"
+	t.Cleanup(func() { buildVersion = original })
+	for _, tc := range []struct {
+		width int
+		label string
+	}{
+		{96, buildVersion},
+		{18, buildVersion},
+		{14, "26.11.28_10:12"},
+	} {
+		line := buildDivider(tc.width).plain()
+		if textWidth(line) != tc.width || !strings.HasSuffix(line, tc.label) {
+			t.Fatalf("divider at width %d: %q", tc.width, line)
+		}
+	}
+}
+
 func TestOverviewShowsOnlySelectedAccounts(t *testing.T) {
 	a := testApp(t)
 	addSession(t, a, "work", ghMember("selected"))
@@ -451,7 +470,7 @@ func TestInteractiveAccountPresentationAndResize(t *testing.T) {
 			s.send(t, "e")
 			s.wait(t, "+ add account")
 			frame := terminalControls.ReplaceAllString(s.output, "")
-			for _, want := range []string{"commander · Work Team", "hetzner", "[x] existing", "[x] Case.Sensitive", "! missing account", "[space] toggle"} {
+			for _, want := range []string{"commander · Work Team", buildVersion, "hetzner", "[x] existing", "[x] Case.Sensitive", "! missing account", "[space] toggle"} {
 				if !strings.Contains(frame, want) {
 					t.Fatalf("missing %q in edit view: %s", want, frame)
 				}

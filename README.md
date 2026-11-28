@@ -45,7 +45,8 @@ chmod +x commander && ./commander
   one window checks for updates on behalf of the whole installation. Downloads
   finish in the background even if you close the menu. The next normal launch
   activates a verified Commander release before showing the menu. Open chats
-  keep running. Use `commander update` to check and apply a release immediately.
+  keep running. The menu shows the build date and time in Berlin time.
+  Use `commander update` to check and apply a release immediately.
 - **Accounts.** Commander checks session accounts in the background. Press
   `l` on the home screen to jump to a problem account.
   Its detail lists the sessions using it. Press enter to sign in again for a
@@ -89,9 +90,11 @@ Claude keeps inactive conversations for 36,500 days by default. Set
 `cleanupPeriodDays` in its shared settings to choose a shorter retention period.
 Chat history stays on this machine when you export a session.
 
-For Pi, set `defaultModel` to a model ID.
-Commander uses the first model from the selected endpoint if it cannot find that
-ID. Commander includes `pi-token-speed` in its release. Every new Pi chat shows
+Pi remembers the last model and thinking level you chose in each Commander
+session, separately for each endpoint. Changes take effect immediately for the
+next chat. For a new session or an unavailable model, Commander uses the
+shared `defaultModel` if available, then the first model from the endpoint.
+Commander includes `pi-token-speed` in its release. Every new Pi chat shows
 tokens per second in the status bar during a reply and the average when it
 finishes. Use `/tps` in Pi to customize the display.
 
