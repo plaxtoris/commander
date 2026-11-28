@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"context"
+	_ "embed"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -22,6 +23,12 @@ import (
 
 const codingConfigFile = "coding-config.json"
 const maxAgentConfig = 128 << 10
+const piTokenSpeedVersion = "0.13.1"
+
+// The original npm tarball includes the package manifest, sources and license.
+//
+//go:embed pi-token-speed-*.tgz
+var piTokenSpeed []byte
 
 type codingConfigs map[string]string
 
@@ -506,18 +513,19 @@ func (a *app) codingCommand(m member, cwd, home, profile string, extra []string,
 			return nil, err
 		}
 		model := ids[0]
-		if config != "" {
-			settings, err := agentSettings(config)
-			if err != nil {
-				return nil, err
-			}
-			var preferred string
-			if json.Unmarshal(settings["defaultModel"], &preferred) == nil && contains(ids, preferred) {
-				model = preferred
-			}
-			if err = atomicWrite(filepath.Join(home, "settings.json"), []byte(config), 0600); err != nil {
-				return nil, err
-			}
+		settings, err := agentSettings(config)
+		if err != nil {
+			return nil, err
+		}
+		var preferred string
+		if json.Unmarshal(settings["defaultModel"], &preferred) == nil && contains(ids, preferred) {
+			model = preferred
+		}
+		if err = installPiTokenSpeed(home, settings); err != nil {
+			return nil, err
+		}
+		if err = atomicWrite(filepath.Join(home, "settings.json"), encode(settings), 0600); err != nil {
+			return nil, err
 		}
 		caps := endpoint.reasoning()
 		models := make([]object, 0, len(ids))
@@ -562,6 +570,53 @@ func (a *app) codingCommand(m member, cwd, home, profile string, extra []string,
 	}
 	cmd.Dir = cwd
 	return cmd, nil
+}
+
+// Seed Pi's native package directory so startup and reload work offline.
+// A local npm dependency also keeps the package installed when Pi adds others.
+func installPiTokenSpeed(home string, settings map[string]json.RawMessage) error {
+	const source = "npm:pi-token-speed"
+	var packages []json.RawMessage
+	if raw := settings["packages"]; raw != nil {
+		if err := json.Unmarshal(raw, &packages); err != nil {
+			return fmt.Errorf("invalid pi packages: %w", err)
+		}
+	}
+	configured := false
+	for _, pkg := range packages {
+		var name string
+		if err := json.Unmarshal(pkg, &name); err != nil {
+			var entry struct{ Source string }
+			if json.Unmarshal(pkg, &entry) == nil {
+				name = entry.Source
+			}
+		}
+		if name == source || name == source+"@"+piTokenSpeedVersion {
+			configured = true
+			break
+		}
+		if strings.HasPrefix(name, source+"@") {
+			// Pi resolves the user's chosen version or distribution tag.
+			return nil
+		}
+	}
+	if !configured {
+		packages = append(packages, encode(source))
+		settings["packages"] = encode(packages)
+	}
+	npm := filepath.Join(home, "npm")
+	if err := os.MkdirAll(npm, 0700); err != nil {
+		return err
+	}
+	archive := filepath.Join(npm, "pi-token-speed.tgz")
+	if err := os.WriteFile(archive, piTokenSpeed, 0600); err != nil {
+		return err
+	}
+	if err := extract(archive, filepath.Join(npm, "node_modules", "pi-token-speed"), 1); err != nil {
+		return err
+	}
+	manifest := object{"private": true, "dependencies": object{"pi-token-speed": "file:pi-token-speed.tgz"}}
+	return atomicWrite(filepath.Join(npm, "package.json"), encode(manifest), 0600)
 }
 
 func (a *app) codingContext(cwd string) string {

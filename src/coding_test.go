@@ -13,6 +13,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"sync"
 	"testing"
@@ -170,7 +171,7 @@ func TestNativeSettingsFollowAgentAcrossSessions(t *testing.T) {
 	}{
 		{"codex", "codex", "$CODEX_HOME/config.toml", `model = "fixture"`},
 		{"claude", "claude", "$CLAUDE_CONFIG_DIR/settings.json", strings.TrimSpace(string(encode(object{"model": "fixture"})))},
-		{"litellm", "pi", "$PI_CODING_AGENT_DIR/settings.json", `{"defaultModel":"fixture"}`},
+		{"litellm", "pi", "$PI_CODING_AGENT_DIR/settings.json", strings.TrimSpace(string(encode(object{"defaultModel": "fixture", "packages": []string{"npm:pi-token-speed"}})))},
 	} {
 		t.Run(tc.agent, func(t *testing.T) {
 			verify := fmt.Sprintf(`test "$(cat "%s")" = '%s'`, tc.path, tc.settings)
@@ -593,8 +594,59 @@ func TestExistingEndpointRunsInPi(t *testing.T) {
 		if err != nil || argument(cmd.Args, "--model") != tc.want {
 			t.Fatalf("configured %s, want %s: %v", tc.configured, tc.want, err)
 		}
-		if raw, err := os.ReadFile(filepath.Join(home, "settings.json")); err != nil || string(raw) != settings {
+		want := object{"defaultModel": tc.configured, "defaultThinkingLevel": "high", "packages": []any{"npm:pi-token-speed"}}
+		raw, err := os.ReadFile(filepath.Join(home, "settings.json"))
+		var got object
+		if err != nil || json.Unmarshal(raw, &got) != nil || !reflect.DeepEqual(got, want) {
 			t.Fatalf("pi settings = %s: %v", raw, err)
+		}
+	}
+}
+
+func TestBundledPiTokenSpeed(t *testing.T) {
+	const source = "npm:pi-token-speed"
+	other := "npm:pi-token-speed-extra"
+	filter := object{"source": source + "@" + piTokenSpeedVersion, "extensions": []any{"src/index.ts"}}
+	for _, tc := range []struct {
+		packages, want []any
+		bundled        bool
+	}{
+		{nil, []any{source}, true},
+		{[]any{other}, []any{other, source}, true},
+		{[]any{other, source}, []any{other, source}, true},
+		{[]any{filter}, []any{filter}, true},
+		{[]any{source + "@next"}, []any{source + "@next"}, false},
+	} {
+		home := t.TempDir()
+		settings := map[string]json.RawMessage{}
+		if tc.packages != nil {
+			settings["packages"] = encode(tc.packages)
+		}
+		if err := installPiTokenSpeed(home, settings); err != nil {
+			t.Fatal(err)
+		}
+		var got []any
+		if err := json.Unmarshal(settings["packages"], &got); err != nil || !reflect.DeepEqual(got, tc.want) {
+			t.Fatalf("packages = %v, want %v: %v", got, tc.want, err)
+		}
+		dir := filepath.Join(home, "npm", "node_modules", "pi-token-speed")
+		data, err := os.ReadFile(filepath.Join(dir, "package.json"))
+		if !tc.bundled {
+			if !os.IsNotExist(err) {
+				t.Fatal("seeded the bundled version over an explicit npm tag")
+			}
+			continue
+		}
+		var manifest struct {
+			Name    string
+			Version string
+			Pi      struct{ Extensions []string }
+		}
+		if err != nil || json.Unmarshal(data, &manifest) != nil || manifest.Name != "pi-token-speed" || manifest.Version != piTokenSpeedVersion || len(manifest.Pi.Extensions) != 1 {
+			t.Fatal("bundled extension manifest missing or invalid", err)
+		}
+		if _, err := os.Stat(filepath.Join(dir, manifest.Pi.Extensions[0])); err != nil {
+			t.Fatal(err)
 		}
 	}
 }

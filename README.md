@@ -91,7 +91,9 @@ Chat history stays on this machine when you export a session.
 
 For Pi, set `defaultModel` to a model ID.
 Commander uses the first model from the selected endpoint if it cannot find that
-ID.
+ID. Commander includes `pi-token-speed` in its release. Every new Pi chat shows
+tokens per second in the status bar during a reply and the average when it
+finishes. Use `/tps` in Pi to customize the display.
 
 Encrypted exports automatically include all saved agent settings. Import replaces
 the settings for each agent included in the archive and keeps the settings for
