@@ -145,7 +145,7 @@ func TestStagedReleaseAcrossChecks(t *testing.T) {
 				w.Write(binary)
 			})
 			for range 2 {
-				if err := a.backgroundUpdate(); err != nil {
+				if err := a.backgroundUpdate(false); err != nil {
 					t.Fatal(err)
 				}
 			}
@@ -153,7 +153,7 @@ func TestStagedReleaseAcrossChecks(t *testing.T) {
 			if err := os.Chtimes(filepath.Join(a.root, "tools", ".update-checked"), old, old); err != nil {
 				t.Fatal(err)
 			}
-			if err := a.backgroundUpdate(); err != nil || checks.Load() != 2 || downloads.Load() != 1 {
+			if err := a.backgroundUpdate(false); err != nil || checks.Load() != 2 || downloads.Load() != 1 {
 				t.Fatal("unexpected hourly release traffic", checks.Load(), downloads.Load(), err)
 			}
 			switch mode {
@@ -464,8 +464,8 @@ func TestInteractiveStartupCurrentAndOffline(t *testing.T) {
 			defer server.Close()
 			t.Setenv("COMMANDER_UI_UPDATE_URL", server.URL+"/")
 			staging := filepath.Join(moved, ".update-15")
-			mustWrite(t, filepath.Join(staging, "download"), nil)
-			for i := 0; i < 2; i++ {
+			for i := range 2 {
+				mustWrite(t, filepath.Join(staging, "download"), nil)
 				mustWrite(t, filepath.Join(moved, "AGENTS.md"), []byte("outdated instructions\n"))
 				s := openUI(t, moved)
 				s.wait(t, "[q] quit")
@@ -477,7 +477,11 @@ func TestInteractiveStartupCurrentAndOffline(t *testing.T) {
 					t.Fatal(err)
 				}
 				waitUpdateWorker(t, moved)
-				if _, err := os.Stat(staging); (offline && err != nil) || (!offline && !os.IsNotExist(err)) {
+				if err := os.Remove(filepath.Join(moved, "workspaces", "worker-done")); err != nil {
+					t.Fatal(err)
+				}
+				cleaned := i == 0 && !offline
+				if _, err := os.Stat(staging); cleaned != os.IsNotExist(err) {
 					t.Fatal("unexpected automatic cleanup result", err)
 				}
 				data, err := os.ReadFile(filepath.Join(moved, "AGENTS.md"))
@@ -485,8 +489,8 @@ func TestInteractiveStartupCurrentAndOffline(t *testing.T) {
 					t.Fatal("startup did not refresh instructions after relocation", err)
 				}
 			}
-			if checks.Load() != 1 {
-				t.Fatal("repeated update check within one hour", checks.Load())
+			if checks.Load() != 2 {
+				t.Fatal("expected a release check at each launch", checks.Load())
 			}
 		})
 	}

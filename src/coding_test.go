@@ -461,8 +461,7 @@ read -r line
 	ui.wait(t, "[q] quit")
 	// A single selected account launches immediately and can resume its chat.
 	ui.send(t, "\r")
-	ui.wait(t, "previous chat first")
-	ui.wait(t, "native login first")
+	ui.wait(t, "previous chat first\r\nnative login first")
 	ui.send(t, "exit\n")
 	ui.wait(t, "[q] quit")
 	ui.send(t, "e")

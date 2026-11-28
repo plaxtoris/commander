@@ -324,8 +324,9 @@ func TestInteractiveSmallTerminalAndPaging(t *testing.T) {
 }
 
 func TestInteractiveAutomaticUpdate(t *testing.T) {
-	for _, valid := range []bool{true, false} {
-		t.Run(fmt.Sprintf("checksum-valid-%t", valid), func(t *testing.T) {
+	for _, mode := range []string{"next launch", "restart key", "damaged download"} {
+		t.Run(mode, func(t *testing.T) {
+			valid := mode != "damaged download"
 			a := testApp(t)
 			preparedTools(t, a)
 			addSession(t, a, "work")
@@ -339,7 +340,9 @@ func TestInteractiveAutomaticUpdate(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			binary := []byte("#!/bin/sh\nif [ \"$1\" = version ]; then echo 'Commander fixture'; exit 0; fi\nprintf '%s' \"$$\" > \"$COMMANDER_HOME/workspaces/update-fixture\"\nexec " + quote(exe) + " -test.run=TestUIHelper\n")
+			binary := []byte("#!/bin/sh\nif [ \"$1\" = version ]; then echo 'Commander fixture'; exit 0; fi\n" +
+				"if [ -t 0 ]; then\n  printf '%s' \"$$\" > \"$COMMANDER_HOME/workspaces/update-fixture\"\n  exec " +
+				quote(exe) + " -test.run=^TestUIHelper$ -- \"$@\"\nfi\n" + string(original))
 			sum := sha256.Sum256(binary)
 			tool := tarBytes(t, []*tar.Header{{Name: "hcloud", Mode: 0755, Size: 3, Typeflag: tar.TypeReg}}, []string{"new"})
 			toolSum := sha256.Sum256(tool)
@@ -380,7 +383,7 @@ func TestInteractiveAutomaticUpdate(t *testing.T) {
 			}
 			s := openUI(t, a.root)
 			s.wait(t, "[q] quit")
-			for _, unwanted := range []string{"Update Commander and all tools", "Tools and updates", "Setup"} {
+			for _, unwanted := range []string{"Update Commander and all tools", "Tools and updates", "Setup", "[r] restart"} {
 				if strings.Contains(s.output, unwanted) {
 					t.Fatal("unexpected menu item", unwanted)
 				}
@@ -390,24 +393,50 @@ func TestInteractiveAutomaticUpdate(t *testing.T) {
 			case <-time.After(4 * time.Second):
 				t.Fatal("update worker did not contact the release server")
 			}
-			other := openUI(t, a.root)
+			other := openUI(t, a.root, &pty.Winsize{Rows: 24, Cols: 24})
 			other.wait(t, "[q] quit")
+			waitUpdateWorker(t, a.root) // The first worker still holds the update lock.
+			done := filepath.Join(a.root, "workspaces", "worker-done")
+			if err := os.Remove(done); err != nil {
+				t.Fatal(err)
+			}
+			if mode != "restart key" {
+				s.send(t, "q")
+				if err := s.command.Wait(); err != nil {
+					t.Fatal(err)
+				}
+			}
+			close(release)
+			waitUpdateWorker(t, a.root)
+			if checks.Load() != 1 {
+				t.Fatal("simultaneous launches repeated the release check", checks.Load())
+			}
+			if valid {
+				other.wait(t, "update [r] restart")
+			}
 			other.send(t, "q")
 			if err := other.command.Wait(); err != nil {
 				t.Fatal(err)
 			}
-			s.send(t, "q")
-			if err := s.command.Wait(); err != nil {
+			if err := os.Remove(done); err != nil {
 				t.Fatal(err)
 			}
-			close(release)
-			waitUpdateWorker(t, a.root)
 			after, err := os.ReadFile(filepath.Join(a.root, "commander"))
 			if err != nil || !bytes.Equal(after, original) {
 				t.Fatal("worker replaced the running version", err)
 			}
-			s = openUI(t, a.root)
-			s.wait(t, "[q] quit")
+			if mode == "restart key" {
+				s.wait(t, "update ready  [r] restart")
+				s.send(t, "r")
+			} else {
+				s = openUI(t, a.root)
+			}
+			if valid {
+				s.wait(t, "updated fixture")
+			} else {
+				s.wait(t, "[q] quit")
+			}
+			waitUpdateWorker(t, a.root)
 			s.send(t, "q")
 			if err := s.command.Wait(); err != nil {
 				t.Fatal(err)
@@ -440,8 +469,8 @@ func TestInteractiveAutomaticUpdate(t *testing.T) {
 			if err != nil || string(preferences) != memory {
 				t.Fatal("startup changed personal memory", err)
 			}
-			if checks.Load() != 1 {
-				t.Fatal("startup repeated the update check", checks.Load())
+			if checks.Load() != 2 {
+				t.Fatal("missing release check on subsequent startup", checks.Load())
 			}
 			staging, _ := filepath.Glob(filepath.Join(a.root, ".update-*"))
 			if len(staging) != 0 {

@@ -36,8 +36,7 @@ func (a *app) start() error {
 	if !a.localBuild {
 		applied, _ := a.applyPendingRelease()
 		// A second window may have launched the old inode just before the swap.
-		running, _ := os.Readlink("/proc/self/exe")
-		if applied || running == filepath.Join(a.root, "commander")+" (deleted)" {
+		if applied || a.runningReplaced() {
 			return a.restartCommander(nil)
 		}
 	}
@@ -46,7 +45,7 @@ func (a *app) start() error {
 	}
 	done := make(chan struct{})
 	defer close(done)
-	delay := a.scheduleUpdate()
+	delay := a.scheduleUpdate(!a.localBuild)
 	go func() {
 		timer := time.NewTimer(delay)
 		defer timer.Stop()
@@ -55,11 +54,11 @@ func (a *app) start() error {
 			case <-done:
 				return
 			case <-timer.C:
-				timer.Reset(a.scheduleUpdate())
+				timer.Reset(a.scheduleUpdate(false))
 			}
 		}
 	}()
-	return a.menu()
+	return a.menu(!a.localBuild)
 }
 
 func (a *app) updateDelay() time.Duration {
@@ -73,20 +72,28 @@ func (a *app) updateDelay() time.Duration {
 }
 
 // The worker can finish after the menu closes. It has no terminal or input.
-func (a *app) scheduleUpdate() time.Duration {
-	if delay := a.updateDelay(); delay > 0 {
+func (a *app) scheduleUpdate(startup bool) time.Duration {
+	delay := a.updateDelay()
+	if !startup && delay > 0 {
 		return delay
 	}
-	cmd := exec.Command(filepath.Join(a.root, "commander"), a.scopedUpdateArgs([]string{"update-check"})...)
+	args := []string{"update-check"}
+	if startup {
+		args = append(args, "startup")
+	}
+	cmd := exec.Command(filepath.Join(a.root, "commander"), a.scopedUpdateArgs(args)...)
 	cmd.Env = append(os.Environ(), "COMMANDER_HOME="+a.root)
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setsid: true}
 	if err := cmd.Start(); err == nil {
 		go cmd.Wait()
 	}
+	if delay > 0 {
+		return delay
+	}
 	return updateInterval
 }
 
-func (a *app) backgroundUpdate() error {
+func (a *app) backgroundUpdate(startup bool) error {
 	unlock, err := a.installationLock("update", false, false)
 	if err != nil {
 		if errors.Is(err, syscall.EWOULDBLOCK) {
@@ -95,8 +102,11 @@ func (a *app) backgroundUpdate() error {
 		return err
 	}
 	if a.updateDelay() > 0 {
-		unlock()
-		return nil
+		defer unlock()
+		if startup {
+			_, err = a.stageRelease()
+		}
+		return err
 	}
 	err = a.markUpdateCheck()
 	if err == nil {
@@ -340,6 +350,16 @@ func (a *app) restartCommander(args []string) error {
 		return fmt.Errorf("Commander was updated but could not restart; start ./commander again: %w", err)
 	}
 	return nil
+}
+
+func (a *app) runningReplaced() bool {
+	running, _ := os.Readlink("/proc/self/exe")
+	return running == filepath.Join(a.root, "commander")+" (deleted)"
+}
+
+func (a *app) restartReady() bool {
+	_, err := os.Stat(filepath.Join(a.root, pendingRelease, "checksums"))
+	return err == nil || a.runningReplaced()
 }
 
 func fileChecksum(path string) (string, error) {

@@ -25,7 +25,7 @@ func (a *app) actions(title string, actions []menuAction) (string, error) {
 	return actions[i].key, nil
 }
 
-func (a *app) menu() error {
+func (a *app) menu(showUpdates bool) error {
 	title := ""
 	if a.session != nil {
 		title = "session " + a.session.Name
@@ -106,7 +106,7 @@ func (a *app) menu() error {
 				return err
 			}
 		}
-		key, i, err := admin.list(view{title: title, info: info, keys: keys, notice: notice, tone: tone, rows: rows, refresh: checking}, at)
+		key, i, err := admin.list(view{title: title, info: info, keys: keys, notice: notice, tone: tone, rows: rows, refresh: checking, showUpdates: showUpdates}, at)
 		if err != nil {
 			return err
 		}
@@ -126,6 +126,12 @@ func (a *app) menu() error {
 		case key == "q" || key == "esc":
 			admin.clear()
 			return nil
+		case key == "r" && showUpdates && a.restartReady():
+			var applied bool
+			applied, err = a.applyPendingRelease()
+			if err == nil && (applied || a.runningReplaced()) {
+				err = a.restartCommander(nil)
+			}
 		case key == "i":
 			notice, err = admin.importArchive("")
 		case key == "x":

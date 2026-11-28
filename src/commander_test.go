@@ -472,6 +472,7 @@ func TestUIHelper(t *testing.T) {
 	if os.Getenv("COMMANDER_RESTARTED") == a.root {
 		if instructions := os.Getenv("COMMANDER_UI_UPDATED_INSTRUCTIONS"); instructions != "" {
 			agentInstructions = instructions
+			buildVersion = "updated fixture"
 		}
 	}
 	if endpoint := os.Getenv("COMMANDER_UI_SERVICE_URL"); endpoint != "" {
@@ -544,7 +545,7 @@ func TestUIHelper(t *testing.T) {
 		}
 		err = a.command(args)
 	} else {
-		err = a.menu()
+		err = a.menu(false)
 	}
 	if err != nil && !errors.Is(err, errCancelled) {
 		fmt.Fprintln(os.Stderr, err)

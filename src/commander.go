@@ -204,7 +204,7 @@ func (a *app) command(args []string) error {
 			if err := a.refreshAgentInstructions(); err != nil {
 				return err
 			}
-			return a.menu()
+			return a.menu(false)
 		}
 		if a.session == nil {
 			return errNoSession
@@ -292,7 +292,7 @@ func (a *app) command(args []string) error {
 		a.cleanupAfterUpdate()
 		return a.refreshTools()
 	case "update-check":
-		return a.backgroundUpdate()
+		return a.backgroundUpdate(len(args) == 2 && args[1] == "startup")
 	case "export", "import":
 		return a.transfer(args)
 	default:

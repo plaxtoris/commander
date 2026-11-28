@@ -41,11 +41,12 @@ chmod +x commander && ./commander
 - **Edit.** Connect more accounts or change the scope. Choose a GitHub login
   per repository or organization when several can reach it. Changes save
   immediately. Press `r` in the editor to rename the session.
-- **Startup.** The menu opens immediately. Once an hour while Commander is open,
-  one window checks for updates on behalf of the whole installation. Downloads
-  finish in the background even if you close the menu. The next normal launch
-  activates a verified Commander release before showing the menu. Open chats
-  keep running. The menu shows the build date and time in Berlin time.
+- **Startup.** Each normal launch checks for a Commander release in the background.
+  Open windows share concurrent checks and check again hourly. A verified download
+  shows `update ready  [r] restart` below the build time on the home screen.
+  Press `r` to restart this window, or let the next normal launch apply the
+  update. Downloads continue after the menu closes. Open chats keep running.
+  The build date and time use Berlin time. Installed tools are checked hourly.
   Use `commander update` to check and apply a release immediately.
 - **Accounts.** Commander checks session accounts in the background. Press
   `l` on the home screen to jump to a problem account.

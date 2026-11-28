@@ -9,6 +9,7 @@ import (
 	"syscall"
 	"unicode/utf8"
 
+	"golang.org/x/sys/unix"
 	"golang.org/x/term"
 )
 
@@ -120,6 +121,7 @@ type view struct {
 	notice, tone      string
 	rows              []row
 	refresh           <-chan struct{}
+	showUpdates       bool
 }
 
 func heading(title string) uiLine {
@@ -149,6 +151,29 @@ func (a *app) clearHeading(title string) {
 	fmt.Fprint(a.out, "  ", a.renderLine(heading(title), width), "\r\n  ", a.renderLine(buildDivider(width), width), "\r\n")
 }
 
+// Release publication and activation both rename entries into the installation root.
+func watchReleases(root string) int {
+	fd, err := unix.InotifyInit1(unix.IN_NONBLOCK | unix.IN_CLOEXEC)
+	if err == nil {
+		if _, err := unix.InotifyAddWatch(fd, root, unix.IN_MOVED_TO|unix.IN_DELETE); err == nil {
+			return fd
+		}
+		unix.Close(fd)
+	}
+	return -1
+}
+
+func restartHint(width int) uiLine {
+	hint := "update ready  [r] restart"
+	if len(hint) > width {
+		hint = "update [r] restart"
+	}
+	if len(hint) > width {
+		hint = "[r] restart"
+	}
+	return uiLine{{strings.Repeat(" ", max(0, width-len(hint))) + hint, "2"}}
+}
+
 // List draws a full height screen with the key hints at the bottom and
 // returns the pressed key with the selected row. It handles movement itself.
 // The cursor stays at the hints, so a prompt can replace them.
@@ -168,6 +193,13 @@ func (a *app) list(v view, at int) (string, int, error) {
 				cur = len(picks)
 			}
 			picks = append(picks, i)
+		}
+	}
+	watchFD := -1
+	if v.showUpdates {
+		watchFD = watchReleases(a.root)
+		if watchFD >= 0 {
+			defer unix.Close(watchFD)
 		}
 	}
 	offset := 0
@@ -193,6 +225,10 @@ func (a *app) list(v view, at int) (string, int, error) {
 			body = append(body, append(line, content...))
 		}
 		top := []uiLine{heading(v.title), buildDivider(limit), {}}
+		ready := v.showUpdates && a.restartReady()
+		if ready {
+			top[2] = restartHint(limit)
+		}
 		if v.notice != "" {
 			tone := v.tone
 			if tone == "" {
@@ -252,30 +288,10 @@ func (a *app) list(v view, at int) (string, int, error) {
 		}
 		screen.WriteString("\r")
 		fmt.Fprint(a.out, screen.String())
-		// Poll only while a background account check is running. Input remains
-		// available immediately and the completed check redraws the same row.
-		for v.refresh != nil {
-			select {
-			case <-v.refresh:
-				return "refresh", selected, nil
-			default:
-			}
-			var set syscall.FdSet
-			fd := int(a.in.Fd())
-			if fd >= len(set.Bits)*64 {
-				break
-			}
-			set.Bits[fd/64] |= 1 << uint(fd%64)
-			timeout := syscall.Timeval{Usec: 100000}
-			n, err := syscall.Select(fd+1, &set, nil, nil, &timeout)
-			if err != nil && !errors.Is(err, syscall.EINTR) {
-				return "", selected, err
-			}
-			if n > 0 {
-				break
-			}
+		key, err := a.listKey(v, watchFD, ready)
+		if key == "redraw" {
+			continue
 		}
-		key, err := a.key()
 		if err != nil {
 			return "", -1, err
 		}
@@ -300,6 +316,51 @@ func (a *app) list(v view, at int) (string, int, error) {
 			return key, selected, nil
 		}
 	}
+}
+
+// The idle home screen sleeps until input or a change in the installation.
+func (a *app) listKey(v view, watchFD int, ready bool) (string, error) {
+	fds := []unix.PollFd{
+		{Fd: int32(a.in.Fd()), Events: unix.POLLIN},
+		{Fd: int32(watchFD), Events: unix.POLLIN},
+	}
+	for v.refresh != nil || v.showUpdates {
+		timeout := -1
+		if v.showUpdates && watchFD < 0 {
+			timeout = 5000 // Fall back to an occasional stat if watches are unavailable.
+		}
+		if v.refresh != nil {
+			select {
+			case <-v.refresh:
+				return "refresh", nil
+			default:
+			}
+			timeout = 100
+		}
+		_, err := unix.Poll(fds, timeout)
+		if errors.Is(err, unix.EINTR) {
+			continue
+		}
+		if err != nil {
+			return "", err
+		}
+		if fds[0].Revents != 0 {
+			break
+		}
+		if !v.showUpdates || watchFD >= 0 && fds[1].Revents == 0 {
+			continue
+		}
+		if watchFD >= 0 {
+			var events [4096]byte
+			if _, err := unix.Read(watchFD, events[:]); err != nil && err != unix.EAGAIN && err != unix.EINTR {
+				watchFD, fds[1].Fd = -1, -1
+			}
+		}
+		if a.restartReady() != ready {
+			return "redraw", nil
+		}
+	}
+	return a.key()
 }
 
 // The selected row turns its plain and bold text cyan; dim details stay dim.
