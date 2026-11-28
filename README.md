@@ -97,8 +97,34 @@ next chat. For a new session or an unavailable model, Commander uses the
 shared `defaultModel` if available, then the first model from the endpoint.
 Commander reads context and output limits from the endpoint's model catalog and
 optional LiteLLM model information. For llama.cpp it uses the configured serving
-window even when a model is unloaded. Endpoints that publish only model names use
-Pi's default limits.
+window even when a model is unloaded. In Pi the footer shows the context window
+and the output limit for the current request. `context unknown` means the
+endpoint did not publish its window. Pi still uses its internal context estimate.
+With `output server default`, the server sizes the reply. Commander uses this
+when no separate output limit is known or Pi’s context reserve would leave a
+single token under a larger server limit. An explicit output cap stays in force.
+
+Use `/thinking` to select the effort on a model that advertises reasoning.
+Commander also checks the templates of loaded llama.cpp models. On supported
+templates the thinking budget shares the output allowance with the answer.
+If the server ends a reply at its length limit, Pi shows the requested limit
+and any reported output count. Tool output previews have their own size limits.
+
+For a catalog with missing metadata, add the known values to your existing
+Pi settings with `commander config pi settings.json`. Use the endpoint account
+name and the exact model ID. Each field is optional. Published limits take
+precedence when smaller.
+
+```json
+{
+  "endpointModels": {
+    "local": {
+      "my-model": { "contextWindow": 32768, "maxTokens": 8192, "reasoning": true }
+    }
+  }
+}
+```
+
 Commander includes `pi-token-speed` in its release. Every new Pi chat shows
 tokens per second in the status bar during a reply and the average when it
 finishes. Use `/tps` in Pi to customize the display.

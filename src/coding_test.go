@@ -559,9 +559,22 @@ func TestExistingEndpointRunsInPi(t *testing.T) {
 				{"id":"z-preferred","owned_by":"llamacpp","context_length":262144,"status":{"args":["--ctx-size","32768","--parallel","1"]}},
 				{"id":"test-model","context_length":"unknown"},
 				{"id":"z-active","owned_by":"llamacpp","context_length":262144,"meta":{"n_ctx":8192},"status":{"args":["--ctx-size","16384","--n-predict","1024"]}},
-				{"id":"z-openrouter","context_length":200000,"top_provider":{"context_length":131072,"max_completion_tokens":32768}},
+				{"id":"z-effort","owned_by":"llamacpp","status":{"value":"loaded"}},
+				{"id":"z-openrouter","supported_parameters":["reasoning","max_tokens"],"context_length":200000,"top_provider":{"context_length":131072,"max_completion_tokens":32768}},
 				{"id":"z-proxy"}, {"id":"z-vllm","max_model_len":4096,"max_output_tokens":8192},
 				{"id":"z-preferred"}]}`)
+		case "/props":
+			if r.URL.Query().Get("autoload") != "false" {
+				t.Error("template inspection can load a model")
+			}
+			switch r.URL.Query().Get("model") {
+			case "z-active":
+				fmt.Fprint(w, `{"chat_template":"{% if enable_thinking %}"}`)
+			case "z-effort":
+				fmt.Fprint(w, `{"chat_template_caps":{"reasoning_effort_levels":["low","high"]}}`)
+			default:
+				t.Error("inspected an unloaded model")
+			}
 		case "/model/info":
 			fmt.Fprint(w, `{"data":[{"model_name":"z-proxy","model_info":{"supports_reasoning":true,"max_input_tokens":64000,"max_output_tokens":8000}}]}`)
 		default:
@@ -595,11 +608,15 @@ func TestExistingEndpointRunsInPi(t *testing.T) {
 	if err := json.Unmarshal(b, &registry); err != nil {
 		t.Fatal(err)
 	}
+	llamaCompat := object{"maxTokensField": "max_tokens", "supportsStore": false, "supportsDeveloperRole": false, "thinkingFormat": "qwen-chat-template", "thinkingTokenBudgetField": "thinking_budget_tokens"}
 	wantModels := []endpointModel{
 		{ID: "test-model", Name: "test-model"},
-		{ID: "z-active", Name: "z-active", ContextWindow: 8192, MaxTokens: 1024},
-		{ID: "z-openrouter", Name: "z-openrouter", ContextWindow: 131072, MaxTokens: 32768},
-		{ID: "z-preferred", Name: "z-preferred", ContextWindow: 32768, MaxTokens: 32768},
+		{ID: "z-active", Name: "z-active", Reasoning: true, ContextWindow: 8192, MaxTokens: 1024, Compat: llamaCompat},
+		{ID: "z-effort", Name: "z-effort", Reasoning: true,
+			Compat:           object{"maxTokensField": "max_tokens", "supportsStore": false, "supportsDeveloperRole": false, "thinkingTokenBudgetField": "thinking_budget_tokens"},
+			ThinkingLevelMap: object{"off": "none", "minimal": nil, "low": "low", "medium": nil, "high": "high", "xhigh": nil, "max": nil}},
+		{ID: "z-openrouter", Name: "z-openrouter", Reasoning: true, ContextWindow: 131072, MaxTokens: 32768, Compat: object{"maxTokensField": "max_tokens", "thinkingFormat": "openrouter"}},
+		{ID: "z-preferred", Name: "z-preferred", ContextWindow: 32768, Compat: llamaCompat},
 		{ID: "z-proxy", Name: "z-proxy", Reasoning: true, ContextWindow: 64000, MaxTokens: 8000},
 		{ID: "z-vllm", Name: "z-vllm", ContextWindow: 4096, MaxTokens: 4096},
 	}
@@ -625,6 +642,20 @@ func TestExistingEndpointRunsInPi(t *testing.T) {
 		if err != nil || json.Unmarshal(raw, &got) != nil || !reflect.DeepEqual(got, want) {
 			t.Fatalf("pi settings = %s: %v", raw, err)
 		}
+	}
+	home := t.TempDir()
+	overrides := `{"endpointModels":{"old":{"test-model":{"contextWindow":32000,"maxTokens":8192,"reasoning":true},"z-active":{"maxTokens":2048,"reasoning":false}},"other":{"test-model":{"maxTokens":1}}}}`
+	withCaps, err := a.codingCommand(m, tmp, home, home, nil, overrides)
+	if err != nil || !contains(withCaps.Env, "COMMANDER_PI_CAPPED_MODELS=test-model\nz-active") {
+		t.Fatal("explicit model caps missing", err)
+	}
+	raw, err := os.ReadFile(filepath.Join(home, "models.json"))
+	if err != nil || json.Unmarshal(raw, &registry) != nil {
+		t.Fatal("could not read overridden model registry", err)
+	}
+	updated := registry.Providers["openai-compatible"].Models
+	if updated[0].ContextWindow != 32000 || updated[0].MaxTokens != 8192 || !updated[0].Reasoning || updated[1].Reasoning || updated[1].MaxTokens != 1024 {
+		t.Fatalf("unexpected model overrides: %+v", updated)
 	}
 	choicePath := filepath.Join(a.root, ".sessions", s.ID, "pi", m.selector()+".json")
 	for _, tc := range []struct{ saved, model, thinking string }{
@@ -669,6 +700,7 @@ func TestPiSelectionEvents(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "choice.json")
 	mustWrite(t, filepath.Join(dir, "selection.mjs"), piSelectionExtension)
+	mustWrite(t, filepath.Join(dir, "models.json"), []byte(`{"providers":{"openai-compatible":{"models":[{"id":"first"},{"id":"second","contextWindow":4096,"maxTokens":2000},{"id":"manual","maxTokens":512}]}}}`))
 	const script = `
 import register from "./selection.mjs";
 import { readFileSync } from "node:fs";
@@ -676,22 +708,48 @@ import assert from "node:assert/strict";
 const handlers = {};
 let thinking = "medium";
 register({ on: (name, handler) => handlers[name] = handler, getThinkingLevel: () => thinking });
-const ctx = { model: { provider: "openai-compatible", id: "first" } };
+let status;
+const notices = [];
+const ctx = { hasUI: true, model: { provider: "openai-compatible", id: "first" },
+	ui: { setStatus: (_, value) => status = value, notify: text => notices.push(text) } };
+const request = fields => handlers.before_provider_request({ payload: { model: ctx.model.id, messages: [], ...fields } }, ctx);
+const end = (stopReason, role = "assistant") => handlers.message_end({ message: { ...ctx.model, role, model: ctx.model.id, stopReason, usage: { output: 48 } } }, ctx);
 const saved = () => JSON.parse(readFileSync(process.env.COMMANDER_PI_SELECTION, "utf8"));
 handlers.session_start({ reason: "startup" }, ctx);
 assert.deepEqual(saved(), { model: "first", thinking: "medium" });
+assert.equal(status, "context unknown · output server default");
+assert.deepEqual(request({ max_completion_tokens: 16384, reasoning_effort: "low" }), { model: "first", messages: [], reasoning_effort: "low" });
+end("stop");
+end("error");
+end("length", "toolResult");
+assert.equal(notices.length, 0);
+end("length");
+assert.match(notices[0], /server default.*48 output tokens/);
 ctx.model.id = "second";
 handlers.model_select({}, ctx);
 assert.equal(saved().model, "second");
+assert.equal(status, "context 4096 · output 2000");
+assert.equal(request({ max_tokens: 1600 }), undefined);
+assert.equal(status, "context 4096 · output 1600");
+end("length");
+assert.match(notices[1], /requested up to 1600/);
+assert.deepEqual(request({ max_tokens: 1 }), { model: "second", messages: [] });
+assert.equal(status, "context 4096 · output server default");
 thinking = "low";
 handlers.thinking_level_select({}, ctx);
 ctx.model.id = "stale";
 handlers.session_start({ reason: "reload" }, ctx);
 handlers.session_start({ reason: "startup" }, ctx);
-assert.deepEqual(saved(), { model: "second", thinking: "low" });`
+assert.deepEqual(saved(), { model: "second", thinking: "low" });
+ctx.model.id = "manual";
+assert.equal(request({ max_completion_tokens: 1 }), undefined);
+ctx.model.provider = "other";
+handlers.model_select({}, ctx);
+assert.equal(status, undefined);
+assert.equal(request({ max_tokens: 1 }), undefined);`
 	cmd := exec.Command(node, "--input-type=module", "-e", script)
 	cmd.Dir = dir
-	cmd.Env = []string{"COMMANDER_PI_SELECTION=" + path}
+	cmd.Env = []string{"COMMANDER_PI_SELECTION=" + path, "PI_CODING_AGENT_DIR=" + dir, "COMMANDER_PI_CAPPED_MODELS=manual"}
 	if out, err := cmd.CombinedOutput(); err != nil {
 		t.Fatalf("Pi selection events: %s: %v", out, err)
 	}

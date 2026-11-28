@@ -207,11 +207,16 @@ func (e endpointLogin) authorization() string {
 }
 
 type endpointModel struct {
-	ID            string `json:"id"`
-	Name          string `json:"name"`
-	Reasoning     bool   `json:"reasoning"`
-	ContextWindow int    `json:"contextWindow,omitempty"`
-	MaxTokens     int    `json:"maxTokens,omitempty"`
+	ID               string `json:"id"`
+	Name             string `json:"name"`
+	Reasoning        bool   `json:"reasoning"`
+	ContextWindow    int    `json:"contextWindow,omitempty"`
+	MaxTokens        int    `json:"maxTokens,omitempty"`
+	Compat           object `json:"compat,omitempty"`
+	ThinkingLevelMap object `json:"thinkingLevelMap,omitempty"`
+
+	// A loaded llama.cpp model can report its template without waking a model.
+	inspectTemplate bool
 }
 
 // llama.cpp reports the active slot in meta.n_ctx. An unloaded router preset
@@ -251,19 +256,24 @@ func (e endpointLogin) models() (map[string]*endpointModel, error) {
 	models := map[string]*endpointModel{}
 	for _, entry := range response.Data {
 		var row struct {
-			ID          string
-			Owner       string `json:"owned_by"`
-			Context     int    `json:"context_length"`
-			MaxModelLen int    `json:"max_model_len"`
-			Output      int    `json:"max_output_tokens"`
-			Top         struct {
+			ID                string
+			Owner             string   `json:"owned_by"`
+			Context           int      `json:"context_length"`
+			MaxModelLen       int      `json:"max_model_len"`
+			Output            int      `json:"max_output_tokens"`
+			SupportsReasoning bool     `json:"supports_reasoning"`
+			Params            []string `json:"supported_parameters"`
+			Top               struct {
 				Context int `json:"context_length"`
 				Output  int `json:"max_completion_tokens"`
 			} `json:"top_provider"`
 			Meta struct {
 				Context int `json:"n_ctx"`
 			}
-			Status struct{ Args []string }
+			Status struct {
+				Value string
+				Args  []string
+			}
 		}
 		// Optional vendor metadata can be absent or malformed on a usable endpoint.
 		_ = json.Unmarshal(entry, &row)
@@ -271,6 +281,7 @@ func (e endpointLogin) models() (map[string]*endpointModel, error) {
 			continue
 		}
 		m := &endpointModel{ID: row.ID, Name: row.ID, ContextWindow: max(row.Context, 0), MaxTokens: max(row.Output, 0)}
+		m.Reasoning = row.SupportsReasoning || contains(row.Params, "reasoning_effort") || contains(row.Params, "reasoning")
 		if row.Top.Context > 0 {
 			m.ContextWindow = row.Top.Context
 		} else if row.MaxModelLen > 0 {
@@ -280,12 +291,20 @@ func (e endpointLogin) models() (map[string]*endpointModel, error) {
 			m.MaxTokens = row.Top.Output
 		}
 		if row.Owner == "llamacpp" {
+			m.Compat = object{
+				"maxTokensField": "max_tokens", "supportsStore": false, "supportsDeveloperRole": false,
+				"thinkingFormat": "qwen-chat-template", "thinkingTokenBudgetField": "thinking_budget_tokens",
+			}
+			m.inspectTemplate = row.Status.Value == "loaded" || (row.Status.Value == "" && row.Meta.Context > 0)
 			m.ContextWindow = llamaSlotContext(row.Meta.Context, row.Status.Args)
-			if m.MaxTokens == 0 {
-				m.MaxTokens = tokenArgument(row.Status.Args, "--n-predict", "--predict", "-n")
-				if m.MaxTokens == 0 {
-					m.MaxTokens = m.ContextWindow
-				}
+			m.MaxTokens = tokenLimit(m.MaxTokens, tokenArgument(row.Status.Args, "--n-predict", "--predict", "-n"))
+		} else {
+			m.Compat = object{}
+			if contains(row.Params, "max_tokens") && !contains(row.Params, "max_completion_tokens") {
+				m.Compat["maxTokensField"] = "max_tokens"
+			}
+			if contains(row.Params, "reasoning") && !contains(row.Params, "reasoning_effort") {
+				m.Compat["thinkingFormat"] = "openrouter"
 			}
 		}
 		models[m.ID] = m
@@ -294,6 +313,53 @@ func (e endpointLogin) models() (map[string]*endpointModel, error) {
 		return nil, errors.New("endpoint has no models")
 	}
 	return models, nil
+}
+
+// Keep the tightest positive limit. Missing metadata leaves the choice to the server.
+func tokenLimit(a, b int) int {
+	if a <= 0 {
+		return max(0, b)
+	}
+	if b <= 0 {
+		return a
+	}
+	return min(a, b)
+}
+
+func (e endpointLogin) applyLlamaTemplates(models map[string]*endpointModel) {
+	ctx, cancel := context.WithTimeout(context.Background(), 750*time.Millisecond)
+	defer cancel()
+	base := strings.TrimSuffix(strings.TrimRight(e.URL, "/"), "/v1")
+	for _, model := range models {
+		if !model.inspectTemplate || ctx.Err() != nil {
+			continue
+		}
+		data, err := requestServiceContext(ctx, "GET", base+"/props?autoload=false&model="+url.QueryEscape(model.ID), e.authorization(), nil)
+		var props struct {
+			Template string `json:"chat_template"`
+			Caps     struct {
+				Levels []string `json:"reasoning_effort_levels"`
+			} `json:"chat_template_caps"`
+		}
+		if err != nil || json.Unmarshal(data, &props) != nil {
+			continue
+		}
+		if len(props.Caps.Levels) > 0 {
+			levels := object{"off": "none"}
+			for _, level := range []string{"minimal", "low", "medium", "high", "xhigh", "max"} {
+				if contains(props.Caps.Levels, level) {
+					levels[level] = level
+					model.Reasoning = true
+				} else {
+					levels[level] = nil
+				}
+			}
+			model.ThinkingLevelMap = levels
+			delete(model.Compat, "thinkingFormat")
+		} else if strings.Contains(props.Template, "enable_thinking") {
+			model.Reasoning = true
+		}
+	}
 }
 
 // LiteLLM exposes per-model capabilities when this key can read model info.
@@ -322,13 +388,9 @@ func (e endpointLogin) applyModelInfo(models map[string]*endpointModel) {
 	}
 	for _, m := range info.Data {
 		if model := models[m.Name]; model != nil {
-			model.Reasoning = m.Info.Reasoning || contains(m.Info.Params, "reasoning_effort")
-			if m.Info.Context > 0 && (model.ContextWindow == 0 || m.Info.Context < model.ContextWindow) {
-				model.ContextWindow = m.Info.Context
-			}
-			if m.Info.Output > 0 && (model.MaxTokens == 0 || m.Info.Output < model.MaxTokens) {
-				model.MaxTokens = m.Info.Output
-			}
+			model.Reasoning = model.Reasoning || m.Info.Reasoning || contains(m.Info.Params, "reasoning_effort")
+			model.ContextWindow = tokenLimit(model.ContextWindow, m.Info.Context)
+			model.MaxTokens = tokenLimit(model.MaxTokens, m.Info.Output)
 		}
 	}
 }

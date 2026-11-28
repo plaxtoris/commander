@@ -557,14 +557,39 @@ func (a *app) codingCommand(m member, cwd, home, profile string, extra []string,
 			return nil, err
 		}
 		endpoint.applyModelInfo(catalog)
+		endpoint.applyLlamaTemplates(catalog)
+		var overrides map[string]map[string]struct {
+			ContextWindow, MaxTokens int
+			Reasoning                *bool
+		}
+		if raw := settings["endpointModels"]; raw != nil {
+			if err := json.Unmarshal(raw, &overrides); err != nil {
+				return nil, fmt.Errorf("invalid pi endpointModels: %w", err)
+			}
+		}
+		limits := overrides[m.selector()]
+		var capped []string
 		models := make([]*endpointModel, 0, len(ids))
 		for _, id := range ids {
+			override := limits[id]
 			m := catalog[id]
+			if override.ContextWindow < 0 || override.MaxTokens < 0 {
+				return nil, fmt.Errorf("invalid token limit for model %q", id)
+			}
+			if override.MaxTokens > 0 {
+				capped = append(capped, id)
+			}
+			m.ContextWindow = tokenLimit(m.ContextWindow, override.ContextWindow)
+			m.MaxTokens = tokenLimit(m.MaxTokens, override.MaxTokens)
+			if override.Reasoning != nil {
+				m.Reasoning = *override.Reasoning
+			}
 			if m.ContextWindow > 0 && m.MaxTokens > m.ContextWindow {
 				m.MaxTokens = m.ContextWindow
 			}
 			models = append(models, m)
 		}
+		env = append(env, "COMMANDER_PI_CAPPED_MODELS="+strings.Join(capped, "\n"))
 		const provider = "openai-compatible"
 		config := object{"api": "openai-completions", "baseUrl": endpoint.URL, "apiKey": "$COMMANDER_ENDPOINT_KEY", "models": models}
 		if err = atomicWrite(filepath.Join(home, "models.json"), encode(object{"providers": object{provider: config}}), 0600); err != nil {
