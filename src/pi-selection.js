@@ -6,7 +6,6 @@ export default function (pi) {
 	const path = process.env.COMMANDER_PI_SELECTION;
 	const provider = "openai-compatible";
 	const registry = JSON.parse(readFileSync(join(process.env.PI_CODING_AGENT_DIR, "models.json"), "utf8"));
-	const capped = new Set(process.env.COMMANDER_PI_CAPPED_MODELS?.split("\n"));
 	const models = new Map(registry.providers[provider].models.map(model => [model.id, model]));
 	let outputLimit;
 
@@ -48,12 +47,22 @@ export default function (pi) {
 		if (ctx.model?.provider !== provider || payload?.model !== ctx.model.id || !Array.isArray(payload.messages)) return;
 		const model = models.get(payload.model);
 		if (!model) return;
-		const requested = payload.max_completion_tokens ?? payload.max_tokens;
-		// Pi's context reserve can collapse a usable local window to a single token.
-		// Let the server enforce its own ceiling in that case. An explicit cap wins.
-		const collapsed = requested === 1 && model.maxTokens > 1 && !capped.has(model.id);
-		if (model.maxTokens && !collapsed) {
-			showLimits(ctx, model, requested);
+		if (model.maxTokens) {
+			const field = payload.max_completion_tokens != null ? "max_completion_tokens" : "max_tokens";
+			let limit = payload[field];
+			if (limit === 1 && model.maxTokens > 1) {
+				// Pi reserves at least 4096 tokens. If that exhausted the budget,
+				// leave half the estimated free space for tokenizer differences.
+				const usage = ctx.getContextUsage();
+				if (usage?.tokens != null) {
+					const room = usage.contextWindow - usage.tokens;
+					if (room >= 2 && room <= 4097) {
+						limit = Math.min(model.maxTokens, Math.floor(room / 2));
+					}
+				}
+			}
+			showLimits(ctx, model, limit);
+			if (limit !== payload[field]) return { ...payload, [field]: limit };
 			return;
 		}
 		const { max_tokens, max_completion_tokens, ...request } = payload;

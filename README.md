@@ -100,9 +100,10 @@ optional LiteLLM model information. For llama.cpp it uses the configured serving
 window even when a model is unloaded. In Pi the footer shows the context window
 and the output limit for the current request. `context unknown` means the
 endpoint did not publish its window. Pi still uses its internal context estimate.
-With `output server default`, the server sizes the reply. Commander uses this
-when no separate output limit is known or Pi’s context reserve would leave a
-single token under a larger server limit. An explicit output cap stays in force.
+With `output server default`, the server sizes the reply because no separate
+output limit is known. If Pi's context reserve leaves just one token despite
+available space, Commander requests up to half the estimated remaining space.
+The request stays within the model's output limit and any cap you configured.
 
 Use `/thinking` to select the effort on a model that advertises reasoning.
 Commander also checks the templates of loaded llama.cpp models. On supported

@@ -645,9 +645,8 @@ func TestExistingEndpointRunsInPi(t *testing.T) {
 	}
 	home := t.TempDir()
 	overrides := `{"endpointModels":{"old":{"test-model":{"contextWindow":32000,"maxTokens":8192,"reasoning":true},"z-active":{"maxTokens":2048,"reasoning":false}},"other":{"test-model":{"maxTokens":1}}}}`
-	withCaps, err := a.codingCommand(m, tmp, home, home, nil, overrides)
-	if err != nil || !contains(withCaps.Env, "COMMANDER_PI_CAPPED_MODELS=test-model\nz-active") {
-		t.Fatal("explicit model caps missing", err)
+	if _, err := a.codingCommand(m, tmp, home, home, nil, overrides); err != nil {
+		t.Fatal(err)
 	}
 	raw, err := os.ReadFile(filepath.Join(home, "models.json"))
 	if err != nil || json.Unmarshal(raw, &registry) != nil {
@@ -710,7 +709,8 @@ let thinking = "medium";
 register({ on: (name, handler) => handlers[name] = handler, getThinkingLevel: () => thinking });
 let status;
 const notices = [];
-const ctx = { hasUI: true, model: { provider: "openai-compatible", id: "first" },
+let usage = { tokens: 3072, contextWindow: 4096 };
+const ctx = { hasUI: true, getContextUsage: () => usage, model: { provider: "openai-compatible", id: "first" },
 	ui: { setStatus: (_, value) => status = value, notify: text => notices.push(text) } };
 const request = fields => handlers.before_provider_request({ payload: { model: ctx.model.id, messages: [], ...fields } }, ctx);
 const end = (stopReason, role = "assistant") => handlers.message_end({ message: { ...ctx.model, role, model: ctx.model.id, stopReason, usage: { output: 48 } } }, ctx);
@@ -733,8 +733,8 @@ assert.equal(request({ max_tokens: 1600 }), undefined);
 assert.equal(status, "context 4096 · output 1600");
 end("length");
 assert.match(notices[1], /requested up to 1600/);
-assert.deepEqual(request({ max_tokens: 1 }), { model: "second", messages: [] });
-assert.equal(status, "context 4096 · output server default");
+assert.equal(request({ max_tokens: 1 }).max_tokens, 512);
+assert.equal(status, "context 4096 · output 512");
 thinking = "low";
 handlers.thinking_level_select({}, ctx);
 ctx.model.id = "stale";
@@ -742,6 +742,11 @@ handlers.session_start({ reason: "reload" }, ctx);
 handlers.session_start({ reason: "startup" }, ctx);
 assert.deepEqual(saved(), { model: "second", thinking: "low" });
 ctx.model.id = "manual";
+usage.tokens = 10;
+assert.equal(request({ max_completion_tokens: 1 }).max_completion_tokens, 512);
+usage.tokens = 4096;
+assert.equal(request({ max_completion_tokens: 1 }), undefined);
+usage.tokens = null;
 assert.equal(request({ max_completion_tokens: 1 }), undefined);
 ctx.model.provider = "other";
 handlers.model_select({}, ctx);
@@ -749,7 +754,7 @@ assert.equal(status, undefined);
 assert.equal(request({ max_tokens: 1 }), undefined);`
 	cmd := exec.Command(node, "--input-type=module", "-e", script)
 	cmd.Dir = dir
-	cmd.Env = []string{"COMMANDER_PI_SELECTION=" + path, "PI_CODING_AGENT_DIR=" + dir, "COMMANDER_PI_CAPPED_MODELS=manual"}
+	cmd.Env = []string{"COMMANDER_PI_SELECTION=" + path, "PI_CODING_AGENT_DIR=" + dir}
 	if out, err := cmd.CombinedOutput(); err != nil {
 		t.Fatalf("Pi selection events: %s: %v", out, err)
 	}
